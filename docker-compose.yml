@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. طبقة قاعدة البيانات (PostgreSQL)
   postgres_db:
@@ -51,6 +49,8 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    volumes:
+     - ./api-laravel:/app
     depends_on:
       - postgres_db
     networks:
@@ -65,8 +65,27 @@ services:
     restart: unless-stopped
     ports:
       - "5173:5173"
+    volumes:
+      - ./frontend-vue:/app          # <--- الكوبري لملفات الفيو
+      - /app/node_modules            # <--- استثناء فولدر النود موديولز جوه الدوكر
+    command: npm run dev -- --host 0.0.0.0 # <--- إجبار تشغيل سيرفر Vite
     depends_on:
       - laravel_api
+    networks:
+      - quant_network
+
+  # 6. واجهة إدارة قواعد البيانات (pgAdmin)
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: quant_pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@quant.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres_db
     networks:
       - quant_network
 
