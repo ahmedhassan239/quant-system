@@ -1,0 +1,13 @@
+# تجاهل قواعد البيانات والبيانات الحية
+data-volumes/
+
+# تجاهل مفاتيح الـ API والباسوردات
+.env
+backend-python/.env
+api-laravel/.env
+
+# تجاهل ملفات النظام والـ Node
+node_modules/
+vendor/
+__pycache__/
+*.pyc

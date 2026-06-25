@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # 1. طبقة قاعدة البيانات (PostgreSQL)
+  postgres_db:
+    image: postgres:15-alpine
+    container_name: quant_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: quant_db
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: secret123
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data-volumes/postgres_data:/var/lib/postgresql/data
+    networks:
+      - quant_network
+
+  # 2. طبقة الذاكرة السريعة (Redis) للأسعار اللحظية
+  redis_cache:
+    image: redis:7-alpine
+    container_name: quant_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data-volumes/redis_data:/data
+    networks:
+      - quant_network
+
+  # 3. محرك التداول الكمي (Python)
+  quant_engine:
+    build:
+      context: ./backend-python
+      dockerfile: Dockerfile
+    container_name: quant_python_engine
+    restart: unless-stopped
+    depends_on:
+      - postgres_db
+      - redis_cache
+    networks:
+      - quant_network
+
+  # 4. الواجهة الخلفية للوحة التحكم (Laravel API)
+  laravel_api:
+    build:
+      context: ./api-laravel
+      dockerfile: Dockerfile
+    container_name: quant_laravel_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres_db
+    networks:
+      - quant_network
+
+  # 5. لوحة التحكم التفاعلية (Vue.js Frontend)
+  vue_dashboard:
+    build:
+      context: ./frontend-vue
+      dockerfile: Dockerfile
+    container_name: quant_vue_dashboard
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - laravel_api
+    networks:
+      - quant_network
+
+networks:
+  quant_network:
+    driver: bridge
