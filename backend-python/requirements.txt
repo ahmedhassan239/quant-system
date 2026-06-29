@@ -1,5 +1,6 @@
-ccxt>=4.0.0
-pandas>=2.0.0
-python-dotenv>=1.0.0
-psycopg2-binary>=2.9.9
-redis>=5.0.1
+sqlalchemy
+psycopg2-binary
+requests
+pandas
+pandas-ta
+schedule

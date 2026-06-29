@@ -34,6 +34,8 @@ services:
       dockerfile: Dockerfile
     container_name: quant_python_engine
     restart: unless-stopped
+    volumes:
+      - ./backend-python:/app      # <--- الكوبري لملفات البايثون اتضاف هنا
     depends_on:
       - postgres_db
       - redis_cache
@@ -66,9 +68,9 @@ services:
     ports:
       - "5173:5173"
     volumes:
-      - ./frontend-vue:/app          # <--- الكوبري لملفات الفيو
-      - /app/node_modules            # <--- استثناء فولدر النود موديولز جوه الدوكر
-    command: npm run dev -- --host 0.0.0.0 # <--- إجبار تشغيل سيرفر Vite
+      - ./frontend-vue:/app          
+      - /app/node_modules            
+    command: npm run dev -- --host 0.0.0.0 
     depends_on:
       - laravel_api
     networks:
@@ -84,6 +86,8 @@ services:
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
       - "5050:80"
+    volumes:
+      - ./data-volumes/pgadmin_data:/var/lib/pgadmin 
     depends_on:
       - postgres_db
     networks:

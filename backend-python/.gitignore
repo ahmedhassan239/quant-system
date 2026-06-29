@@ -1,0 +1,9 @@
+# Ignore data and models
+data/
+*.csv
+models/
+*.pkl
+
+# Ignore environment files and logs
+.env
+__pycache__/
