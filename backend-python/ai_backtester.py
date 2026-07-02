@@ -1,5 +1,6 @@
 import pandas as pd
 import joblib
+import numpy as np
 
 def run_ai_backtest():
     print("--- Starting AI Trading Backtest ---")
@@ -31,9 +32,13 @@ def run_ai_backtest():
     
     X = df[feature_cols]
     
-    # 4. Generate AI Predictions for the entire dataset
-    print("Generating AI trading signals...")
-    df['AI_Signal'] = model.predict(X)
+    # 4. Generate AI Confidence Scores for the entire dataset
+    print("Generating AI trading signals with confidence filtering...")
+    buy_confidence = model.predict_proba(X)[:, 1]
+    df['Buy_Confidence'] = buy_confidence
+    
+    # Confidence threshold: only enter trades when model is >= 65% confident
+    confidence_threshold = 0.65
     
     # 5. Initialize Trading Variables
     initial_capital = 10000.0
@@ -45,21 +50,21 @@ def run_ai_backtest():
     winning_trades = 0
     losing_trades = 0
     trading_fee = 0.001  # 0.1% Binance Spot fee
-    candles_held = 0     # Track duration of current trade
+    highest_price = 0.0  # Track highest price for trailing stop
     
     # Risk Management Parameters
-    take_profit_pct = 0.02  # 2% Take Profit
-    stop_loss_pct = 0.01    # 1% Stop Loss
+    trailing_stop_pct = 0.015  # 1.5% Trailing distance
+    stop_loss_pct = 0.01       # 1% Stop Loss
     
     print("Simulating trading execution through historical data...")
     
-    # 6. Simulation Loop using fast iterrows/itertuples
+    # 6. Simulation Loop using fast itertuples
     for row in df.itertuples(index=False):
         current_price = row.close
-        ai_signal = row.AI_Signal
+        confidence = row.Buy_Confidence
         
-        # BUY Logic
-        if ai_signal == 1 and not in_position:
+        # BUY Logic: Only enter if confidence >= threshold
+        if confidence >= confidence_threshold and not in_position:
             # Deduct the 0.1% buy fee from capital before calculating position size
             capital_after_fee = capital * (1 - trading_fee)
             position_size = capital_after_fee / current_price
@@ -67,18 +72,17 @@ def run_ai_backtest():
             
             entry_price = current_price
             in_position = True
-            candles_held = 0  # Initialize candle counter
+            highest_price = current_price  # Set initial highest price
             
-        # SELL Logic
+        # SELL Logic: Only Trailing Stop and Hard Stop Loss
         elif in_position:
-            candles_held += 1  # Increment candle counter
+            highest_price = max(highest_price, current_price)
             
-            # Check Exit Conditions: Take Profit, Stop Loss, OR Time Exit (4 periods)
-            hit_tp = current_price >= entry_price * (1 + take_profit_pct)
+            # Check Exit Conditions: Trailing Stop OR Hard Stop Loss
+            hit_ts = current_price <= highest_price * (1 - trailing_stop_pct)
             hit_sl = current_price <= entry_price * (1 - stop_loss_pct)
-            hit_time = candles_held >= 4
             
-            if hit_tp or hit_sl or hit_time:
+            if hit_ts or hit_sl:
                 # Calculate gross revenue from selling the asset, then deduct the 0.1% sell fee
                 gross_revenue = position_size * current_price
                 capital = gross_revenue * (1 - trading_fee)
@@ -94,7 +98,7 @@ def run_ai_backtest():
                 trades += 1
                 in_position = False
                 entry_price = 0.0
-                candles_held = 0
+                highest_price = 0.0
             
     # Close out any remaining open position on the very last candle
     if in_position:

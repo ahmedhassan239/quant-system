@@ -4,3 +4,8 @@ requests
 pandas
 pandas-ta
 schedule
+ta
+joblib
+scikit-learn
+ccxt
+numpy
