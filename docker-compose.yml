@@ -3,42 +3,37 @@ services:
   postgres_db:
     image: postgres:15-alpine
     container_name: quant_postgres
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_DB: quant_db
       POSTGRES_USER: quant_user
       POSTGRES_PASSWORD: secret123
-    ports:
-      - "5432:5432"
     volumes:
       - ./data-volumes/postgres_data:/var/lib/postgresql/data
     networks:
       - quant_network
+    # تم إزالة البورتات نهائياً لحماية الداتا بيز من أي وصول خارجي
 
-  # 2. طبقة الذاكرة السريعة (Redis) للأسعار اللحظية
+    # 2. طبقة الذاكرة السريعة (Redis) للأسعار اللحظية
   redis_cache:
     image: redis:7-alpine
     container_name: quant_redis
-    restart: always
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
     volumes:
       - ./data-volumes/redis_data:/data
     networks:
       - quant_network
+    # تم إزالة البورتات نهائياً للأمان
 
-  # 3. محرك التداول الكمي (Python)
+    # 3. محرك التداول الكمي (Python)
   quant_engine:
     build:
       context: ./backend-python
       dockerfile: Dockerfile
     container_name: quant_python_engine
     restart: unless-stopped
-    environment:
-      - BINANCE_TESTNET_API_KEY=${BINANCE_TESTNET_API_KEY}
-      - BINANCE_TESTNET_SECRET_KEY=${BINANCE_TESTNET_SECRET_KEY}
     volumes:
-      - ./backend-python:/app # <--- الكوبري لملفات البايثون اتضاف هنا
+      - ./backend-python:/app
     depends_on:
       - postgres_db
       - redis_cache
@@ -53,7 +48,7 @@ services:
     container_name: quant_laravel_api
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000" # مغلق على السيرفر الداخلي فقط
     volumes:
       - ./api-laravel:/app
     depends_on:
@@ -69,7 +64,7 @@ services:
     container_name: quant_vue_dashboard
     restart: unless-stopped
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173" # مغلق على السيرفر الداخلي فقط
     volumes:
       - ./frontend-vue:/app
       - /app/node_modules
@@ -83,12 +78,12 @@ services:
   pgadmin:
     image: dpage/pgadmin4
     container_name: quant_pgadmin
-    restart: always
+    restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@quant.com
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80" # مغلق على السيرفر الداخلي فقط
     volumes:
       - ./data-volumes/pgadmin_data:/var/lib/pgadmin
     depends_on:
@@ -96,17 +91,20 @@ services:
     networks:
       - quant_network
 
-  # 7. أداة تحليل البيانات والداشبورد الجاهزة (Metabase)
+  # 7. لوحة تحكم البيانات (Metabase) - تمت إضافتها لمتابعة الأرباح
   metabase:
     image: metabase/metabase:latest
     container_name: quant_metabase
-    restart: always
+    restart: unless-stopped
     ports:
-      - "3000:3000"
-    volumes:
-      - ./data-volumes/metabase_data:/metabase-data
+      - "127.0.0.1:3000:3000" # مغلق على السيرفر الداخلي فقط
     environment:
-      MB_DB_FILE: /metabase-data/metabase.db
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: quant_db
+      MB_DB_PORT: 5432
+      MB_DB_USER: quant_user
+      MB_DB_PASS: secret123
+      MB_DB_HOST: postgres_db
     depends_on:
       - postgres_db
     networks:
