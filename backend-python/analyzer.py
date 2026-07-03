@@ -63,7 +63,7 @@ def detect_order_blocks(df, lookback=15):
 
     return bullish_ob, bearish_ob
 
-def run_analyzer(symbol='BTCUSDT', timeframe='15m'):
+def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
     """
     Query market data, calculate RSI, detect Order Blocks, and save trading decisions.
     """

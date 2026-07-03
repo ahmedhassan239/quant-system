@@ -60,7 +60,7 @@ def detect_order_blocks(df, lookback=15):
 def run_backtest():
     print("Fetching historical data from Binance...")
     url = "https://api.binance.com/api/v3/klines"
-    params = {'symbol': 'BTCUSDT', 'interval': '15m', 'limit': 1000}
+    params = {'symbol': 'PAXGUSDT', 'interval': '15m', 'limit': 1000}
     
     response = requests.get(url, params=params)
     response.raise_for_status()

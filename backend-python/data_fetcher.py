@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy.dialects.postgresql import insert
 from database import SessionLocal, MarketData, engine, init_db
 
-def fetch_binance_klines(symbol='BTCUSDT', interval='15m', limit=100):
+def fetch_binance_klines(symbol='PAXGUSDT', interval='15m', limit=100):
     """
     Fetch klines/candlestick data from Binance Public API.
     """
@@ -80,7 +80,7 @@ def run_fetcher():
     init_db()
     
     print("Fetching data from Binance...")
-    df = fetch_binance_klines(symbol='BTCUSDT', interval='15m', limit=100)
+    df = fetch_binance_klines(symbol='PAXGUSDT', interval='15m', limit=100)
     
     print("Saving data to database...")
     save_to_db(df)

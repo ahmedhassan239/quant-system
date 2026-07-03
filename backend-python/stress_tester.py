@@ -104,7 +104,7 @@ def run_stress_test():
         return
 
     # 2. Load the dataset
-    data_path = 'data/processed/BTCUSDT_features.csv'
+    data_path = 'data/processed/PAXGUSDT_features.csv'
     try:
         df = pd.read_csv(data_path)
         print(f"Loaded dataset from {data_path} with {len(df):,} rows.")

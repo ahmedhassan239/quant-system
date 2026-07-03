@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 def fetch_5_years_data():
     # Expanded diverse list of assets for the ML dataset
-    symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'SUIUSDT', 'HBARUSDT', 'ONTUSDT', 'POLUSDT', 'ARBUSDT', 'LINEAUSDT', 'PUMPUSDT', 'XPLUSDT']
+    symbols = ['PAXGUSDT', 'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'SUIUSDT', 'HBARUSDT', 'ONTUSDT', 'POLUSDT', 'ARBUSDT', 'LINEAUSDT', 'PUMPUSDT', 'XPLUSDT']
     
     # Calculate timestamps (5 years ago to now)
     end_time_dt = datetime.utcnow()

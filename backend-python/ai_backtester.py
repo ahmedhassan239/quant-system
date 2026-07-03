@@ -15,7 +15,7 @@ def run_ai_backtest():
         return
         
     # 2. Load the dataset
-    data_path = 'data/processed/BTCUSDT_features.csv'
+    data_path = 'data/processed/PAXGUSDT_features.csv'
     try:
         df = pd.read_csv(data_path)
         print(f"Loaded dataset from {data_path} with {len(df):,} rows.")
@@ -119,7 +119,7 @@ def run_ai_backtest():
     print("\n" + "="*40)
     print("           AI BACKTEST REPORT")
     print("="*40)
-    print(f"Asset Tested:    BTCUSDT")
+    print(f"Asset Tested:    PAXGUSDT")
     print(f"Initial Capital: ${initial_capital:,.2f}")
     print(f"Final Capital:   ${capital:,.2f}")
     print(f"Total ROI:       {roi:,.2f}%")
