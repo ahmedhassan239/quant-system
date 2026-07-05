@@ -1,5 +1,33 @@
+import os
+import requests
 import pandas as pd
+from datetime import datetime
 from database import SessionLocal, MarketData, TradingSignal, engine, init_db
+
+
+def send_telegram_alert(message):
+    """
+    Send a notification message to Telegram.
+    Fails silently to avoid crashing the trading bot.
+    """
+    token = os.environ.get('TELEGRAM_BOT_TOKEN')
+    chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+
+    if not token or not chat_id:
+        print("Telegram credentials not configured. Skipping alert.")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("Telegram alert sent successfully.")
+        else:
+            print(f"Telegram API error: {response.status_code} - {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to send Telegram alert: {e}")
 
 def calculate_rsi(df, period=14):
     """
@@ -121,6 +149,19 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
         
         session.add(signal)
         session.commit()
+
+        # 4b. Send Telegram alert for actionable signals only
+        if decision in ('BUY', 'SELL'):
+            alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
+            alert_msg = (
+                f"\U0001f6a8 *QUANT ALERT* \U0001f6a8\n"
+                f"Action: {decision}\n"
+                f"Symbol: {symbol}\n"
+                f"Price: ${current_price:.2f}\n"
+                f"RSI: {current_rsi:.1f}\n"
+                f"Time: {alert_time}"
+            )
+            send_telegram_alert(alert_msg)
 
         # 5. Print summary output
         print("=== Quant Analyzer Summary ===")

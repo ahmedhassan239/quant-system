@@ -32,6 +32,9 @@ services:
       dockerfile: Dockerfile
     container_name: quant_python_engine
     restart: unless-stopped
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
     volumes:
       - ./backend-python:/app
     depends_on:
