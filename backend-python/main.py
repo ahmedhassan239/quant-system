@@ -1,7 +1,7 @@
 import time
 import schedule
 from data_fetcher import run_fetcher
-from analyzer import run_analyzer
+from analyzer import run_analyzer, send_telegram_alert
 
 def job():
     print("\n" + "="*50)
@@ -28,6 +28,9 @@ def main():
     
     print("Scheduled job to run every 15 minutes. Daemon is active.")
     
+    # Send a one-time startup test message to Telegram
+    send_telegram_alert("✅ Quant Engine Started Successfully! Telegram alerts are active and monitoring PAXGUSDT.")
+
     # Keep the container/script running indefinitely
     while True:
         schedule.run_pending()
