@@ -1,8 +1,33 @@
 import os
+import json
 import requests
 import pandas as pd
 from datetime import datetime
 from database import SessionLocal, MarketData, TradingSignal, engine, init_db
+
+PORTFOLIO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'portfolio.json')
+DEFAULT_PORTFOLIO = {
+    'usdt_balance': 1000.0,
+    'paxg_balance': 0.0,
+    'last_buy_price': None
+}
+
+
+def load_portfolio():
+    """Load virtual portfolio state from JSON file."""
+    try:
+        with open(PORTFOLIO_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # First run — initialize with defaults
+        save_portfolio(DEFAULT_PORTFOLIO)
+        return DEFAULT_PORTFOLIO.copy()
+
+
+def save_portfolio(portfolio):
+    """Persist virtual portfolio state to JSON file."""
+    with open(PORTFOLIO_FILE, 'w') as f:
+        json.dump(portfolio, f, indent=2)
 
 
 def send_telegram_alert(message):
@@ -150,7 +175,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
         session.add(signal)
         session.commit()
 
-        # 4b. Send Telegram alert only if signal direction has changed
+        # 4b. Signal State Management + Virtual Portfolio + Telegram Alert
         if decision in ('BUY', 'SELL'):
             # Query the last non-WAIT decision from the database
             last_signal = session.query(TradingSignal).filter(
@@ -163,18 +188,64 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
             last_decision = last_signal.decision if last_signal else None
 
             if decision != last_decision:
+                # --- Update Virtual Portfolio ---
+                portfolio = load_portfolio()
+                pnl_section = ""
+
+                if decision == 'BUY' and portfolio['usdt_balance'] > 0:
+                    # Convert all USDT to PAXG
+                    paxg_bought = portfolio['usdt_balance'] / current_price
+                    portfolio['paxg_balance'] = round(paxg_bought, 6)
+                    portfolio['last_buy_price'] = float(current_price)
+                    portfolio['usdt_balance'] = 0.0
+                    save_portfolio(portfolio)
+
+                elif decision == 'SELL' and portfolio['paxg_balance'] > 0:
+                    # Convert all PAXG back to USDT
+                    sell_value = portfolio['paxg_balance'] * current_price
+                    buy_price = portfolio.get('last_buy_price')
+                    if buy_price and buy_price > 0:
+                        pnl_pct = ((current_price - buy_price) / buy_price) * 100
+                        pnl_usd = sell_value - (portfolio['paxg_balance'] * buy_price)
+                        sign = "+" if pnl_pct >= 0 else ""
+                        pnl_section = f"\n- PnL (This Trade): {sign}{pnl_pct:.2f}% ({sign}${pnl_usd:.2f})"
+                    portfolio['usdt_balance'] = round(sell_value, 2)
+                    portfolio['paxg_balance'] = 0.0
+                    portfolio['last_buy_price'] = None
+                    save_portfolio(portfolio)
+
+                # --- Build Reason Section ---
+                if decision == 'BUY':
+                    rsi_label = "Oversold"
+                    ob_type = "Bullish"
+                    ob_low = bullish_ob['low'] if bullish_ob else 0
+                    ob_high = bullish_ob['high'] if bullish_ob else 0
+                else:
+                    rsi_label = "Overbought"
+                    ob_type = "Bearish"
+                    ob_low = bearish_ob['low'] if bearish_ob else 0
+                    ob_high = bearish_ob['high'] if bearish_ob else 0
+
                 alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
+
                 alert_msg = (
-                    f"\U0001f6a8 *QUANT ALERT* \U0001f6a8\n"
-                    f"Action: {decision}\n"
-                    f"Symbol: {symbol}\n"
-                    f"Price: ${current_price:.2f}\n"
-                    f"RSI: {current_rsi:.1f}\n"
-                    f"Time: {alert_time}"
+                    f"\U0001f6a8 *QUANT ALERT: {decision}* \U0001f6a8\n"
+                    f"\n"
+                    f"*Symbol:* {symbol}\n"
+                    f"*Price:* ${current_price:.2f}\n"
+                    f"*Time:* {alert_time}\n"
+                    f"\n"
+                    f"\U0001f4a1 *Why this decision?*\n"
+                    f"- RSI is at {current_rsi:.1f} (Indicates {rsi_label}).\n"
+                    f"- Price entered {ob_type} Order Block between ${ob_low:.2f} and ${ob_high:.2f}.\n"
+                    f"\n"
+                    f"\U0001f4bc *Virtual Portfolio:*{pnl_section}\n"
+                    f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
+                    f"- PAXG Balance: {portfolio['paxg_balance']:.6f} PAXG"
                 )
                 send_telegram_alert(alert_msg)
             else:
-                print(f"Duplicate {decision} signal — Telegram alert suppressed.")
+                print(f"Duplicate {decision} signal \u2014 Telegram alert suppressed.")
 
         # 5. Print summary output
         print("=== Quant Analyzer Summary ===")
