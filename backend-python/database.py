@@ -54,6 +54,21 @@ class TradingSignal(Base):
     bearish_ob_high = Column(Float, nullable=True)
     decision = Column(String, nullable=False)
 
+class PortfolioState(Base):
+    __tablename__ = "portfolio_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, nullable=False)
+    symbol = Column(String, nullable=False)
+    decision = Column(String, nullable=False)       # BUY or SELL that triggered this snapshot
+    current_price = Column(Float, nullable=False)
+    usdt_balance = Column(Float, nullable=False)
+    paxg_balance = Column(Float, nullable=False)
+    last_buy_price = Column(Float, nullable=True)
+    pnl_pct = Column(Float, nullable=True)          # % profit/loss for this trade (SELL only)
+    pnl_usd = Column(Float, nullable=True)          # $ profit/loss for this trade (SELL only)
+    total_portfolio_value = Column(Float, nullable=False)  # USDT + PAXG value at current_price
+
 def init_db():
     """Create tables if they don't exist"""
     Base.metadata.create_all(bind=engine)

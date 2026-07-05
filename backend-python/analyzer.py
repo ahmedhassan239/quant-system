@@ -1,33 +1,33 @@
 import os
-import json
 import requests
 import pandas as pd
 from datetime import datetime
-from database import SessionLocal, MarketData, TradingSignal, engine, init_db
+from database import SessionLocal, MarketData, TradingSignal, PortfolioState, engine, init_db
 
-PORTFOLIO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'portfolio.json')
-DEFAULT_PORTFOLIO = {
-    'usdt_balance': 1000.0,
-    'paxg_balance': 0.0,
-    'last_buy_price': None
-}
+DEFAULT_USDT_BALANCE = 1000.0
 
 
-def load_portfolio():
-    """Load virtual portfolio state from JSON file."""
-    try:
-        with open(PORTFOLIO_FILE, 'r') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        # First run — initialize with defaults
-        save_portfolio(DEFAULT_PORTFOLIO)
-        return DEFAULT_PORTFOLIO.copy()
+def load_portfolio(session, symbol):
+    """
+    Load the latest portfolio state from the database.
+    Returns a dict with usdt_balance, paxg_balance, last_buy_price.
+    """
+    last_state = session.query(PortfolioState).filter(
+        PortfolioState.symbol == symbol
+    ).order_by(PortfolioState.id.desc()).first()
 
-
-def save_portfolio(portfolio):
-    """Persist virtual portfolio state to JSON file."""
-    with open(PORTFOLIO_FILE, 'w') as f:
-        json.dump(portfolio, f, indent=2)
+    if last_state:
+        return {
+            'usdt_balance': last_state.usdt_balance,
+            'paxg_balance': last_state.paxg_balance,
+            'last_buy_price': last_state.last_buy_price
+        }
+    # First run — return defaults
+    return {
+        'usdt_balance': DEFAULT_USDT_BALANCE,
+        'paxg_balance': 0.0,
+        'last_buy_price': None
+    }
 
 
 def send_telegram_alert(message):
@@ -189,7 +189,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
 
             if decision != last_decision:
                 # --- Update Virtual Portfolio ---
-                portfolio = load_portfolio()
+                portfolio = load_portfolio(session, symbol)
+                pnl_pct_val = None
+                pnl_usd_val = None
                 pnl_section = ""
 
                 if decision == 'BUY' and portfolio['usdt_balance'] > 0:
@@ -198,21 +200,38 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                     portfolio['paxg_balance'] = round(paxg_bought, 6)
                     portfolio['last_buy_price'] = float(current_price)
                     portfolio['usdt_balance'] = 0.0
-                    save_portfolio(portfolio)
 
                 elif decision == 'SELL' and portfolio['paxg_balance'] > 0:
                     # Convert all PAXG back to USDT
                     sell_value = portfolio['paxg_balance'] * current_price
                     buy_price = portfolio.get('last_buy_price')
                     if buy_price and buy_price > 0:
-                        pnl_pct = ((current_price - buy_price) / buy_price) * 100
-                        pnl_usd = sell_value - (portfolio['paxg_balance'] * buy_price)
-                        sign = "+" if pnl_pct >= 0 else ""
-                        pnl_section = f"\n- PnL (This Trade): {sign}{pnl_pct:.2f}% ({sign}${pnl_usd:.2f})"
+                        pnl_pct_val = ((current_price - buy_price) / buy_price) * 100
+                        pnl_usd_val = sell_value - (portfolio['paxg_balance'] * buy_price)
+                        sign = "+" if pnl_pct_val >= 0 else ""
+                        pnl_section = f"\n- PnL (This Trade): {sign}{pnl_pct_val:.2f}% ({sign}${pnl_usd_val:.2f})"
                     portfolio['usdt_balance'] = round(sell_value, 2)
                     portfolio['paxg_balance'] = 0.0
                     portfolio['last_buy_price'] = None
-                    save_portfolio(portfolio)
+
+                # Calculate total portfolio value at current price
+                total_value = portfolio['usdt_balance'] + (portfolio['paxg_balance'] * current_price)
+
+                # Save portfolio snapshot to database
+                portfolio_record = PortfolioState(
+                    timestamp=datetime.now(),
+                    symbol=symbol,
+                    decision=decision,
+                    current_price=float(current_price),
+                    usdt_balance=portfolio['usdt_balance'],
+                    paxg_balance=portfolio['paxg_balance'],
+                    last_buy_price=portfolio['last_buy_price'],
+                    pnl_pct=pnl_pct_val,
+                    pnl_usd=pnl_usd_val,
+                    total_portfolio_value=round(total_value, 2)
+                )
+                session.add(portfolio_record)
+                session.commit()
 
                 # --- Build Reason Section ---
                 if decision == 'BUY':
@@ -241,7 +260,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                     f"\n"
                     f"\U0001f4bc *Virtual Portfolio:*{pnl_section}\n"
                     f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
-                    f"- PAXG Balance: {portfolio['paxg_balance']:.6f} PAXG"
+                    f"- PAXG Balance: {portfolio['paxg_balance']:.6f} PAXG\n"
+                    f"- Total Value: ${total_value:.2f}"
                 )
                 send_telegram_alert(alert_msg)
             else:
