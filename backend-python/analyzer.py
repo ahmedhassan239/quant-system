@@ -150,18 +150,31 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
         session.add(signal)
         session.commit()
 
-        # 4b. Send Telegram alert for actionable signals only
+        # 4b. Send Telegram alert only if signal direction has changed
         if decision in ('BUY', 'SELL'):
-            alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
-            alert_msg = (
-                f"\U0001f6a8 *QUANT ALERT* \U0001f6a8\n"
-                f"Action: {decision}\n"
-                f"Symbol: {symbol}\n"
-                f"Price: ${current_price:.2f}\n"
-                f"RSI: {current_rsi:.1f}\n"
-                f"Time: {alert_time}"
-            )
-            send_telegram_alert(alert_msg)
+            # Query the last non-WAIT decision from the database
+            last_signal = session.query(TradingSignal).filter(
+                TradingSignal.symbol == symbol,
+                TradingSignal.timeframe == timeframe,
+                TradingSignal.decision.in_(['BUY', 'SELL']),
+                TradingSignal.id != signal.id  # Exclude the one we just inserted
+            ).order_by(TradingSignal.id.desc()).first()
+
+            last_decision = last_signal.decision if last_signal else None
+
+            if decision != last_decision:
+                alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
+                alert_msg = (
+                    f"\U0001f6a8 *QUANT ALERT* \U0001f6a8\n"
+                    f"Action: {decision}\n"
+                    f"Symbol: {symbol}\n"
+                    f"Price: ${current_price:.2f}\n"
+                    f"RSI: {current_rsi:.1f}\n"
+                    f"Time: {alert_time}"
+                )
+                send_telegram_alert(alert_msg)
+            else:
+                print(f"Duplicate {decision} signal — Telegram alert suppressed.")
 
         # 5. Print summary output
         print("=== Quant Analyzer Summary ===")
