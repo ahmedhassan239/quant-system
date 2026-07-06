@@ -1,5 +1,6 @@
 import os
 import requests
+import traceback
 import pandas as pd
 from datetime import datetime
 from database import SessionLocal, MarketData, TradingSignal, PortfolioState, engine, init_db
@@ -53,6 +54,7 @@ def send_telegram_alert(message):
             print(f"Telegram API error: {response.status_code} - {response.text}")
     except requests.exceptions.RequestException as e:
         print(f"Failed to send Telegram alert: {e}")
+        traceback.print_exc()
 
 def calculate_rsi(df, period=14):
     """
@@ -236,6 +238,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                 except Exception as e:
                     session.rollback()
                     print(f"Warning: Failed to save portfolio state to DB: {e}")
+                    traceback.print_exc()
 
                 # --- Build Reason Section ---
                 if decision == 'BUY':
@@ -293,6 +296,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
     except Exception as e:
         session.rollback()
         print(f"Error during analysis: {e}")
+        traceback.print_exc()
     finally:
         session.close()
         print("--- Analyzer Completed ---")
