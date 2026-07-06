@@ -196,18 +196,18 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
 
                 if decision == 'BUY' and portfolio['usdt_balance'] > 0:
                     # Convert all USDT to PAXG
-                    paxg_bought = portfolio['usdt_balance'] / current_price
+                    paxg_bought = float(portfolio['usdt_balance']) / float(current_price)
                     portfolio['paxg_balance'] = round(paxg_bought, 6)
                     portfolio['last_buy_price'] = float(current_price)
                     portfolio['usdt_balance'] = 0.0
 
                 elif decision == 'SELL' and portfolio['paxg_balance'] > 0:
                     # Convert all PAXG back to USDT
-                    sell_value = portfolio['paxg_balance'] * current_price
+                    sell_value = float(portfolio['paxg_balance']) * float(current_price)
                     buy_price = portfolio.get('last_buy_price')
-                    if buy_price and buy_price > 0:
-                        pnl_pct_val = ((current_price - buy_price) / buy_price) * 100
-                        pnl_usd_val = sell_value - (portfolio['paxg_balance'] * buy_price)
+                    if buy_price and float(buy_price) > 0:
+                        pnl_pct_val = float(((float(current_price) - float(buy_price)) / float(buy_price)) * 100)
+                        pnl_usd_val = float(sell_value - (float(portfolio['paxg_balance']) * float(buy_price)))
                         sign = "+" if pnl_pct_val >= 0 else ""
                         pnl_section = f"\n- PnL (This Trade): {sign}{pnl_pct_val:.2f}% ({sign}${pnl_usd_val:.2f})"
                     portfolio['usdt_balance'] = round(sell_value, 2)
@@ -215,7 +215,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                     portfolio['last_buy_price'] = None
 
                 # Calculate total portfolio value at current price
-                total_value = portfolio['usdt_balance'] + (portfolio['paxg_balance'] * current_price)
+                total_value = float(portfolio['usdt_balance']) + (float(portfolio['paxg_balance']) * float(current_price))
 
                 # Save portfolio snapshot to database
                 portfolio_record = PortfolioState(
@@ -223,15 +223,19 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                     symbol=symbol,
                     decision=decision,
                     current_price=float(current_price),
-                    usdt_balance=portfolio['usdt_balance'],
-                    paxg_balance=portfolio['paxg_balance'],
-                    last_buy_price=portfolio['last_buy_price'],
-                    pnl_pct=pnl_pct_val,
-                    pnl_usd=pnl_usd_val,
-                    total_portfolio_value=round(total_value, 2)
+                    usdt_balance=float(portfolio['usdt_balance']),
+                    paxg_balance=float(portfolio['paxg_balance']),
+                    last_buy_price=float(portfolio['last_buy_price']) if portfolio['last_buy_price'] is not None else None,
+                    pnl_pct=float(pnl_pct_val) if pnl_pct_val is not None else None,
+                    pnl_usd=float(pnl_usd_val) if pnl_usd_val is not None else None,
+                    total_portfolio_value=float(round(total_value, 2))
                 )
-                session.add(portfolio_record)
-                session.commit()
+                try:
+                    session.add(portfolio_record)
+                    session.commit()
+                except Exception as e:
+                    session.rollback()
+                    print(f"Warning: Failed to save portfolio state to DB: {e}")
 
                 # --- Build Reason Section ---
                 if decision == 'BUY':
