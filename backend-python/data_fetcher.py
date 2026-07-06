@@ -15,7 +15,7 @@ def fetch_binance_klines(symbol='PAXGUSDT', interval='15m', limit=100):
         'limit': limit
     }
     
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
     data = response.json()
     
@@ -64,10 +64,10 @@ def save_to_db(df):
         # Execute the statement
         session.execute(on_conflict_stmt)
         session.commit()
-        print(f"Successfully processed {len(records)} records.")
+        print(f"Successfully processed {len(records)} records.", flush=True)
     except Exception as e:
         session.rollback()
-        print(f"Error saving to database: {e}")
+        print(f"Error saving to database: {e}", flush=True)
     finally:
         session.close()
 
@@ -75,16 +75,16 @@ def run_fetcher():
     """
     Core execution logic for the data fetcher.
     """
-    print("--- Fetcher Started ---")
+    print("--- Fetcher Started ---", flush=True)
     # Ensure tables exist before trying to save
     init_db()
     
-    print("Fetching data from Binance...")
+    print("Fetching data from Binance...", flush=True)
     df = fetch_binance_klines(symbol='PAXGUSDT', interval='15m', limit=100)
     
-    print("Saving data to database...")
+    print("Saving data to database...", flush=True)
     save_to_db(df)
-    print("--- Fetcher Completed ---")
+    print("--- Fetcher Completed ---", flush=True)
 
 if __name__ == "__main__":
     run_fetcher()

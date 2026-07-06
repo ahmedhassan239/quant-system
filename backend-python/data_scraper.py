@@ -19,7 +19,7 @@ def fetch_5_years_data():
     url = "https://api.binance.com/api/v3/klines"
     
     for symbol in symbols:
-        print(f"\n--- Starting data extraction for {symbol} ---")
+        print(f"\n--- Starting data extraction for {symbol} ---", flush=True)
         
         all_data = []
         current_start = global_start_time
@@ -35,14 +35,14 @@ def fetch_5_years_data():
                     'endTime': global_end_time
                 }
                 
-                response = requests.get(url, params=params)
+                response = requests.get(url, params=params, timeout=10)
                 
                 # If the symbol is invalid or another HTTP error occurs, raise it here
                 response.raise_for_status()
                 data = response.json()
                 
                 if not data:
-                    print(f"No more data returned for {symbol}. Finishing pagination.")
+                    print(f"No more data returned for {symbol}. Finishing pagination.", flush=True)
                     break
                     
                 all_data.extend(data)
@@ -55,17 +55,17 @@ def fetch_5_years_data():
                 time.sleep(0.5)
                 
         except Exception as e:
-            print(f"WARNING: Skipping {symbol} due to error (e.g. newly listed or unavailable): {e}")
+            print(f"WARNING: Skipping {symbol} due to error (e.g. newly listed or unavailable): {e}", flush=True)
             # Ensure we pause before moving to the next symbol even if it failed
-            print("Pausing for 5 seconds before moving to the next symbol to respect rate limits...")
+            print("Pausing for 5 seconds before moving to the next symbol to respect rate limits...", flush=True)
             time.sleep(5)
             continue
             
         if not all_data:
-            print(f"Failed to extract any data for {symbol}. Skipping.")
+            print(f"Failed to extract any data for {symbol}. Skipping.", flush=True)
             continue
             
-        print(f"Finished extracting {len(all_data)} candles for {symbol}. Processing DataFrame...")
+        print(f"Finished extracting {len(all_data)} candles for {symbol}. Processing DataFrame...", flush=True)
         
         # Load into Pandas DataFrame
         df = pd.DataFrame(all_data, columns=[
@@ -89,13 +89,13 @@ def fetch_5_years_data():
         os.makedirs('data/raw', exist_ok=True)
         csv_filename = f"data/raw/{symbol}_5years_15m.csv"
         df.to_csv(csv_filename, index=False)
-        print(f"Saved {csv_filename} successfully.")
+        print(f"Saved {csv_filename} successfully.", flush=True)
         
         # STRICT RATE LIMITING: Pause between different symbols to ensure IP safety
-        print("Pausing for 5 seconds before moving to the next symbol to respect rate limits...")
+        print("Pausing for 5 seconds before moving to the next symbol to respect rate limits...", flush=True)
         time.sleep(5)
         
-    print("\n--- All historical data extraction completed! ---")
+    print("\n--- All historical data extraction completed! ---", flush=True)
 
 if __name__ == "__main__":
     fetch_5_years_data()

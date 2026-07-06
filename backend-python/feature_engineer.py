@@ -4,25 +4,25 @@ import pandas as pd
 import ta
 
 def engineer_features():
-    print("--- Starting Feature Engineering Pipeline ---")
+    print("--- Starting Feature Engineering Pipeline ---", flush=True)
     
     # Use glob to find all files ending with _5years_15m.csv in the data/raw directory
     file_pattern = "data/raw/*_5years_15m.csv"
     csv_files = glob.glob(file_pattern)
     
     if not csv_files:
-        print(f"No files found matching the pattern '{file_pattern}'.")
-        print("Please ensure the data scraper has finished running and the files exist.")
+        print(f"No files found matching the pattern '{file_pattern}'.", flush=True)
+        print("Please ensure the data scraper has finished running and the files exist.", flush=True)
         return
         
-    print(f"Found {len(csv_files)} raw data files to process.\n")
+    print(f"Found {len(csv_files)} raw data files to process.\n", flush=True)
     
     for file in csv_files:
         # Extract symbol name (e.g., BTCUSDT from BTCUSDT_5years_15m.csv)
         filename_base = os.path.basename(file)
         symbol = filename_base.split('_')[0]
         
-        print(f"Processing {symbol}...")
+        print(f"Processing {symbol}...", flush=True)
         
         # Load the CSV into a DataFrame
         df = pd.read_csv(file)
@@ -78,11 +78,11 @@ def engineer_features():
         output_filename = f"data/processed/{symbol}_features.csv"
         df.to_csv(output_filename, index=False)
         
-        print(f"  -> Generated {features_generated} features.")
-        print(f"  -> Dropped {dropped_rows} rows with NaN values.")
-        print(f"  -> Saved {output_filename} successfully ({final_rows} rows remaining).\n")
+        print(f"  -> Generated {features_generated} features.", flush=True)
+        print(f"  -> Dropped {dropped_rows} rows with NaN values.", flush=True)
+        print(f"  -> Saved {output_filename} successfully ({final_rows} rows remaining).\n", flush=True)
 
-    print("--- Feature Engineering Pipeline Completed Successfully! ---")
+    print("--- Feature Engineering Pipeline Completed Successfully! ---", flush=True)
 
 if __name__ == "__main__":
     engineer_features()

@@ -90,31 +90,31 @@ def run_phase_backtest(df_phase, model, feature_cols, phase_name,
 
 
 def run_stress_test():
-    print("=" * 60)
-    print("      MULTI-PHASE STRESS TEST & OUT-OF-SAMPLE VALIDATION")
-    print("=" * 60)
+    print("=" * 60, flush=True)
+    print("      MULTI-PHASE STRESS TEST & OUT-OF-SAMPLE VALIDATION", flush=True)
+    print("=" * 60, flush=True)
 
     # 1. Load the trained model
     model_path = 'models/quant_rf_model.pkl'
     try:
         model = joblib.load(model_path)
-        print(f"Loaded model from {model_path}")
+        print(f"Loaded model from {model_path}", flush=True)
     except FileNotFoundError:
-        print(f"Model file {model_path} not found. Run model_trainer.py first.")
+        print(f"Model file {model_path} not found. Run model_trainer.py first.", flush=True)
         return
 
     # 2. Load the dataset
     data_path = 'data/processed/PAXGUSDT_features.csv'
     try:
         df = pd.read_csv(data_path)
-        print(f"Loaded dataset from {data_path} with {len(df):,} rows.")
+        print(f"Loaded dataset from {data_path} with {len(df):,} rows.", flush=True)
     except FileNotFoundError:
-        print(f"Dataset {data_path} not found. Ensure feature engineering is complete.")
+        print(f"Dataset {data_path} not found. Ensure feature engineering is complete.", flush=True)
         return
 
     # 3. Parse the timestamp column
     df['timestamp'] = pd.to_datetime(df['timestamp'])
-    print(f"Date range: {df['timestamp'].min()} → {df['timestamp'].max()}")
+    print(f"Date range: {df['timestamp'].min()} → {df['timestamp'].max()}", flush=True)
 
     # 4. Define Features (X) matrix exactly as trained
     feature_cols = [
@@ -167,40 +167,40 @@ def run_stress_test():
         results.append(result)
 
     # 7. Print comprehensive report
-    print("\n")
-    print("=" * 60)
-    print("          === PHASE STRESS TEST REPORT ===")
-    print("=" * 60)
+    print("\n", flush=True)
+    print("=" * 60, flush=True)
+    print("          === PHASE STRESS TEST REPORT ===", flush=True)
+    print("=" * 60, flush=True)
 
     for r in results:
-        print(f"\n  {r['phase_name']}")
-        print(f"  {'─' * 50}")
-        print(f"  Candles Tested:  {r['rows']:,}")
-        print(f"  Initial Capital: ${r['initial_capital']:,.2f}")
-        print(f"  Final Capital:   ${r['final_capital']:,.2f}")
-        print(f"  Total ROI:       {r['roi']:,.2f}%")
-        print(f"  Total Trades:    {r['trades']}")
-        print(f"  Winning Trades:  {r['winning_trades']}")
-        print(f"  Losing Trades:   {r['losing_trades']}")
-        print(f"  Win Rate:        {r['win_rate']:,.2f}%")
+        print(f"\n  {r['phase_name']}", flush=True)
+        print(f"  {'─' * 50}", flush=True)
+        print(f"  Candles Tested:  {r['rows']:,}", flush=True)
+        print(f"  Initial Capital: ${r['initial_capital']:,.2f}", flush=True)
+        print(f"  Final Capital:   ${r['final_capital']:,.2f}", flush=True)
+        print(f"  Total ROI:       {r['roi']:,.2f}%", flush=True)
+        print(f"  Total Trades:    {r['trades']}", flush=True)
+        print(f"  Winning Trades:  {r['winning_trades']}", flush=True)
+        print(f"  Losing Trades:   {r['losing_trades']}", flush=True)
+        print(f"  Win Rate:        {r['win_rate']:,.2f}%", flush=True)
 
     # 8. Summary comparison
-    print(f"\n{'=' * 60}")
-    print("  CROSS-PHASE COMPARISON")
-    print(f"{'=' * 60}")
-    print(f"  {'Phase':<50} {'ROI':>8}  {'Trades':>7}  {'Win%':>6}")
-    print(f"  {'─' * 50} {'─' * 8}  {'─' * 7}  {'─' * 6}")
+    print(f"\n{'=' * 60}", flush=True)
+    print("  CROSS-PHASE COMPARISON", flush=True)
+    print(f"{'=' * 60}", flush=True)
+    print(f"  {'Phase':<50} {'ROI':>8}  {'Trades':>7}  {'Win%':>6}", flush=True)
+    print(f"  {'─' * 50} {'─' * 8}  {'─' * 7}  {'─' * 6}", flush=True)
     for r in results:
-        print(f"  {r['phase_name']:<50} {r['roi']:>7.2f}%  {r['trades']:>7}  {r['win_rate']:>5.1f}%")
+        print(f"  {r['phase_name']:<50} {r['roi']:>7.2f}%  {r['trades']:>7}  {r['win_rate']:>5.1f}%", flush=True)
 
     avg_roi = np.mean([r['roi'] for r in results]) if results else 0.0
     total_trades = sum(r['trades'] for r in results)
     total_wins = sum(r['winning_trades'] for r in results)
     overall_win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0.0
 
-    print(f"  {'─' * 50} {'─' * 8}  {'─' * 7}  {'─' * 6}")
-    print(f"  {'AVERAGE / TOTAL':<50} {avg_roi:>7.2f}%  {total_trades:>7}  {overall_win_rate:>5.1f}%")
-    print(f"{'=' * 60}\n")
+    print(f"  {'─' * 50} {'─' * 8}  {'─' * 7}  {'─' * 6}", flush=True)
+    print(f"  {'AVERAGE / TOTAL':<50} {avg_roi:>7.2f}%  {total_trades:>7}  {overall_win_rate:>5.1f}%", flush=True)
+    print(f"{'=' * 60}\n", flush=True)
 
     # 9. Overfitting verdict
     if len(results) >= 2:
@@ -208,10 +208,10 @@ def run_stress_test():
         if oos_results:
             oos_roi = oos_results[0]['roi']
             if oos_roi > 0:
-                print("  ✅ VERDICT: Out-of-Sample ROI is POSITIVE — low overfitting risk.")
+                print("  ✅ VERDICT: Out-of-Sample ROI is POSITIVE — low overfitting risk.", flush=True)
             else:
-                print("  ⚠️  VERDICT: Out-of-Sample ROI is NEGATIVE — potential overfitting detected.")
-    print()
+                print("  ⚠️  VERDICT: Out-of-Sample ROI is NEGATIVE — potential overfitting detected.", flush=True)
+    print(flush=True)
 
 
 if __name__ == "__main__":

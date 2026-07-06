@@ -168,6 +168,7 @@ def create_exchange():
         'apiKey': api_key,
         'secret': secret,
         'enableRateLimit': True,
+        'timeout': 10000,
         'options': {'defaultType': 'spot'},
         'urls': {
             'api': {

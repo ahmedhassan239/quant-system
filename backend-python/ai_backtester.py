@@ -3,24 +3,24 @@ import joblib
 import numpy as np
 
 def run_ai_backtest():
-    print("--- Starting AI Trading Backtest ---")
+    print("--- Starting AI Trading Backtest ---", flush=True)
     
     # 1. Load the trained model
     model_path = 'models/quant_rf_model.pkl'
     try:
         model = joblib.load(model_path)
-        print(f"Loaded model from {model_path}")
+        print(f"Loaded model from {model_path}", flush=True)
     except FileNotFoundError:
-        print(f"Model file {model_path} not found. Run model_trainer.py first.")
+        print(f"Model file {model_path} not found. Run model_trainer.py first.", flush=True)
         return
         
     # 2. Load the dataset
     data_path = 'data/processed/PAXGUSDT_features.csv'
     try:
         df = pd.read_csv(data_path)
-        print(f"Loaded dataset from {data_path} with {len(df):,} rows.")
+        print(f"Loaded dataset from {data_path} with {len(df):,} rows.", flush=True)
     except FileNotFoundError:
-        print(f"Dataset {data_path} not found. Ensure feature engineering is complete.")
+        print(f"Dataset {data_path} not found. Ensure feature engineering is complete.", flush=True)
         return
         
     # 3. Define Features (X) matrix exactly as trained
@@ -33,7 +33,7 @@ def run_ai_backtest():
     X = df[feature_cols]
     
     # 4. Generate AI Confidence Scores for the entire dataset
-    print("Generating AI trading signals with confidence filtering...")
+    print("Generating AI trading signals with confidence filtering...", flush=True)
     buy_confidence = model.predict_proba(X)[:, 1]
     df['Buy_Confidence'] = buy_confidence
     
@@ -56,7 +56,7 @@ def run_ai_backtest():
     trailing_stop_pct = 0.015  # 1.5% Trailing distance
     stop_loss_pct = 0.01       # 1% Stop Loss
     
-    print("Simulating trading execution through historical data...")
+    print("Simulating trading execution through historical data...", flush=True)
     
     # 6. Simulation Loop using fast itertuples
     for row in df.itertuples(index=False):
@@ -116,18 +116,18 @@ def run_ai_backtest():
     roi = ((capital - initial_capital) / initial_capital) * 100
     win_rate = (winning_trades / trades * 100) if trades > 0 else 0.0
     
-    print("\n" + "="*40)
-    print("           AI BACKTEST REPORT")
-    print("="*40)
-    print(f"Asset Tested:    PAXGUSDT")
-    print(f"Initial Capital: ${initial_capital:,.2f}")
-    print(f"Final Capital:   ${capital:,.2f}")
-    print(f"Total ROI:       {roi:,.2f}%")
-    print(f"Total Trades:    {trades}")
-    print(f"Winning Trades:  {winning_trades}")
-    print(f"Losing Trades:   {losing_trades}")
-    print(f"Win Rate:        {win_rate:,.2f}%")
-    print("="*40 + "\n")
+    print("\n" + "="*40, flush=True)
+    print("           AI BACKTEST REPORT", flush=True)
+    print("="*40, flush=True)
+    print(f"Asset Tested:    PAXGUSDT", flush=True)
+    print(f"Initial Capital: ${initial_capital:,.2f}", flush=True)
+    print(f"Final Capital:   ${capital:,.2f}", flush=True)
+    print(f"Total ROI:       {roi:,.2f}%", flush=True)
+    print(f"Total Trades:    {trades}", flush=True)
+    print(f"Winning Trades:  {winning_trades}", flush=True)
+    print(f"Losing Trades:   {losing_trades}", flush=True)
+    print(f"Win Rate:        {win_rate:,.2f}%", flush=True)
+    print("="*40 + "\n", flush=True)
 
 if __name__ == "__main__":
     run_ai_backtest()

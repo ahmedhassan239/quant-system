@@ -58,11 +58,11 @@ def detect_order_blocks(df, lookback=15):
     return bullish_ob, bearish_ob
 
 def run_backtest():
-    print("Fetching historical data from Binance...")
+    print("Fetching historical data from Binance...", flush=True)
     url = "https://api.binance.com/api/v3/klines"
     params = {'symbol': 'PAXGUSDT', 'interval': '15m', 'limit': 1000}
     
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
     data = response.json()
     
@@ -80,7 +80,7 @@ def run_backtest():
     for col in ['open', 'high', 'low', 'close', 'volume']:
         df[col] = df[col].astype(float)
         
-    print(f"Loaded {len(df)} candles. Starting backtest simulation...")
+    print(f"Loaded {len(df)} candles. Starting backtest simulation...", flush=True)
     
     # Initial Portfolio Setup
     initial_balance = 10000.0
@@ -147,17 +147,17 @@ def run_backtest():
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
 
     # Formatted Backtest Report
-    print("\n" + "="*40)
-    print("           BACKTEST REPORT")
-    print("="*40)
-    print(f"Initial Capital: ${initial_balance:,.2f}")
-    print(f"Final Capital:   ${balance:,.2f}")
-    print(f"Total ROI:       {roi:,.2f}%")
-    print(f"Total Trades:    {total_trades}")
-    print(f"Winning Trades:  {winning_trades}")
-    print(f"Losing Trades:   {losing_trades}")
-    print(f"Win Rate:        {win_rate:,.2f}%")
-    print("="*40)
+    print("\n" + "="*40, flush=True)
+    print("           BACKTEST REPORT", flush=True)
+    print("="*40, flush=True)
+    print(f"Initial Capital: ${initial_balance:,.2f}", flush=True)
+    print(f"Final Capital:   ${balance:,.2f}", flush=True)
+    print(f"Total ROI:       {roi:,.2f}%", flush=True)
+    print(f"Total Trades:    {total_trades}", flush=True)
+    print(f"Winning Trades:  {winning_trades}", flush=True)
+    print(f"Losing Trades:   {losing_trades}", flush=True)
+    print(f"Win Rate:        {win_rate:,.2f}%", flush=True)
+    print("="*40, flush=True)
 
 if __name__ == "__main__":
     run_backtest()

@@ -34,7 +34,7 @@ rationale_data = {
 }
 
 try:
-    print("⏳ Connecting to PostgreSQL Database...")
+    print("⏳ Connecting to PostgreSQL Database...", flush=True)
     # الاتصال بالقاعدة
     conn = psycopg2.connect(**DB_CONFIG)
     cursor = conn.cursor()
@@ -46,7 +46,7 @@ try:
         RETURNING id;
     """)
     account_id = cursor.fetchone()[0]
-    print(f"✅ Dummy Account created with ID: {account_id}")
+    print(f"✅ Dummy Account created with ID: {account_id}", flush=True)
 
     # إدخال قرار البوت في جدول الـ Logs
     insert_query = """
@@ -65,13 +65,13 @@ try:
     ))
     
     conn.commit()
-    print("🚀 SUCCESS: The Quant Engine successfully logged a trade rationale (JSONB) into the database!")
+    print("🚀 SUCCESS: The Quant Engine successfully logged a trade rationale (JSONB) into the database!", flush=True)
 
 except Exception as e:
-    print(f"❌ Error: {e}")
+    print(f"❌ Error: {e}", flush=True)
 
 finally:
     if 'conn' in locals():
         cursor.close()
         conn.close()
-        print("🔒 Database connection closed.")
+        print("🔒 Database connection closed.", flush=True)

@@ -40,7 +40,7 @@ def send_telegram_alert(message):
     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
 
     if not token or not chat_id:
-        print("Telegram credentials not configured. Skipping alert.")
+        print("Telegram credentials not configured. Skipping alert.", flush=True)
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -49,11 +49,11 @@ def send_telegram_alert(message):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("Telegram alert sent successfully.")
+            print("Telegram alert sent successfully.", flush=True)
         else:
-            print(f"Telegram API error: {response.status_code} - {response.text}")
+            print(f"Telegram API error: {response.status_code} - {response.text}", flush=True)
     except requests.exceptions.RequestException as e:
-        print(f"Failed to send Telegram alert: {e}")
+        print(f"Failed to send Telegram alert: {e}", flush=True)
         traceback.print_exc()
 
 def calculate_rsi(df, period=14):
@@ -122,7 +122,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
     """
     Query market data, calculate RSI, detect Order Blocks, and save trading decisions.
     """
-    print("--- Analyzer Started ---")
+    print("--- Analyzer Started ---", flush=True)
     # Ensure tables exist (specifically for the new TradingSignal table)
     init_db()
     
@@ -138,7 +138,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
         df = pd.read_sql(query.statement, engine)
         
         if df.empty:
-            print("No data found in the database.")
+            print("No data found in the database.", flush=True)
             return
 
         # 1. Calculate 14-period RSI
@@ -237,7 +237,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                     session.commit()
                 except Exception as e:
                     session.rollback()
-                    print(f"Warning: Failed to save portfolio state to DB: {e}")
+                    print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
                     traceback.print_exc()
 
                 # --- Build Reason Section ---
@@ -272,34 +272,34 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                 )
                 send_telegram_alert(alert_msg)
             else:
-                print(f"Duplicate {decision} signal \u2014 Telegram alert suppressed.")
+                print(f"Duplicate {decision} signal \u2014 Telegram alert suppressed.", flush=True)
 
         # 5. Print summary output
-        print("=== Quant Analyzer Summary ===")
-        print(f"Symbol: {symbol} | Timeframe: {timeframe}")
-        print(f"Current Price: {current_price:.2f}")
-        print(f"Current RSI (14): {current_rsi:.2f}")
+        print("=== Quant Analyzer Summary ===", flush=True)
+        print(f"Symbol: {symbol} | Timeframe: {timeframe}", flush=True)
+        print(f"Current Price: {current_price:.2f}", flush=True)
+        print(f"Current RSI (14): {current_rsi:.2f}", flush=True)
         
-        print("\n--- Detected Order Blocks (15-period lookback) ---")
+        print("\n--- Detected Order Blocks (15-period lookback) ---", flush=True)
         if bullish_ob:
-            print(f"Bullish OB: {bullish_ob['low']:.2f} - {bullish_ob['high']:.2f} (from {bullish_ob['timestamp']})")
+            print(f"Bullish OB: {bullish_ob['low']:.2f} - {bullish_ob['high']:.2f} (from {bullish_ob['timestamp']})", flush=True)
         else:
-            print("Bullish OB: Not found")
+            print("Bullish OB: Not found", flush=True)
             
         if bearish_ob:
-            print(f"Bearish OB: {bearish_ob['low']:.2f} - {bearish_ob['high']:.2f} (from {bearish_ob['timestamp']})")
+            print(f"Bearish OB: {bearish_ob['low']:.2f} - {bearish_ob['high']:.2f} (from {bearish_ob['timestamp']})", flush=True)
         else:
-            print("Bearish OB: Not found")
+            print("Bearish OB: Not found", flush=True)
             
-        print(f"\nDecision {decision} saved to database successfully.")
+        print(f"\nDecision {decision} saved to database successfully.", flush=True)
 
     except Exception as e:
         session.rollback()
-        print(f"Error during analysis: {e}")
+        print(f"Error during analysis: {e}", flush=True)
         traceback.print_exc()
     finally:
         session.close()
-        print("--- Analyzer Completed ---")
+        print("--- Analyzer Completed ---", flush=True)
 
 if __name__ == "__main__":
     run_analyzer()

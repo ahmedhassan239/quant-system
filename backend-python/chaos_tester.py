@@ -153,26 +153,26 @@ def run_monte_carlo(trade_pnl_pcts, initial_capital=10000.0,
 
 
 def run_chaos_test():
-    print("=" * 60)
-    print("     CHAOS ENGINEERING & MONTE CARLO STRESS TEST")
-    print("=" * 60)
+    print("=" * 60, flush=True)
+    print("     CHAOS ENGINEERING & MONTE CARLO STRESS TEST", flush=True)
+    print("=" * 60, flush=True)
 
     # 1. Load the trained model
     model_path = 'models/quant_rf_model.pkl'
     try:
         model = joblib.load(model_path)
-        print(f"Loaded model from {model_path}")
+        print(f"Loaded model from {model_path}", flush=True)
     except FileNotFoundError:
-        print(f"Model file {model_path} not found. Run model_trainer.py first.")
+        print(f"Model file {model_path} not found. Run model_trainer.py first.", flush=True)
         return
 
     # 2. Load the dataset
     data_path = 'data/processed/PAXGUSDT_features.csv'
     try:
         df = pd.read_csv(data_path)
-        print(f"Loaded dataset from {data_path} with {len(df):,} rows.")
+        print(f"Loaded dataset from {data_path} with {len(df):,} rows.", flush=True)
     except FileNotFoundError:
-        print(f"Dataset {data_path} not found. Ensure feature engineering is complete.")
+        print(f"Dataset {data_path} not found. Ensure feature engineering is complete.", flush=True)
         return
 
     # 3. Parse timestamp and filter for Out-of-Sample period (Jan 2025+)
@@ -180,10 +180,10 @@ def run_chaos_test():
     df_oos = df[df['timestamp'] >= '2025-01-01'].reset_index(drop=True)
 
     if len(df_oos) == 0:
-        print("No data found for OOS period (2025+). Aborting.")
+        print("No data found for OOS period (2025+). Aborting.", flush=True)
         return
 
-    print(f"OOS period: {df_oos['timestamp'].min().date()} → "
+    print(f"OOS period: {df_oos['timestamp'].min().date(flush=True)} → "
           f"{df_oos['timestamp'].max().date()} ({len(df_oos):,} candles)")
 
     # 4. Define features
@@ -194,7 +194,7 @@ def run_chaos_test():
     ]
 
     # 5. Run base backtest with EXTREME slippage (0.4% per side = 0.8% round-trip)
-    print("\nRunning base OOS backtest with EXTREME slippage (0.4% per side)...")
+    print("\nRunning base OOS backtest with EXTREME slippage (0.4% per side)...", flush=True)
     base = run_base_backtest(
         df_oos=df_oos,
         model=model,
@@ -213,74 +213,74 @@ def run_chaos_test():
     )
 
     # 7. Print the comprehensive report
-    print("\n")
-    print("=" * 60)
-    print("     CHAOS ENGINEERING & MONTE CARLO REPORT")
-    print("=" * 60)
+    print("\n", flush=True)
+    print("=" * 60, flush=True)
+    print("     CHAOS ENGINEERING & MONTE CARLO REPORT", flush=True)
+    print("=" * 60, flush=True)
 
-    print("\n  ┌─────────────────────────────────────────────────────┐")
-    print("  │  SECTION 1: BASE RUN WITH EXTREME SLIPPAGE (0.8%)  │")
-    print("  └─────────────────────────────────────────────────────┘")
-    print(f"  Slippage Model:    0.4% Entry + 0.4% Exit (0.8% round-trip)")
-    print(f"  OOS Period:        {df_oos['timestamp'].min().date()} → "
+    print("\n  ┌─────────────────────────────────────────────────────┐", flush=True)
+    print("  │  SECTION 1: BASE RUN WITH EXTREME SLIPPAGE (0.8%)  │", flush=True)
+    print("  └─────────────────────────────────────────────────────┘", flush=True)
+    print(f"  Slippage Model:    0.4% Entry + 0.4% Exit (0.8% round-trip)", flush=True)
+    print(f"  OOS Period:        {df_oos['timestamp'].min().date(flush=True)} → "
           f"{df_oos['timestamp'].max().date()}")
-    print(f"  Initial Capital:   ${base['initial_capital']:,.2f}")
-    print(f"  Final Capital:     ${base['final_capital']:,.2f}")
-    print(f"  Total ROI:         {base['roi']:,.2f}%")
-    print(f"  Total Trades:      {base['trades']}")
-    print(f"  Winning Trades:    {base['winning_trades']}")
-    print(f"  Losing Trades:     {base['losing_trades']}")
-    print(f"  Win Rate:          {base['win_rate']:,.2f}%")
+    print(f"  Initial Capital:   ${base['initial_capital']:,.2f}", flush=True)
+    print(f"  Final Capital:     ${base['final_capital']:,.2f}", flush=True)
+    print(f"  Total ROI:         {base['roi']:,.2f}%", flush=True)
+    print(f"  Total Trades:      {base['trades']}", flush=True)
+    print(f"  Winning Trades:    {base['winning_trades']}", flush=True)
+    print(f"  Losing Trades:     {base['losing_trades']}", flush=True)
+    print(f"  Win Rate:          {base['win_rate']:,.2f}%", flush=True)
 
     if base['trade_pnl_pcts']:
         avg_win = np.mean([p for p in base['trade_pnl_pcts'] if p > 0]) if any(
             p > 0 for p in base['trade_pnl_pcts']) else 0.0
         avg_loss = np.mean([p for p in base['trade_pnl_pcts'] if p <= 0]) if any(
             p <= 0 for p in base['trade_pnl_pcts']) else 0.0
-        print(f"  Avg Winning Trade: {avg_win:+.2f}%")
-        print(f"  Avg Losing Trade:  {avg_loss:+.2f}%")
+        print(f"  Avg Winning Trade: {avg_win:+.2f}%", flush=True)
+        print(f"  Avg Losing Trade:  {avg_loss:+.2f}%", flush=True)
 
-    print(f"\n  ┌─────────────────────────────────────────────────────┐")
-    print(f"  │  SECTION 2: MONTE CARLO SIMULATION (1,000 RUNS)    │")
-    print(f"  └─────────────────────────────────────────────────────┘")
-    print(f"  Simulations Run:   {mc['n_simulations']:,}")
-    print(f"  Trades per Sim:    {mc['n_trades']}")
-    print(f"  Median Capital:    ${mc['median_final']:,.2f}")
-    print(f"  Mean Capital:      ${mc['mean_final']:,.2f}")
-    print(f"  Best Case:         ${mc['best_case']:,.2f}")
-    print(f"  Worst Case:        ${mc['worst_case']:,.2f}")
-    print(f"  5th Percentile:    ${mc['p5_final']:,.2f}")
-    print(f"  95th Percentile:   ${mc['p95_final']:,.2f}")
+    print(f"\n  ┌─────────────────────────────────────────────────────┐", flush=True)
+    print(f"  │  SECTION 2: MONTE CARLO SIMULATION (1,000 RUNS)    │", flush=True)
+    print(f"  └─────────────────────────────────────────────────────┘", flush=True)
+    print(f"  Simulations Run:   {mc['n_simulations']:,}", flush=True)
+    print(f"  Trades per Sim:    {mc['n_trades']}", flush=True)
+    print(f"  Median Capital:    ${mc['median_final']:,.2f}", flush=True)
+    print(f"  Mean Capital:      ${mc['mean_final']:,.2f}", flush=True)
+    print(f"  Best Case:         ${mc['best_case']:,.2f}", flush=True)
+    print(f"  Worst Case:        ${mc['worst_case']:,.2f}", flush=True)
+    print(f"  5th Percentile:    ${mc['p5_final']:,.2f}", flush=True)
+    print(f"  95th Percentile:   ${mc['p95_final']:,.2f}", flush=True)
 
-    print(f"\n  ┌─────────────────────────────────────────────────────┐")
-    print(f"  │  SECTION 3: RISK ASSESSMENT                        │")
-    print(f"  └─────────────────────────────────────────────────────┘")
-    print(f"  Ruin Threshold:    $5,000 (50% max drawdown)")
-    print(f"  Risk of Ruin:      {mc['risk_of_ruin_pct']:.1f}%")
+    print(f"\n  ┌─────────────────────────────────────────────────────┐", flush=True)
+    print(f"  │  SECTION 3: RISK ASSESSMENT                        │", flush=True)
+    print(f"  └─────────────────────────────────────────────────────┘", flush=True)
+    print(f"  Ruin Threshold:    $5,000 (50% max drawdown)", flush=True)
+    print(f"  Risk of Ruin:      {mc['risk_of_ruin_pct']:.1f}%", flush=True)
 
     if mc['risk_of_ruin_pct'] == 0.0:
-        print(f"  Verdict:           ✅ ZERO risk of ruin across 1,000 simulations.")
+        print(f"  Verdict:           ✅ ZERO risk of ruin across 1,000 simulations.", flush=True)
     elif mc['risk_of_ruin_pct'] < 5.0:
-        print(f"  Verdict:           ✅ LOW risk of ruin (<5%). Strategy is robust.")
+        print(f"  Verdict:           ✅ LOW risk of ruin (<5%). Strategy is robust.", flush=True)
     elif mc['risk_of_ruin_pct'] < 20.0:
-        print(f"  Verdict:           ⚠️  MODERATE risk of ruin. Review position sizing.")
+        print(f"  Verdict:           ⚠️  MODERATE risk of ruin. Review position sizing.", flush=True)
     else:
-        print(f"  Verdict:           🚨 HIGH risk of ruin (>{mc['risk_of_ruin_pct']:.0f}%). "
+        print(f"  Verdict:           🚨 HIGH risk of ruin (>{mc['risk_of_ruin_pct']:.0f}%, flush=True). "
               f"Strategy needs revision.")
 
     median_roi = ((mc['median_final'] - base['initial_capital'])
                   / base['initial_capital']) * 100
     if base['roi'] > 0 and median_roi > 0:
-        print(f"\n  🏁 FINAL: Strategy survives chaos testing.")
-        print(f"     Base ROI with 0.8% fees: {base['roi']:+.2f}%")
-        print(f"     Monte Carlo Median ROI:  {median_roi:+.2f}%")
+        print(f"\n  🏁 FINAL: Strategy survives chaos testing.", flush=True)
+        print(f"     Base ROI with 0.8% fees: {base['roi']:+.2f}%", flush=True)
+        print(f"     Monte Carlo Median ROI:  {median_roi:+.2f}%", flush=True)
     elif base['roi'] > 0 and median_roi <= 0:
-        print(f"\n  ⚠️  FINAL: Base run profitable but Monte Carlo median is negative.")
-        print(f"     Results may be sequence-dependent — proceed with caution.")
+        print(f"\n  ⚠️  FINAL: Base run profitable but Monte Carlo median is negative.", flush=True)
+        print(f"     Results may be sequence-dependent — proceed with caution.", flush=True)
     else:
-        print(f"\n  🚨 FINAL: Strategy is unprofitable even in base run under chaos fees.")
+        print(f"\n  🚨 FINAL: Strategy is unprofitable even in base run under chaos fees.", flush=True)
 
-    print(f"\n{'=' * 60}\n")
+    print(f"\n{'=' * 60}\n", flush=True)
 
 
 if __name__ == "__main__":
