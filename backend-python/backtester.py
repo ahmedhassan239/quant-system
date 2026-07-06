@@ -6,6 +6,7 @@ against ~10,000 historical 15m candles fetched from Binance.
 
 • No database dependencies — fully standalone.
 • Deducts 0.1% trading fee on every BUY and SELL.
+• Risk Management: Min-profit gate, hard stop-loss, trailing stop.
 • Prints a detailed trade log and performance report.
 """
 
@@ -24,6 +25,12 @@ TARGET_CANDLES = 10_000       # ~104 days of 15m data
 BINANCE_MAX_LIMIT = 1000      # Binance API cap per request
 TRADING_FEE = 0.001           # 0.1% per side
 INITIAL_BALANCE = 1000.0      # Starting USDT
+
+# Risk Management
+MIN_PROFIT_PCT = 0.005        # +0.5%  — signal SELL only if above this
+HARD_STOP_LOSS_PCT = 0.015    # -1.5%  — immediate exit
+TRAILING_ACTIVATE_PCT = 0.015 # +1.5%  — trailing stop activates here
+TRAILING_PULLBACK_PCT = 0.005 # -0.5%  — pullback from peak triggers exit
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -169,6 +176,29 @@ def detect_order_blocks(df, idx, lookback=15):
 #  BACKTEST ENGINE
 # ──────────────────────────────────────────────────────────────────────
 
+def _close_position(paxg_balance, current_price, last_buy_price,
+                    entry_time, entry_price, current_time, reason):
+    """
+    Helper: sell all PAXG, deduct fee, compute PnL, return
+    (usdt_balance, trade_record).
+    """
+    gross_usdt = paxg_balance * current_price
+    usdt_balance = gross_usdt * (1 - TRADING_FEE)
+    pnl_usd = usdt_balance - (paxg_balance * last_buy_price)
+    pnl_pct = ((current_price - last_buy_price) / last_buy_price) * 100
+
+    trade = {
+        'entry_time': entry_time,
+        'entry_price': entry_price,
+        'exit_time': current_time,
+        'exit_price': current_price,
+        'pnl_usd': round(pnl_usd, 2),
+        'pnl_pct': round(pnl_pct, 2),
+        'exit_reason': reason,
+    }
+    return usdt_balance, trade
+
+
 def run_backtest():
     df = fetch_historical_klines()
     df = calculate_rsi(df, period=14)
@@ -179,6 +209,10 @@ def run_backtest():
     last_buy_price = 0.0
     state = 'WAIT'        # WAIT = holding USDT, LONG = holding PAXG
     last_decision = None   # Duplicate-signal filter (mirrors analyzer.py)
+
+    # Trailing-stop state
+    highest_since_entry = 0.0
+    trailing_active = False
 
     # Trade log
     trades = []
@@ -197,9 +231,52 @@ def run_backtest():
         if current_rsi is None:
             continue
 
+        # ── Risk-management exits (checked BEFORE signal logic) ──
+        if state == 'LONG' and paxg_balance > 0:
+            unrealized_pct = (current_price - entry_price) / entry_price
+
+            # Track highest close since entry for trailing stop
+            if current_price > highest_since_entry:
+                highest_since_entry = current_price
+
+            # 1) Hard Stop-Loss: -1.5% from entry
+            if unrealized_pct <= -HARD_STOP_LOSS_PCT:
+                usdt_balance, trade = _close_position(
+                    paxg_balance, current_price, last_buy_price,
+                    entry_time, entry_price, current_time, 'STOP_LOSS')
+                trades.append(trade)
+                paxg_balance = 0.0
+                last_buy_price = 0.0
+                state = 'WAIT'
+                last_decision = 'SELL'
+                trailing_active = False
+                highest_since_entry = 0.0
+                continue
+
+            # 2) Trailing Stop: activate at +1.5%, trigger on -0.5% pullback
+            if unrealized_pct >= TRAILING_ACTIVATE_PCT:
+                trailing_active = True
+
+            if trailing_active:
+                pullback_pct = ((highest_since_entry - current_price)
+                                / highest_since_entry)
+                if pullback_pct >= TRAILING_PULLBACK_PCT:
+                    usdt_balance, trade = _close_position(
+                        paxg_balance, current_price, last_buy_price,
+                        entry_time, entry_price, current_time,
+                        'TRAILING_STOP')
+                    trades.append(trade)
+                    paxg_balance = 0.0
+                    last_buy_price = 0.0
+                    state = 'WAIT'
+                    last_decision = 'SELL'
+                    trailing_active = False
+                    highest_since_entry = 0.0
+                    continue
+
+        # ── Signal Logic (exact mirror of analyzer.py) ──
         bullish_ob, bearish_ob = detect_order_blocks(df, i, lookback=15)
 
-        # ── Decision Logic (exact mirror of analyzer.py) ──
         decision = 'WAIT'
 
         if (bullish_ob
@@ -228,46 +305,37 @@ def run_backtest():
 
             entry_time = current_time
             entry_price = current_price
+            highest_since_entry = current_price
+            trailing_active = False
 
-        # ── Execute SELL ──
+        # ── Execute SELL (with min-profit gate) ──
         elif decision == 'SELL' and state == 'LONG' and paxg_balance > 0:
-            gross_usdt = paxg_balance * current_price
-            # Deduct fee from proceeds
-            usdt_balance = gross_usdt * (1 - TRADING_FEE)
-            pnl_usd = usdt_balance - (paxg_balance * last_buy_price)
-            pnl_pct = ((current_price - last_buy_price)
-                       / last_buy_price) * 100
+            profit_pct = (current_price - entry_price) / entry_price
 
-            trades.append({
-                'entry_time': entry_time,
-                'entry_price': entry_price,
-                'exit_time': current_time,
-                'exit_price': current_price,
-                'pnl_usd': round(pnl_usd, 2),
-                'pnl_pct': round(pnl_pct, 2),
-            })
+            # 3) Min Profit Margin: signal sell only if >= +0.5%
+            if profit_pct < MIN_PROFIT_PCT:
+                continue  # Skip — not enough profit to justify exit
+
+            usdt_balance, trade = _close_position(
+                paxg_balance, current_price, last_buy_price,
+                entry_time, entry_price, current_time, 'SIGNAL')
+            trades.append(trade)
 
             paxg_balance = 0.0
             last_buy_price = 0.0
             state = 'WAIT'
             last_decision = 'SELL'
+            trailing_active = False
+            highest_since_entry = 0.0
 
     # ── Close open position at last candle price ──
     if state == 'LONG' and paxg_balance > 0:
         final_price = float(df.iloc[-1]['close'])
-        gross_usdt = paxg_balance * final_price
-        usdt_balance = gross_usdt * (1 - TRADING_FEE)
-        pnl_usd = usdt_balance - (paxg_balance * last_buy_price)
-        pnl_pct = ((final_price - last_buy_price) / last_buy_price) * 100
-
-        trades.append({
-            'entry_time': entry_time,
-            'entry_price': entry_price,
-            'exit_time': df.iloc[-1]['timestamp'],
-            'exit_price': final_price,
-            'pnl_usd': round(pnl_usd, 2),
-            'pnl_pct': round(pnl_pct, 2),
-        })
+        usdt_balance, trade = _close_position(
+            paxg_balance, final_price, last_buy_price,
+            entry_time, entry_price, df.iloc[-1]['timestamp'],
+            'END_OF_DATA')
+        trades.append(trade)
         paxg_balance = 0.0
 
     # ──────────────────────────────────────────────────────────────────
@@ -282,49 +350,83 @@ def run_backtest():
     losing = [t for t in trades if t['pnl_usd'] <= 0]
     win_rate = (len(winning) / total_trades * 100) if total_trades > 0 else 0.0
 
-    w = 62  # report width
+    # Exit-reason breakdown
+    signal_exits = [t for t in trades if t['exit_reason'] == 'SIGNAL']
+    sl_exits = [t for t in trades if t['exit_reason'] == 'STOP_LOSS']
+    ts_exits = [t for t in trades if t['exit_reason'] == 'TRAILING_STOP']
+    eod_exits = [t for t in trades if t['exit_reason'] == 'END_OF_DATA']
+
+    w = 72  # report width
 
     print("\n" + "═" * w, flush=True)
-    print("║" + " PAXG/USDT BACKTEST REPORT ".center(w - 2) + "║",
+    print("║" + " PAXG/USDT BACKTEST REPORT (with Risk Management) ".center(w - 2) + "║",
           flush=True)
     print("═" * w, flush=True)
 
-    print(f"║  Symbol          : {SYMBOL:<38}║", flush=True)
-    print(f"║  Interval        : {INTERVAL:<38}║", flush=True)
-    print(f"║  Candles          : {len(df):<37,}║", flush=True)
-    print(f"║  Period          : {str(df['timestamp'].iloc[0].date())}"
-          f" → {str(df['timestamp'].iloc[-1].date()):<16}║", flush=True)
-    print(f"║  Trading Fee     : {TRADING_FEE*100:.1f}% per side"
-          f"{'':<24}║", flush=True)
+    print(f"║  Symbol           : {SYMBOL:<48}║", flush=True)
+    print(f"║  Interval         : {INTERVAL:<48}║", flush=True)
+    print(f"║  Candles           : {len(df):<47,}║", flush=True)
+    print(f"║  Period           : {str(df['timestamp'].iloc[0].date())}"
+          f" → {str(df['timestamp'].iloc[-1].date()):<26}║", flush=True)
+    print(f"║  Trading Fee      : {TRADING_FEE*100:.1f}% per side"
+          f"{'':<34}║", flush=True)
 
     print("╠" + "─" * (w - 2) + "╣", flush=True)
+    print("║" + " Risk Parameters ".center(w - 2) + "║", flush=True)
+    print("╠" + "─" * (w - 2) + "╣", flush=True)
+    print(f"║  Min Profit Gate  : +{MIN_PROFIT_PCT*100:.1f}%"
+          f"{'':<44}║", flush=True)
+    print(f"║  Hard Stop-Loss   : -{HARD_STOP_LOSS_PCT*100:.1f}%"
+          f"{'':<44}║", flush=True)
+    print(f"║  Trailing Activate: +{TRAILING_ACTIVATE_PCT*100:.1f}%  →  "
+          f"Pullback trigger: -{TRAILING_PULLBACK_PCT*100:.1f}%"
+          f"{'':<17}║", flush=True)
 
-    print(f"║  Initial Balance : ${INITIAL_BALANCE:>13,.2f}{'':<22}║",
+    print("╠" + "─" * (w - 2) + "╣", flush=True)
+    print("║" + " Performance ".center(w - 2) + "║", flush=True)
+    print("╠" + "─" * (w - 2) + "╣", flush=True)
+
+    print(f"║  Initial Balance  : ${INITIAL_BALANCE:>13,.2f}{'':<32}║",
           flush=True)
-    print(f"║  Final Balance   : ${final_balance:>13,.2f}{'':<22}║",
+    print(f"║  Final Balance    : ${final_balance:>13,.2f}{'':<32}║",
           flush=True)
 
     sign = "+" if total_pnl_usd >= 0 else ""
-    print(f"║  Net PnL (USD)   : {sign}${total_pnl_usd:>12,.2f}{'':<22}║",
+    print(f"║  Net PnL (USD)    : {sign}${total_pnl_usd:>12,.2f}{'':<32}║",
           flush=True)
-    print(f"║  Net PnL (%)     : {sign}{total_pnl_pct:>13.2f}%{'':<21}║",
+    print(f"║  Net PnL (%)      : {sign}{total_pnl_pct:>13.2f}%{'':<31}║",
           flush=True)
 
     print("╠" + "─" * (w - 2) + "╣", flush=True)
+    print("║" + " Trade Statistics ".center(w - 2) + "║", flush=True)
+    print("╠" + "─" * (w - 2) + "╣", flush=True)
 
-    print(f"║  Total Trades    : {total_trades:>13}{'':<24}║", flush=True)
-    print(f"║  Winning Trades  : {len(winning):>13}{'':<24}║", flush=True)
-    print(f"║  Losing Trades   : {len(losing):>13}{'':<24}║", flush=True)
-    print(f"║  Win Rate        : {win_rate:>12.1f}%{'':<24}║", flush=True)
+    print(f"║  Total Trades     : {total_trades:>13}{'':<34}║", flush=True)
+    print(f"║  Winning Trades   : {len(winning):>13}{'':<34}║", flush=True)
+    print(f"║  Losing Trades    : {len(losing):>13}{'':<34}║", flush=True)
+    print(f"║  Win Rate         : {win_rate:>12.1f}%{'':<34}║", flush=True)
 
     if winning:
         best = max(winning, key=lambda t: t['pnl_usd'])
-        print(f"║  Best Trade      : +${best['pnl_usd']:>11,.2f} "
-              f"(+{best['pnl_pct']:.2f}%){'':<11}║", flush=True)
+        print(f"║  Best Trade       : +${best['pnl_usd']:>11,.2f} "
+              f"(+{best['pnl_pct']:.2f}%){'':<21}║", flush=True)
     if losing:
         worst = min(losing, key=lambda t: t['pnl_usd'])
-        print(f"║  Worst Trade     :  ${worst['pnl_usd']:>11,.2f} "
-              f"({worst['pnl_pct']:.2f}%){'':<11}║", flush=True)
+        print(f"║  Worst Trade      :  ${worst['pnl_usd']:>11,.2f} "
+              f"({worst['pnl_pct']:.2f}%){'':<21}║", flush=True)
+
+    print("╠" + "─" * (w - 2) + "╣", flush=True)
+    print("║" + " Exit Reasons ".center(w - 2) + "║", flush=True)
+    print("╠" + "─" * (w - 2) + "╣", flush=True)
+    print(f"║  Signal (RSI+OB)  : {len(signal_exits):>13}{'':<34}║",
+          flush=True)
+    print(f"║  Hard Stop-Loss   : {len(sl_exits):>13}{'':<34}║",
+          flush=True)
+    print(f"║  Trailing Stop    : {len(ts_exits):>13}{'':<34}║",
+          flush=True)
+    if eod_exits:
+        print(f"║  End-of-Data      : {len(eod_exits):>13}{'':<34}║",
+              flush=True)
 
     print("═" * w, flush=True)
 
@@ -332,16 +434,18 @@ def run_backtest():
     if trades:
         print("\n" + "─" * w, flush=True)
         print("  #  │  ENTRY DATE          │  EXIT DATE           │"
-              "  PnL ($)   │  PnL (%)", flush=True)
+              "  PnL ($)   │ PnL (%) │ EXIT REASON", flush=True)
         print("─" * w, flush=True)
 
         for idx, t in enumerate(trades, 1):
             entry_dt = t['entry_time'].strftime('%Y-%m-%d %H:%M')
             exit_dt = t['exit_time'].strftime('%Y-%m-%d %H:%M')
             pnl_sign = "+" if t['pnl_usd'] >= 0 else ""
+            reason = t.get('exit_reason', 'N/A')
             print(f"  {idx:>2} │  {entry_dt}  │  {exit_dt}  │ "
                   f"{pnl_sign}{t['pnl_usd']:>9.2f} │ "
-                  f"{pnl_sign}{t['pnl_pct']:>6.2f}%", flush=True)
+                  f"{pnl_sign}{t['pnl_pct']:>6.2f}% │ {reason}",
+                  flush=True)
 
         print("─" * w, flush=True)
     else:
