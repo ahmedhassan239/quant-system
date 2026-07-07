@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, UniqueConstraint, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # Database configuration
@@ -64,13 +64,18 @@ class PortfolioState(Base):
     current_price = Column(Float, nullable=False)
     usdt_balance = Column(Float, nullable=False)
     paxg_balance = Column(Float, nullable=False)
-    last_buy_price = Column(Float, nullable=True)
+    average_entry_price = Column(Float, nullable=True)
+    dca_level = Column(Integer, default=0, nullable=False)
+    last_exec_price = Column(Float, nullable=True)
+    total_cost = Column(Float, nullable=False, default=0.0)
+    highest_price_since_entry = Column(Float, nullable=True)  # Trailing stop high watermark
     pnl_pct = Column(Float, nullable=True)          # % profit/loss for this trade (SELL only)
     pnl_usd = Column(Float, nullable=True)          # $ profit/loss for this trade (SELL only)
     total_portfolio_value = Column(Float, nullable=False)  # USDT + PAXG value at current_price
 
 def init_db():
-    """Create tables if they don't exist"""
+    """Create tables if they don't exist, drop/recreate portfolio_state for clean schema."""
+    PortfolioState.__table__.drop(bind=engine, checkfirst=True)
     Base.metadata.create_all(bind=engine)
 
 if __name__ == "__main__":
