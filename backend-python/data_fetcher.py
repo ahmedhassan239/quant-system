@@ -71,19 +71,28 @@ def save_to_db(df):
     finally:
         session.close()
 
-def run_fetcher():
+def run_fetcher(symbols=None, interval='15m', limit=250):
     """
     Core execution logic for the data fetcher.
+    Fetches candle data for each symbol in the list.
+    Defaults to PAXGUSDT if no symbols provided.
+    Uses limit=250 to ensure SMA 200 has enough warmup data.
     """
+    if symbols is None:
+        symbols = ['PAXGUSDT']
+
     print("--- Fetcher Started ---", flush=True)
     # Ensure tables exist before trying to save
     init_db()
-    
-    print("Fetching data from Binance...", flush=True)
-    df = fetch_binance_klines(symbol='PAXGUSDT', interval='15m', limit=100)
-    
-    print("Saving data to database...", flush=True)
-    save_to_db(df)
+
+    for sym in symbols:
+        print(f"Fetching {limit} x {interval} candles for {sym}...", flush=True)
+        try:
+            df = fetch_binance_klines(symbol=sym, interval=interval, limit=limit)
+            save_to_db(df)
+        except Exception as e:
+            print(f"  ⚠️ Failed to fetch {sym}: {e}", flush=True)
+
     print("--- Fetcher Completed ---", flush=True)
 
 if __name__ == "__main__":

@@ -3,27 +3,27 @@ import requests
 import traceback
 import pandas as pd
 from datetime import datetime
-from database import SessionLocal, MarketData, TradingSignal, PortfolioState, engine, init_db
-
-DEFAULT_USDT_BALANCE = 1000.0
+from database import (SessionLocal, MarketData, TradingSignal, PortfolioState,
+                      engine, init_db, count_active_positions,
+                      SLOT_BUDGET, MAX_CONCURRENT_POSITIONS)
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
 # ──────────────────────────────────────────────────────────────────────
 MAX_BUYS = 4
-DCA_WEIGHTS = [0.10, 0.20, 0.30, 0.40]
-SAFETY_ORDER_DIP_PCT = 0.02
-TRADING_FEE = 0.001
-MIN_PROFIT_PCT = 0.01         # +1.0%
-HARD_STOP_LOSS_PCT = 0.05     # -5.0%
-TRAILING_ACTIVATE_PCT = 0.015
-TRAILING_PULLBACK_PCT = 0.005
+DCA_WEIGHTS = [0.10, 0.20, 0.30, 0.40]   # of SLOT_BUDGET → $50, $100, $150, $200
+SAFETY_ORDER_DIP_PCT = 0.02               # -2.0 %
+TRADING_FEE = 0.001                       # 0.1 % per side
+MIN_PROFIT_PCT = 0.01                     # +1.0 %
+HARD_STOP_LOSS_PCT = 0.05                 # -5.0 %
+TRAILING_ACTIVATE_PCT = 0.015             # +1.5 %
+TRAILING_PULLBACK_PCT = 0.005             # -0.5 %
 
 
 def load_portfolio(session, symbol):
     """
-    Load the latest portfolio state from the database.
-    Returns a dict with usdt_balance, paxg_balance, average_entry_price,
+    Load the latest portfolio state for a given symbol from the database.
+    Returns a dict with usdt_balance, asset_balance, average_entry_price,
     dca_level, last_exec_price, total_cost, and highest_price_since_entry.
     """
     last_state = session.query(PortfolioState).filter(
@@ -33,17 +33,17 @@ def load_portfolio(session, symbol):
     if last_state:
         return {
             'usdt_balance': last_state.usdt_balance,
-            'paxg_balance': last_state.paxg_balance,
+            'asset_balance': last_state.asset_balance,
             'average_entry_price': getattr(last_state, 'average_entry_price', None),
             'dca_level': getattr(last_state, 'dca_level', 0),
             'last_exec_price': getattr(last_state, 'last_exec_price', None),
             'total_cost': getattr(last_state, 'total_cost', 0.0),
             'highest_price_since_entry': last_state.highest_price_since_entry
         }
-    # First run — return defaults
+    # First run for this symbol — return defaults (full slot budget)
     return {
-        'usdt_balance': DEFAULT_USDT_BALANCE,
-        'paxg_balance': 0.0,
+        'usdt_balance': SLOT_BUDGET,
+        'asset_balance': 0.0,
         'average_entry_price': None,
         'dca_level': 0,
         'last_exec_price': None,
@@ -147,10 +147,10 @@ def detect_order_blocks(df, lookback=15):
 def _execute_sell(portfolio, current_price, symbol, session, exit_reason,
                   bullish_ob=None, bearish_ob=None, current_rsi=None):
     """
-    Execute a SELL: convert PAXG → USDT, compute PnL, save to DB,
+    Execute a SELL: convert asset → USDT, compute PnL, save to DB,
     and send a Telegram alert.  Returns the updated portfolio dict.
     """
-    sell_value = float(portfolio['paxg_balance']) * float(current_price) * (1 - TRADING_FEE)
+    sell_value = float(portfolio['asset_balance']) * float(current_price) * (1 - TRADING_FEE)
     buy_price = portfolio.get('average_entry_price')
     total_cost = portfolio.get('total_cost', 0.0)
     pnl_pct_val = None
@@ -161,10 +161,10 @@ def _execute_sell(portfolio, current_price, symbol, session, exit_reason,
         pnl_pct_val = float(((float(current_price) - float(buy_price)) / float(buy_price)) * 100)
         pnl_usd_val = float(sell_value - total_cost)
         sign = "+" if pnl_pct_val >= 0 else ""
-        pnl_section = f"\\n- PnL (This Trade): {sign}{pnl_pct_val:.2f}% ({sign}${pnl_usd_val:.2f})"
+        pnl_section = f"\n- PnL (This Trade): {sign}{pnl_pct_val:.2f}% ({sign}${pnl_usd_val:.2f})"
 
     portfolio['usdt_balance'] += round(sell_value, 2)
-    portfolio['paxg_balance'] = 0.0
+    portfolio['asset_balance'] = 0.0
     portfolio['average_entry_price'] = None
     portfolio['dca_level'] = 0
     portfolio['last_exec_price'] = None
@@ -181,7 +181,7 @@ def _execute_sell(portfolio, current_price, symbol, session, exit_reason,
         decision='SELL',
         current_price=float(current_price),
         usdt_balance=float(portfolio['usdt_balance']),
-        paxg_balance=float(portfolio['paxg_balance']),
+        asset_balance=float(portfolio['asset_balance']),
         average_entry_price=None,
         dca_level=0,
         last_exec_price=None,
@@ -202,7 +202,7 @@ def _execute_sell(portfolio, current_price, symbol, session, exit_reason,
     # Build Telegram alert
     reason_labels = {
         'SIGNAL': '📉 Technical Signal (RSI + Order Block)',
-        'STOP_LOSS': '🛑 Hard Stop-Loss (-1.5%)',
+        'STOP_LOSS': '🛑 Hard Stop-Loss (-5.0%)',
         'TRAILING_STOP': '📐 Trailing Stop (pulled back from peak)',
     }
     reason_text = reason_labels.get(exit_reason, exit_reason)
@@ -232,7 +232,7 @@ def _execute_sell(portfolio, current_price, symbol, session, exit_reason,
         f"\n"
         f"\U0001f4bc *Virtual Portfolio:*{pnl_section}\n"
         f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
-        f"- PAXG Balance: {portfolio['paxg_balance']:.6f} PAXG\n"
+        f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
         f"- Total Value: ${total_value:.2f}"
     )
     send_telegram_alert(alert_msg)
@@ -245,7 +245,7 @@ def _save_tracking_update(portfolio, current_price, symbol, session):
     Save a portfolio snapshot that only updates highest_price_since_entry
     (no BUY/SELL, just a state persistence for trailing stop tracking).
     """
-    total_value = float(portfolio['usdt_balance']) + (float(portfolio['paxg_balance']) * float(current_price))
+    total_value = float(portfolio['usdt_balance']) + (float(portfolio['asset_balance']) * float(current_price))
 
     portfolio_record = PortfolioState(
         timestamp=datetime.now(),
@@ -253,7 +253,7 @@ def _save_tracking_update(portfolio, current_price, symbol, session):
         decision='HOLD',
         current_price=float(current_price),
         usdt_balance=float(portfolio['usdt_balance']),
-        paxg_balance=float(portfolio['paxg_balance']),
+        asset_balance=float(portfolio['asset_balance']),
         average_entry_price=float(portfolio['average_entry_price']) if portfolio['average_entry_price'] is not None else None,
         dca_level=int(portfolio['dca_level']),
         last_exec_price=float(portfolio['last_exec_price']) if portfolio['last_exec_price'] is not None else None,
@@ -275,10 +275,11 @@ def _save_tracking_update(portfolio, current_price, symbol, session):
 def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
     """
     Query market data, calculate RSI, detect Order Blocks, check risk
-    management exits, evaluate signals, and manage virtual portfolio.
+    management exits, evaluate signals, and manage virtual portfolio
+    for a SINGLE symbol. Called in a loop by the orchestrator.
     """
-    print("--- Analyzer Started ---", flush=True)
-    # Ensure tables exist (specifically for the new TradingSignal table)
+    print(f"\n--- Analyzer Started [{symbol}] ---", flush=True)
+    # Ensure tables exist
     init_db()
     
     session = SessionLocal()
@@ -293,10 +294,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
         df = pd.read_sql(query.statement, engine)
         
         if df.empty:
-            print("No data found in the database.", flush=True)
+            print(f"No data found for {symbol}. Skipping.", flush=True)
             return
 
-        # 1. Calculate 14-period RSI
+        # 1. Calculate 14-period RSI + SMA 200
         df = calculate_rsi(df, period=14)
         df['SMA_200'] = df['close'].rolling(window=200).mean()
         
@@ -311,7 +312,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
 
         # 4. Load portfolio state (includes trailing stop watermark)
         portfolio = load_portfolio(session, symbol)
-        in_position = portfolio['paxg_balance'] is not None and portfolio['paxg_balance'] > 0
+        in_position = portfolio['asset_balance'] is not None and portfolio['asset_balance'] > 0
         entry_price = portfolio.get('average_entry_price')
         highest_price = portfolio.get('highest_price_since_entry')
 
@@ -330,9 +331,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                 portfolio['highest_price_since_entry'] = cp
                 highest_price = cp
 
-            # 1) Hard Stop-Loss: -1.5% from entry
+            # 1) Hard Stop-Loss: -5.0% from avg entry
             if unrealized_pct <= -HARD_STOP_LOSS_PCT:
-                print(f"⛔ HARD STOP-LOSS triggered! Price ${cp:.2f} is "
+                print(f"⛔ [{symbol}] HARD STOP-LOSS triggered! Price ${cp:.2f} is "
                       f"{unrealized_pct*100:.2f}% below entry ${ep:.2f}", flush=True)
                 portfolio = _execute_sell(
                     portfolio, current_price, symbol, session, 'STOP_LOSS',
@@ -344,7 +345,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                 hp = float(highest_price)
                 pullback_pct = (hp - cp) / hp
                 if pullback_pct >= TRAILING_PULLBACK_PCT:
-                    print(f"📐 TRAILING STOP triggered! Price ${cp:.2f} pulled back "
+                    print(f"📐 [{symbol}] TRAILING STOP triggered! Price ${cp:.2f} pulled back "
                           f"{pullback_pct*100:.2f}% from peak ${hp:.2f}", flush=True)
                     portfolio = _execute_sell(
                         portfolio, current_price, symbol, session, 'TRAILING_STOP',
@@ -360,7 +361,13 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
             dca_level = portfolio.get('dca_level', 0)
             if current_rsi < 30:
                 if dca_level == 0 and bullish_ob and current_price <= bullish_ob['high'] and current_sma and current_price > current_sma:
-                    decision = 'BUY'
+                    # ── Slot Guard: check concurrent position limit ──
+                    active_count = count_active_positions(session)
+                    if active_count >= MAX_CONCURRENT_POSITIONS:
+                        print(f"⏸️ [{symbol}] WAIT (Max Concurrent Slots Reached: "
+                              f"{active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
+                    else:
+                        decision = 'BUY'
                 elif 0 < dca_level < MAX_BUYS:
                     last_exec_price = portfolio.get('last_exec_price')
                     if last_exec_price and current_price <= last_exec_price * (1 - SAFETY_ORDER_DIP_PCT):
@@ -392,7 +399,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
         if not risk_exit_triggered and decision in ('BUY', 'SELL'):
             # Reload portfolio state (in case risk exit changed it)
             portfolio = load_portfolio(session, symbol)
-            in_position = portfolio['paxg_balance'] is not None and portfolio['paxg_balance'] > 0
+            in_position = portfolio['asset_balance'] is not None and portfolio['asset_balance'] > 0
 
             # Query the last non-WAIT decision from the database
             last_signal = session.query(TradingSignal).filter(
@@ -408,19 +415,19 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                 # ── Execute BUY ──
                 dca_level = portfolio.get('dca_level', 0)
                 if decision == 'BUY' and dca_level < MAX_BUYS:
-                    spend = DEFAULT_USDT_BALANCE * DCA_WEIGHTS[dca_level]
+                    spend = SLOT_BUDGET * DCA_WEIGHTS[dca_level]
                     if portfolio['usdt_balance'] >= spend:
                         effective_usdt = spend * (1 - TRADING_FEE)
-                        paxg_bought = effective_usdt / float(current_price)
+                        asset_bought = effective_usdt / float(current_price)
                         
                         # Update average entry price
-                        old_paxg = float(portfolio.get('paxg_balance', 0) or 0)
+                        old_asset = float(portfolio.get('asset_balance', 0) or 0)
                         old_avg = float(portfolio.get('average_entry_price', 0) or 0)
-                        old_val = old_paxg * old_avg
-                        new_val = paxg_bought * float(current_price)
+                        old_val = old_asset * old_avg
+                        new_val = asset_bought * float(current_price)
                         
-                        portfolio['paxg_balance'] = round(old_paxg + paxg_bought, 6)
-                        portfolio['average_entry_price'] = (old_val + new_val) / portfolio['paxg_balance']
+                        portfolio['asset_balance'] = round(old_asset + asset_bought, 6)
+                        portfolio['average_entry_price'] = (old_val + new_val) / portfolio['asset_balance']
                         portfolio['dca_level'] = dca_level + 1
                         portfolio['last_exec_price'] = float(current_price)
                         portfolio['total_cost'] = float(portfolio.get('total_cost', 0)) + effective_usdt
@@ -429,7 +436,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                             portfolio['highest_price_since_entry'] = float(current_price)
 
                         # Calculate total portfolio value at current price
-                        total_value = portfolio['usdt_balance'] + (float(portfolio['paxg_balance']) * float(current_price))
+                        total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
                         # Save portfolio snapshot to database
                         portfolio_record = PortfolioState(
@@ -438,7 +445,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                             decision='BUY',
                             current_price=float(current_price),
                             usdt_balance=float(portfolio['usdt_balance']),
-                            paxg_balance=float(portfolio['paxg_balance']),
+                            asset_balance=float(portfolio['asset_balance']),
                             average_entry_price=float(portfolio['average_entry_price']),
                             dca_level=int(portfolio['dca_level']),
                             last_exec_price=float(portfolio['last_exec_price']),
@@ -448,53 +455,61 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                             pnl_usd=None,
                             total_portfolio_value=float(round(total_value, 2))
                         )
-                    try:
-                        session.add(portfolio_record)
-                        session.commit()
-                    except Exception as e:
-                        session.rollback()
-                        print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
-                        traceback.print_exc()
+                        try:
+                            session.add(portfolio_record)
+                            session.commit()
+                        except Exception as e:
+                            session.rollback()
+                            print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
+                            traceback.print_exc()
 
-                    # Telegram alert for BUY
-                    rsi_label = "Oversold"
-                    ob_type = "Bullish"
-                    ob_low = bullish_ob['low'] if bullish_ob else 0
-                    ob_high = bullish_ob['high'] if bullish_ob else 0
-                    alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
+                        # Telegram alert for BUY
+                        alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
+                        dca_str = f"Step {portfolio['dca_level']}/{MAX_BUYS}"
+                        
+                        reason_msg = ""
+                        if dca_level == 0:
+                            ob_low = bullish_ob['low'] if bullish_ob else 0
+                            ob_high = bullish_ob['high'] if bullish_ob else 0
+                            sma_str = f"${float(current_sma):.2f}" if current_sma else "N/A"
+                            reason_msg = (f"- RSI: {float(current_rsi):.1f}\n"
+                                          f"- Price entered Bullish OB: ${float(ob_low):.2f} - ${float(ob_high):.2f}\n"
+                                          f"- Above SMA 200 ({sma_str})")
+                        else:
+                            reason_msg = (f"- RSI: {float(current_rsi):.1f}\n"
+                                          f"- Price dropped >= 2.0% from last execution")
 
-                    alert_msg = (
-                        f"\U0001f6a8 *QUANT ALERT: BUY* \U0001f6a8\n"
-                        f"\n"
-                        f"*Symbol:* {symbol}\n"
-                        f"*Price:* ${float(current_price):.2f}\n"
-                        f"*Time:* {alert_time}\n"
-                        f"\n"
-                        f"\U0001f4a1 *Why this decision?*\n"
-                        f"- RSI is at {float(current_rsi):.1f} (Indicates {rsi_label}).\n"
-                        f"- Price entered {ob_type} Order Block between ${float(ob_low):.2f} and ${float(ob_high):.2f}.\n"
-                        f"\n"
-                        f"\U0001f6e1 *Risk Management Active:*\n"
-                        f"- Stop-Loss: -1.5% (${float(current_price) * (1 - HARD_STOP_LOSS_PCT):.2f})\n"
-                        f"- Trailing Stop activates at +1.5%\n"
-                        f"\n"
-                        f"\U0001f4bc *Virtual Portfolio:*\n"
-                        f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
-                        f"- PAXG Balance: {portfolio['paxg_balance']:.6f} PAXG\n"
-                        f"- Total Value: ${total_value:.2f}"
-                    )
-                    send_telegram_alert(alert_msg)
+                        alert_msg = (
+                            f"\U0001f6a8 *QUANT ALERT: BUY (DCA {dca_str})* \U0001f6a8\n"
+                            f"\n"
+                            f"*Symbol:* {symbol}\n"
+                            f"*Price:* ${float(current_price):.2f}\n"
+                            f"*Time:* {alert_time}\n"
+                            f"\n"
+                            f"\U0001f4a1 *Why this decision?*\n"
+                            f"{reason_msg}\n"
+                            f"\n"
+                            f"\U0001f6e1 *Risk Management:*\n"
+                            f"- Avg Entry Price: ${float(portfolio['average_entry_price']):.2f}\n"
+                            f"- Stop-Loss: -{HARD_STOP_LOSS_PCT*100}% (${float(portfolio['average_entry_price']) * (1 - HARD_STOP_LOSS_PCT):.2f})\n"
+                            f"\n"
+                            f"\U0001f4bc *Virtual Portfolio:*\n"
+                            f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
+                            f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
+                            f"- Total Value: ${total_value:.2f}"
+                        )
+                        send_telegram_alert(alert_msg)
 
                 # ── Execute SELL (with min-profit gate) ──
-                elif decision == 'SELL' and in_position and portfolio['paxg_balance'] > 0:
+                elif decision == 'SELL' and in_position and portfolio['asset_balance'] > 0:
                     ep = float(portfolio['average_entry_price']) if portfolio['average_entry_price'] else 0
                     if ep > 0:
                         profit_pct = (float(current_price) - ep) / ep
                         if profit_pct < MIN_PROFIT_PCT:
-                            print(f"⏸️ Signal SELL suppressed: profit {profit_pct*100:.2f}% "
+                            print(f"⏸️ [{symbol}] Signal SELL suppressed: profit {profit_pct*100:.2f}% "
                                   f"< min gate {MIN_PROFIT_PCT*100:.1f}%", flush=True)
                         else:
-                            print(f"✅ Signal SELL executing: profit {profit_pct*100:.2f}% "
+                            print(f"✅ [{symbol}] Signal SELL executing: profit {profit_pct*100:.2f}% "
                                   f">= min gate {MIN_PROFIT_PCT*100:.1f}%", flush=True)
                             portfolio = _execute_sell(
                                 portfolio, current_price, symbol, session, 'SIGNAL',
@@ -505,14 +520,14 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                             portfolio, current_price, symbol, session, 'SIGNAL',
                             bullish_ob, bearish_ob, current_rsi)
             else:
-                print(f"Duplicate {decision} signal \u2014 Telegram alert suppressed.", flush=True)
+                print(f"[{symbol}] Duplicate {decision} signal — Telegram alert suppressed.", flush=True)
 
         # ──────────────────────────────────────────────────────────
         #  UPDATE TRAILING STOP WATERMARK (if still in position)
         # ──────────────────────────────────────────────────────────
         if not risk_exit_triggered and decision == 'WAIT':
             portfolio = load_portfolio(session, symbol)
-            in_position = portfolio['paxg_balance'] is not None and portfolio['paxg_balance'] > 0
+            in_position = portfolio['asset_balance'] is not None and portfolio['asset_balance'] > 0
 
             if in_position:
                 old_highest = portfolio.get('highest_price_since_entry')
@@ -520,11 +535,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                 if old_highest is None or cp > float(old_highest):
                     portfolio['highest_price_since_entry'] = cp
                     old_val = f"${float(old_highest):.2f}" if old_highest else "$0.00"
-                    print(f"📈 New high watermark: ${cp:.2f} (was {old_val})", flush=True)
+                    print(f"📈 [{symbol}] New high watermark: ${cp:.2f} (was {old_val})", flush=True)
                     _save_tracking_update(portfolio, current_price, symbol, session)
 
         # 6. Print summary output
-        print("=== Quant Analyzer Summary ===", flush=True)
+        print(f"=== Analyzer Summary [{symbol}] ===", flush=True)
         print(f"Symbol: {symbol} | Timeframe: {timeframe}", flush=True)
         print(f"Current Price: {current_price:.2f}", flush=True)
         print(f"Current RSI (14): {current_rsi:.2f}", flush=True)
@@ -542,7 +557,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
 
         # Risk management status
         portfolio = load_portfolio(session, symbol)
-        in_position = portfolio['paxg_balance'] is not None and portfolio['paxg_balance'] > 0
+        in_position = portfolio['asset_balance'] is not None and portfolio['asset_balance'] > 0
         if in_position and portfolio.get('average_entry_price'):
             ep = float(portfolio['average_entry_price'])
             cp = float(current_price)
@@ -555,17 +570,17 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                   f"Trailing: {trailing_status} (Peak: ${hp:.2f})", flush=True)
 
         if risk_exit_triggered:
-            print(f"\n⚠️ Risk exit was triggered this cycle.", flush=True)
+            print(f"\n⚠️ [{symbol}] Risk exit was triggered this cycle.", flush=True)
         else:
-            print(f"\nDecision {decision} saved to database successfully.", flush=True)
+            print(f"\n[{symbol}] Decision {decision} saved to database successfully.", flush=True)
 
     except Exception as e:
         session.rollback()
-        print(f"Error during analysis: {e}", flush=True)
+        print(f"Error during analysis of {symbol}: {e}", flush=True)
         traceback.print_exc()
     finally:
         session.close()
-        print("--- Analyzer Completed ---", flush=True)
+        print(f"--- Analyzer Completed [{symbol}] ---", flush=True)
 
 if __name__ == "__main__":
     run_analyzer()
