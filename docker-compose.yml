@@ -32,6 +32,8 @@ services:
     # تم إزالة البورتات نهائياً للأمان
 
     # 3a. 🚀 Live Quant Engine (15m timeframe, production API)
+  #     ⚠️ Data Isolation: Uses 'quant_db' PostgreSQL database
+  #     → Testnet uses 'testnet_quant_db' — they NEVER share tables.
   quant_live_engine:
     build:
       context: ./backend-python
@@ -54,6 +56,8 @@ services:
       - quant_network
 
   # 3b. 🧪 Testnet Quant Engine (5m timeframe, testnet API)
+  #     ⚠️ Data Isolation: Uses 'testnet_quant_db' PostgreSQL database
+  #     → Live uses 'quant_db' — they NEVER share tables.
   quant_testnet_engine:
     build:
       context: ./backend-python
@@ -61,14 +65,17 @@ services:
     container_name: quant_testnet_engine
     restart: unless-stopped
     environment:
+      # ── Engine Configuration ──
       ENV_TYPE: TESTNET
       BINANCE_BASE_URL: "https://testnet.binance.vision/api"
       TIMEFRAME: "5m"
       DB_NAME: testnet_quant_db
+      # ── Telegram (shared channel, alerts are prefixed) ──
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
-      BINANCE_TESTNET_API_KEY: ${BINANCE_TESTNET_API_KEY}
-      BINANCE_TESTNET_SECRET_KEY: ${BINANCE_TESTNET_SECRET_KEY}
+      # ── Binance Spot Testnet API Keys (injected directly) ──
+      BINANCE_API_KEY: "Vbtrpl26aogc3d92flyvdJ0k22msJKChb4JC5aBElZsWFlhORFLpfVRVLp2wHsdp"
+      BINANCE_API_SECRET: "xijjQjwRP7QdIjjKfelTRnLXH4CD0rF2EMsmU2qVLFLdx5SsdkeuL8OJx2eCtJK1"
     volumes:
       - ./backend-python:/app
     depends_on:
