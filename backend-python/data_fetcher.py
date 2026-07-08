@@ -3,12 +3,14 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.dialects.postgresql import insert
 from database import SessionLocal, MarketData, engine, init_db
+from config import BINANCE_BASE_URL, TIMEFRAME
 
-def fetch_binance_klines(symbol='PAXGUSDT', interval='15m', limit=100):
+def fetch_binance_klines(symbol='PAXGUSDT', interval=TIMEFRAME, limit=100):
     """
-    Fetch klines/candlestick data from Binance Public API.
+    Fetch klines/candlestick data from the Binance API.
+    URL and interval are driven by environment variables via config.py.
     """
-    url = "https://api.binance.com/api/v3/klines"
+    url = f"{BINANCE_BASE_URL}/v3/klines"
     params = {
         'symbol': symbol,
         'interval': interval,
@@ -71,7 +73,7 @@ def save_to_db(df):
     finally:
         session.close()
 
-def run_fetcher(symbols=None, interval='15m', limit=250):
+def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250):
     """
     Core execution logic for the data fetcher.
     Fetches candle data for each symbol in the list.

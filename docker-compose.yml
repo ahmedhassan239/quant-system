@@ -8,6 +8,12 @@ services:
       POSTGRES_DB: quant_db
       POSTGRES_USER: quant_user
       POSTGRES_PASSWORD: secret123
+    # Also create the testnet database on first boot
+    command: >
+      bash -c "docker-entrypoint.sh postgres &
+      until pg_isready -U quant_user; do sleep 1; done;
+      psql -U quant_user -tc \"SELECT 1 FROM pg_database WHERE datname = 'testnet_quant_db'\" | grep -q 1 || psql -U quant_user -c 'CREATE DATABASE testnet_quant_db;';
+      wait"
     volumes:
       - ./data-volumes/postgres_data:/var/lib/postgresql/data
     networks:
@@ -25,16 +31,44 @@ services:
       - quant_network
     # تم إزالة البورتات نهائياً للأمان
 
-    # 3. محرك التداول الكمي (Python)
-  quant_engine:
+    # 3a. 🚀 Live Quant Engine (15m timeframe, production API)
+  quant_live_engine:
     build:
       context: ./backend-python
       dockerfile: Dockerfile
-    container_name: quant_python_engine
+    container_name: quant_live_engine
     restart: unless-stopped
     environment:
+      ENV_TYPE: LIVE
+      BINANCE_BASE_URL: "https://api.binance.com/api"
+      TIMEFRAME: "15m"
+      DB_NAME: quant_db
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+    volumes:
+      - ./backend-python:/app
+    depends_on:
+      - postgres_db
+      - redis_cache
+    networks:
+      - quant_network
+
+  # 3b. 🧪 Testnet Quant Engine (5m timeframe, testnet API)
+  quant_testnet_engine:
+    build:
+      context: ./backend-python
+      dockerfile: Dockerfile
+    container_name: quant_testnet_engine
+    restart: unless-stopped
+    environment:
+      ENV_TYPE: TESTNET
+      BINANCE_BASE_URL: "https://testnet.binance.vision/api"
+      TIMEFRAME: "5m"
+      DB_NAME: testnet_quant_db
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      BINANCE_TESTNET_API_KEY: ${BINANCE_TESTNET_API_KEY}
+      BINANCE_TESTNET_SECRET_KEY: ${BINANCE_TESTNET_SECRET_KEY}
     volumes:
       - ./backend-python:/app
     depends_on:

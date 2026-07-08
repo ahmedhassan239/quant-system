@@ -13,11 +13,12 @@ Usage:
 """
 
 import requests
+from config import BINANCE_BASE_URL, TIMEFRAME, ALERT_PREFIX
 
 # ──────────────────────────────────────────────────────────────────────
 #  CONFIGURATION
 # ──────────────────────────────────────────────────────────────────────
-BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/24hr"
+BINANCE_TICKER_URL = f"{BINANCE_BASE_URL}/v3/ticker/24hr"
 MIN_QUOTE_VOLUME = 50_000_000  # $50M minimum 24h USDT volume
 
 # Stablecoin / peg-asset fragments to exclude
@@ -90,7 +91,7 @@ def scan():
 
     # Pretty-print the results
     print("=" * 70, flush=True)
-    print("  MULTI-ASSET RADAR — Top 10 Volatile USDT Pairs (Binance)", flush=True)
+    print(f"  {ALERT_PREFIX} MULTI-ASSET RADAR — Top 10 Volatile USDT Pairs", flush=True)
     print("=" * 70, flush=True)
     print(f"  {'#':<4} {'Symbol':<14} {'Price':>12} {'24h Chg %':>10} {'24h Vol ($M)':>14}", flush=True)
     print("-" * 70, flush=True)

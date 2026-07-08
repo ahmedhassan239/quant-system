@@ -5,7 +5,8 @@ import pandas as pd
 from datetime import datetime
 from database import (SessionLocal, MarketData, TradingSignal, PortfolioState,
                       engine, init_db, count_active_positions,
-                      SLOT_BUDGET, MAX_CONCURRENT_POSITIONS)
+                      SLOT_BUDGET, MAX_CONCURRENT_POSITIONS, TOTAL_CAPITAL)
+from config import TIMEFRAME, ALERT_PREFIX
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -220,7 +221,7 @@ def _execute_sell(portfolio, current_price, symbol, session, exit_reason,
     alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
 
     alert_msg = (
-        f"\U0001f6a8 *QUANT ALERT: SELL* \U0001f6a8\n"
+        f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: SELL* \U0001f6a8\n"
         f"\n"
         f"*Symbol:* {symbol}\n"
         f"*Price:* ${float(current_price):.2f}\n"
@@ -231,6 +232,8 @@ def _execute_sell(portfolio, current_price, symbol, session, exit_reason,
         f"{ob_info}"
         f"\n"
         f"\U0001f4bc *Virtual Portfolio:*{pnl_section}\n"
+        f"- Slot Budget: ${SLOT_BUDGET:,.0f}\n"
+        f"- Global Total Capital: ${TOTAL_CAPITAL:,.0f}\n"
         f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
         f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
         f"- Total Value: ${total_value:.2f}"
@@ -272,7 +275,7 @@ def _save_tracking_update(portfolio, current_price, symbol, session):
         traceback.print_exc()
 
 
-def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
+def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME):
     """
     Query market data, calculate RSI, detect Order Blocks, check risk
     management exits, evaluate signals, and manage virtual portfolio
@@ -480,7 +483,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                                           f"- Price dropped >= 2.0% from last execution")
 
                         alert_msg = (
-                            f"\U0001f6a8 *QUANT ALERT: BUY (DCA {dca_str})* \U0001f6a8\n"
+                            f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: BUY (DCA {dca_str})* \U0001f6a8\n"
                             f"\n"
                             f"*Symbol:* {symbol}\n"
                             f"*Price:* ${float(current_price):.2f}\n"
@@ -494,6 +497,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe='15m'):
                             f"- Stop-Loss: -{HARD_STOP_LOSS_PCT*100}% (${float(portfolio['average_entry_price']) * (1 - HARD_STOP_LOSS_PCT):.2f})\n"
                             f"\n"
                             f"\U0001f4bc *Virtual Portfolio:*\n"
+                            f"- Slot Budget: ${SLOT_BUDGET:,.0f}\n"
+                            f"- Global Total Capital: ${TOTAL_CAPITAL:,.0f}\n"
                             f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
                             f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
                             f"- Total Value: ${total_value:.2f}"

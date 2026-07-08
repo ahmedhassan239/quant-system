@@ -7,7 +7,7 @@ DB_USER = os.environ.get("DB_USER", "quant_user")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "secret123")
 DB_HOST = os.environ.get("DB_HOST", "postgres_db")
 DB_PORT = os.environ.get("DB_PORT", "5432")
-DB_NAME = os.environ.get("DB_NAME", "quant_db")
+DB_NAME = os.environ.get("DB_NAME", "quant_db")  # Overridden per container in docker-compose
 
 # Create database URL
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
