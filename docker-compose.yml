@@ -1,26 +1,42 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  QUANT SYSTEM — Dual Testnet Architecture
+#  Two independent bots (15m & 5m) sharing infrastructure,
+#  with strict PostgreSQL database isolation.
+# ═══════════════════════════════════════════════════════════════════════
+
 services:
-  # 1. طبقة قاعدة البيانات (PostgreSQL)
+  # ─────────────────────────────────────────────────────────────────────
+  #  1. SHARED INFRASTRUCTURE: PostgreSQL
+  #     Creates BOTH databases on first boot via init script.
+  #     Data persisted in ./data-volumes/postgres_data
+  # ─────────────────────────────────────────────────────────────────────
   postgres_db:
     image: postgres:15-alpine
     container_name: quant_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: quant_db
-      POSTGRES_USER: quant_user
-      POSTGRES_PASSWORD: secret123
-    # Also create the testnet database on first boot
+      POSTGRES_DB: testnet_15m_db                    # Primary DB (created by default)
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Auto-create the second database on first boot
     command: >
       bash -c "docker-entrypoint.sh postgres &
-      until pg_isready -U quant_user; do sleep 1; done;
-      psql -U quant_user -tc \"SELECT 1 FROM pg_database WHERE datname = 'testnet_quant_db'\" | grep -q 1 || psql -U quant_user -c 'CREATE DATABASE testnet_quant_db;';
+      until pg_isready -U ${POSTGRES_USER}; do sleep 1; done;
+      psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'testnet_5m_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE testnet_5m_db;';
       wait"
     volumes:
       - ./data-volumes/postgres_data:/var/lib/postgresql/data
     networks:
       - quant_network
-    # تم إزالة البورتات نهائياً لحماية الداتا بيز من أي وصول خارجي
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-    # 2. طبقة الذاكرة السريعة (Redis) للأسعار اللحظية
+  # ─────────────────────────────────────────────────────────────────────
+  #  2. SHARED INFRASTRUCTURE: Redis
+  # ─────────────────────────────────────────────────────────────────────
   redis_cache:
     image: redis:7-alpine
     container_name: quant_redis
@@ -29,62 +45,86 @@ services:
       - ./data-volumes/redis_data:/data
     networks:
       - quant_network
-    # تم إزالة البورتات نهائياً للأمان
 
-    # 3a. 🚀 Live Quant Engine (15m timeframe, production API)
-  #     ⚠️ Data Isolation: Uses 'quant_db' PostgreSQL database
-  #     → Testnet uses 'testnet_quant_db' — they NEVER share tables.
-  quant_live_engine:
+  # ═══════════════════════════════════════════════════════════════════════
+  #  BOT 1: 🧪 TESTNET 15m ENGINE
+  #  Database: testnet_15m_db   |   Schedule: every 15 minutes
+  #  Telegram prefix: 🧪 [TESTNET - 15m]
+  # ═══════════════════════════════════════════════════════════════════════
+  quant_15m_engine:
     build:
       context: ./backend-python
       dockerfile: Dockerfile
-    container_name: quant_live_engine
+    container_name: quant_15m_engine
     restart: unless-stopped
     environment:
-      ENV_TYPE: LIVE
-      BINANCE_BASE_URL: "https://api.binance.com/api"
-      TIMEFRAME: "15m"
-      DB_NAME: quant_db
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
-    volumes:
-      - ./backend-python:/app
-    depends_on:
-      - postgres_db
-      - redis_cache
-    networks:
-      - quant_network
-
-  # 3b. 🧪 Testnet Quant Engine (5m timeframe, testnet API)
-  #     ⚠️ Data Isolation: Uses 'testnet_quant_db' PostgreSQL database
-  #     → Live uses 'quant_db' — they NEVER share tables.
-  quant_testnet_engine:
-    build:
-      context: ./backend-python
-      dockerfile: Dockerfile
-    container_name: quant_testnet_engine
-    restart: unless-stopped
-    environment:
-      # ── Engine Configuration ──
+      # ── Engine Identity ──
       ENV_TYPE: TESTNET
+      TIMEFRAME: "15m"
+      # ── Binance Spot Testnet ──
       BINANCE_BASE_URL: "https://testnet.binance.vision/api"
-      TIMEFRAME: "5m"
-      DB_NAME: testnet_quant_db
-      # ── Telegram (shared channel, alerts are prefixed) ──
+      BINANCE_API_KEY: ${TESTNET_15M_API_KEY}
+      BINANCE_API_SECRET: ${TESTNET_15M_SECRET_KEY}
+      # ── Database Isolation ──
+      DB_NAME: testnet_15m_db
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres_db
+      DB_PORT: "5432"
+      # ── Telegram ──
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
-      # ── Binance Spot Testnet API Keys (injected directly) ──
-      BINANCE_API_KEY: "Vbtrpl26aogc3d92flyvdJ0k22msJKChb4JC5aBElZsWFlhORFLpfVRVLp2wHsdp"
-      BINANCE_API_SECRET: "xijjQjwRP7QdIjjKfelTRnLXH4CD0rF2EMsmU2qVLFLdx5SsdkeuL8OJx2eCtJK1"
     volumes:
       - ./backend-python:/app
     depends_on:
-      - postgres_db
-      - redis_cache
+      postgres_db:
+        condition: service_healthy
+      redis_cache:
+        condition: service_started
     networks:
       - quant_network
 
-  # 4. الواجهة الخلفية للوحة التحكم (Laravel API)
+  # ═══════════════════════════════════════════════════════════════════════
+  #  BOT 2: 🧪 TESTNET 5m ENGINE
+  #  Database: testnet_5m_db   |   Schedule: every 5 minutes
+  #  Telegram prefix: 🧪 [TESTNET - 5m]
+  # ═══════════════════════════════════════════════════════════════════════
+  quant_5m_engine:
+    build:
+      context: ./backend-python
+      dockerfile: Dockerfile
+    container_name: quant_5m_engine
+    restart: unless-stopped
+    environment:
+      # ── Engine Identity ──
+      ENV_TYPE: TESTNET
+      TIMEFRAME: "5m"
+      # ── Binance Spot Testnet ──
+      BINANCE_BASE_URL: "https://testnet.binance.vision/api"
+      BINANCE_API_KEY: ${TESTNET_5M_API_KEY}
+      BINANCE_API_SECRET: ${TESTNET_5M_SECRET_KEY}
+      # ── Database Isolation ──
+      DB_NAME: testnet_5m_db
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: postgres_db
+      DB_PORT: "5432"
+      # ── Telegram ──
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+    volumes:
+      - ./backend-python:/app
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      redis_cache:
+        condition: service_started
+    networks:
+      - quant_network
+
+  # ─────────────────────────────────────────────────────────────────────
+  #  SUPPORT SERVICES (unchanged)
+  # ─────────────────────────────────────────────────────────────────────
   laravel_api:
     build:
       context: ./api-laravel
@@ -92,7 +132,7 @@ services:
     container_name: quant_laravel_api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000" # مغلق على السيرفر الداخلي فقط
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./api-laravel:/app
     depends_on:
@@ -100,7 +140,6 @@ services:
     networks:
       - quant_network
 
-  # 5. لوحة التحكم التفاعلية (Vue.js Frontend)
   vue_dashboard:
     build:
       context: ./frontend-vue
@@ -108,7 +147,7 @@ services:
     container_name: quant_vue_dashboard
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5173:5173" # مغلق على السيرفر الداخلي فقط
+      - "127.0.0.1:5173:5173"
     volumes:
       - ./frontend-vue:/app
       - /app/node_modules
@@ -118,7 +157,6 @@ services:
     networks:
       - quant_network
 
-  # 6. واجهة إدارة قواعد البيانات (pgAdmin)
   pgadmin:
     image: dpage/pgadmin4
     container_name: quant_pgadmin
@@ -127,7 +165,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@quant.com
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
-      - "127.0.0.1:5050:80" # مغلق على السيرفر الداخلي فقط
+      - "127.0.0.1:5050:80"
     volumes:
       - ./data-volumes/pgadmin_data:/var/lib/pgadmin
     depends_on:
@@ -135,19 +173,18 @@ services:
     networks:
       - quant_network
 
-  # 7. لوحة تحكم البيانات (Metabase) - تمت إضافتها لمتابعة الأرباح
   metabase:
     image: metabase/metabase:latest
     container_name: quant_metabase
     restart: unless-stopped
     ports:
-      - "3000:3000" # مغلق على السيرفر الداخلي فقط
+      - "3000:3000"
     environment:
       MB_DB_TYPE: postgres
-      MB_DB_DBNAME: quant_db
+      MB_DB_DBNAME: testnet_15m_db
       MB_DB_PORT: 5432
-      MB_DB_USER: quant_user
-      MB_DB_PASS: secret123
+      MB_DB_USER: ${POSTGRES_USER}
+      MB_DB_PASS: ${POSTGRES_PASSWORD}
       MB_DB_HOST: postgres_db
     depends_on:
       - postgres_db
