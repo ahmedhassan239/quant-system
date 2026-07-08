@@ -1,12 +1,11 @@
 """
 scanner.py — Multi-Asset Radar for the Smart DCA Strategy
 ==========================================================
-Scans Binance for the Top 10 most volatile, highly-liquid USDT pairs.
+⚠️ TESTNET OVERRIDE: Dynamic radar bypassed — using a static
+   8-symbol list because Binance Testnet has very low liquidity
+   and the volume filter returns too few pairs.
 
-Sorting by absolute 24h price change % (volatility) rather than raw volume,
-because the DCA strategy profits from RSI extremes — and high-volatility
-assets are far more likely to produce the oversold/overbought conditions
-that trigger our Order Block + RSI entries.
+   To restore dynamic scanning, set USE_STATIC_SYMBOLS = False.
 
 Usage:
     python scanner.py
@@ -29,6 +28,23 @@ ANCHOR_SYMBOL = 'PAXGUSDT'
 
 TOP_N = 10
 
+# ──────────────────────────────────────────────────────────────────────
+#  ⚠️ TESTNET OVERRIDE: Static symbol list
+#     Set to False to re-enable the dynamic volume/volatility radar.
+# ──────────────────────────────────────────────────────────────────────
+USE_STATIC_SYMBOLS = True
+
+TARGET_SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "ZECUSDT",
+    "ADAUSDT",
+    "PAXGUSDT",
+]
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  SCANNER LOGIC
@@ -40,7 +56,7 @@ def fetch_top_symbols():
     most volatile USDT pairs with sufficient liquidity.
 
     Returns:
-        list[str]: Sorted list of symbol strings, e.g. ['BTCUSDT', ...]
+        list[dict]: Sorted list of candidate dicts.
     """
     response = requests.get(BINANCE_TICKER_URL, timeout=15)
     response.raise_for_status()
@@ -81,7 +97,24 @@ def fetch_top_symbols():
 
 
 def scan():
-    """Run the scan and return a clean list of symbol strings (PAXGUSDT always included)."""
+    """
+    Return the list of symbols to trade.
+
+    When USE_STATIC_SYMBOLS is True (Testnet mode), returns the hardcoded
+    TARGET_SYMBOLS list directly, skipping the volume/volatility radar.
+    """
+    if USE_STATIC_SYMBOLS:
+        symbols = list(TARGET_SYMBOLS)
+        print("=" * 70, flush=True)
+        print(f"  {ALERT_PREFIX} STATIC SYMBOL LIST (Testnet Override)", flush=True)
+        print("=" * 70, flush=True)
+        for i, sym in enumerate(symbols, 1):
+            print(f"  {i:<4} {sym}", flush=True)
+        print("=" * 70, flush=True)
+        print(f"\n  Result: {symbols}\n", flush=True)
+        return symbols
+
+    # ── Dynamic radar (production mode) ──
     top = fetch_top_symbols()
     symbols = [c['symbol'] for c in top]
 
@@ -114,3 +147,4 @@ def scan():
 
 if __name__ == "__main__":
     scan()
+
