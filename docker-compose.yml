@@ -1,28 +1,32 @@
 # ═══════════════════════════════════════════════════════════════════════
-#  QUANT SYSTEM — Dual Testnet Architecture
-#  Two independent bots (15m & 5m) sharing infrastructure,
-#  with strict PostgreSQL database isolation.
+#  QUANT SYSTEM — Super Bot MTF Architecture
+#  Engine A (1h MACRO):  Trend detection → writes to shared DB
+#  Engine B (15m EXEC):  Trades with MTF confluence from shared DB
+#  Shared PostgreSQL for cross-engine communication (macro_state table)
 # ═══════════════════════════════════════════════════════════════════════
 
 services:
   # ─────────────────────────────────────────────────────────────────────
   #  1. SHARED INFRASTRUCTURE: PostgreSQL
-  #     Creates BOTH databases on first boot via init script.
-  #     Data persisted in ./data-volumes/postgres_data
+  #     Creates THREE databases on first boot:
+  #       - macro_1h_db     (Macro Engine's own data)
+  #       - exec_15m_db     (Execution Engine's own data)
+  #       - quant_shared_db (Cross-engine MTF communication)
   # ─────────────────────────────────────────────────────────────────────
   postgres_db:
     image: postgres:15-alpine
     container_name: quant_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: testnet_15m_db                    # Primary DB (created by default)
+      POSTGRES_DB: quant_shared_db                       # Primary DB (shared MTF)
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    # Auto-create the second database on first boot
+    # Auto-create all three databases on first boot
     command: >
       bash -c "docker-entrypoint.sh postgres &
       until pg_isready -U ${POSTGRES_USER}; do sleep 1; done;
-      psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'testnet_5m_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE testnet_5m_db;';
+      psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'macro_1h_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE macro_1h_db;';
+      psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'exec_15m_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE exec_15m_db;';
       wait"
     volumes:
       - ./data-volumes/postgres_data:/var/lib/postgresql/data
@@ -47,26 +51,30 @@ services:
       - quant_network
 
   # ═══════════════════════════════════════════════════════════════════════
-  #  BOT 1: 🧪 TESTNET 15m ENGINE
-  #  Database: testnet_15m_db   |   Schedule: every 15 minutes
-  #  Telegram prefix: 🧪 [TESTNET - 15m]
+  #  ENGINE A: 🔭 MACRO TREND ENGINE (1h)
+  #  Database: macro_1h_db   |   Shared: quant_shared_db
+  #  Schedule: every 60 minutes
+  #  Role: Computes SMA-50, Z-Score, SDC → writes UPTREND/DOWNTREND
   # ═══════════════════════════════════════════════════════════════════════
-  quant_15m_engine:
+  quant_macro_engine:
     build:
       context: ./backend-python
       dockerfile: Dockerfile
-    container_name: quant_15m_engine
+    container_name: quant_macro_engine
     restart: unless-stopped
     environment:
       # ── Engine Identity ──
       ENV_TYPE: TESTNET
-      TIMEFRAME: "15m"
-      # ── Binance Spot Testnet ──
-      BINANCE_BASE_URL: "https://testnet.binance.vision/api"
+      ENGINE_ROLE: "MACRO"
+      TIMEFRAME: "1h"
+      # ── Binance Futures Testnet ──
+      BINANCE_BASE_URL: "https://testnet.binancefuture.com"
+      BINANCE_FUTURES_BASE_URL: "https://testnet.binancefuture.com"
       BINANCE_API_KEY: ${TESTNET_15M_API_KEY}
       BINANCE_API_SECRET: ${TESTNET_15M_SECRET_KEY}
       # ── Database Isolation ──
-      DB_NAME: testnet_15m_db
+      DB_NAME: macro_1h_db
+      MACRO_DB_NAME: quant_shared_db
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres_db
@@ -85,26 +93,30 @@ services:
       - quant_network
 
   # ═══════════════════════════════════════════════════════════════════════
-  #  BOT 2: 🧪 TESTNET 5m ENGINE
-  #  Database: testnet_5m_db   |   Schedule: every 5 minutes
-  #  Telegram prefix: 🧪 [TESTNET - 5m]
+  #  ENGINE B: ⚡ EXECUTION ENGINE (15m)
+  #  Database: exec_15m_db   |   Shared: quant_shared_db
+  #  Schedule: every 15 minutes
+  #  Role: Reads macro trend → trades with MTF confluence
   # ═══════════════════════════════════════════════════════════════════════
-  quant_5m_engine:
+  quant_exec_engine:
     build:
       context: ./backend-python
       dockerfile: Dockerfile
-    container_name: quant_5m_engine
+    container_name: quant_exec_engine
     restart: unless-stopped
     environment:
       # ── Engine Identity ──
       ENV_TYPE: TESTNET
-      TIMEFRAME: "5m"
-      # ── Binance Spot Testnet ──
-      BINANCE_BASE_URL: "https://testnet.binance.vision/api"
+      ENGINE_ROLE: "EXECUTION"
+      TIMEFRAME: "15m"
+      # ── Binance Futures Testnet ──
+      BINANCE_BASE_URL: "https://testnet.binancefuture.com"
+      BINANCE_FUTURES_BASE_URL: "https://testnet.binancefuture.com"
       BINANCE_API_KEY: ${TESTNET_5M_API_KEY}
       BINANCE_API_SECRET: ${TESTNET_5M_SECRET_KEY}
       # ── Database Isolation ──
-      DB_NAME: testnet_5m_db
+      DB_NAME: exec_15m_db
+      MACRO_DB_NAME: quant_shared_db
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres_db
@@ -118,6 +130,8 @@ services:
       postgres_db:
         condition: service_healthy
       redis_cache:
+        condition: service_started
+      quant_macro_engine:
         condition: service_started
     networks:
       - quant_network
@@ -181,7 +195,7 @@ services:
       - "3000:3000"
     environment:
       MB_DB_TYPE: postgres
-      MB_DB_DBNAME: testnet_15m_db
+      MB_DB_DBNAME: quant_shared_db
       MB_DB_PORT: 5432
       MB_DB_USER: ${POSTGRES_USER}
       MB_DB_PASS: ${POSTGRES_PASSWORD}

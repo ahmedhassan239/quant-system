@@ -1,9 +1,8 @@
 """
-scanner.py — Multi-Asset Radar for the Smart DCA Strategy
-==========================================================
+scanner.py — Multi-Asset Radar for the Smart DCA Strategy (Futures)
+====================================================================
 ⚠️ TESTNET OVERRIDE: Dynamic radar bypassed — using a static
-   8-symbol list because Binance Testnet has very low liquidity
-   and the volume filter returns too few pairs.
+   8-symbol list because Binance Futures Testnet has limited pairs.
 
    To restore dynamic scanning, set USE_STATIC_SYMBOLS = False.
 
@@ -12,12 +11,12 @@ Usage:
 """
 
 import requests
-from config import BINANCE_BASE_URL, TIMEFRAME, ALERT_PREFIX
+from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME, ALERT_PREFIX
 
 # ──────────────────────────────────────────────────────────────────────
 #  CONFIGURATION
 # ──────────────────────────────────────────────────────────────────────
-BINANCE_TICKER_URL = f"{BINANCE_BASE_URL}/v3/ticker/24hr"
+BINANCE_TICKER_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/24hr"
 MIN_QUOTE_VOLUME = 50_000_000  # $50M minimum 24h USDT volume
 
 # Stablecoin / peg-asset fragments to exclude
@@ -52,7 +51,7 @@ TARGET_SYMBOLS = [
 
 def fetch_top_symbols():
     """
-    Fetch all 24h tickers from Binance, filter, and return the Top N
+    Fetch all 24h tickers from Binance Futures, filter, and return the Top N
     most volatile USDT pairs with sufficient liquidity.
 
     Returns:
@@ -106,7 +105,7 @@ def scan():
     if USE_STATIC_SYMBOLS:
         symbols = list(TARGET_SYMBOLS)
         print("=" * 70, flush=True)
-        print(f"  {ALERT_PREFIX} STATIC SYMBOL LIST (Testnet Override)", flush=True)
+        print(f"  {ALERT_PREFIX} STATIC SYMBOL LIST (Futures Testnet Override)", flush=True)
         print("=" * 70, flush=True)
         for i, sym in enumerate(symbols, 1):
             print(f"  {i:<4} {sym}", flush=True)
@@ -124,7 +123,7 @@ def scan():
 
     # Pretty-print the results
     print("=" * 70, flush=True)
-    print(f"  {ALERT_PREFIX} MULTI-ASSET RADAR — Top 10 Volatile USDT Pairs", flush=True)
+    print(f"  {ALERT_PREFIX} MULTI-ASSET RADAR — Top 10 Volatile USDT Futures Pairs", flush=True)
     print("=" * 70, flush=True)
     print(f"  {'#':<4} {'Symbol':<14} {'Price':>12} {'24h Chg %':>10} {'24h Vol ($M)':>14}", flush=True)
     print("-" * 70, flush=True)

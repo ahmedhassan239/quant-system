@@ -3,14 +3,15 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.dialects.postgresql import insert
 from database import SessionLocal, MarketData, engine, init_db
-from config import BINANCE_BASE_URL, TIMEFRAME
+from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME
 
 def fetch_binance_klines(symbol='PAXGUSDT', interval=TIMEFRAME, limit=100):
     """
-    Fetch klines/candlestick data from the Binance API.
+    Fetch klines/candlestick data from the Binance Futures API.
+    Uses /fapi/v1/klines for Futures Testnet.
     URL and interval are driven by environment variables via config.py.
     """
-    url = f"{BINANCE_BASE_URL}/v3/klines"
+    url = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/klines"
     params = {
         'symbol': symbol,
         'interval': interval,
@@ -76,26 +77,26 @@ def save_to_db(df):
 def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250):
     """
     Core execution logic for the data fetcher.
-    Fetches candle data for each symbol in the list.
+    Fetches Futures candle data for each symbol in the list.
     Defaults to PAXGUSDT if no symbols provided.
     Uses limit=250 to ensure SMA 200 has enough warmup data.
     """
     if symbols is None:
         symbols = ['PAXGUSDT']
 
-    print("--- Fetcher Started ---", flush=True)
+    print("--- Fetcher Started (Futures) ---", flush=True)
     # Ensure tables exist before trying to save
     init_db()
 
     for sym in symbols:
-        print(f"Fetching {limit} x {interval} candles for {sym}...", flush=True)
+        print(f"Fetching {limit} x {interval} Futures candles for {sym}...", flush=True)
         try:
             df = fetch_binance_klines(symbol=sym, interval=interval, limit=limit)
             save_to_db(df)
         except Exception as e:
             print(f"  ⚠️ Failed to fetch {sym}: {e}", flush=True)
 
-    print("--- Fetcher Completed ---", flush=True)
+    print("--- Fetcher Completed (Futures) ---", flush=True)
 
 if __name__ == "__main__":
     run_fetcher()
