@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, UniqueConstraint, text, func
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, UniqueConstraint, text, func, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # ──────────────────────────────────────────────────────────────────────
@@ -279,3 +279,34 @@ if __name__ == "__main__":
     init_db()
     init_shared_db()
     print("Database initialized (per-engine + shared).", flush=True)
+
+# ══════════════════════════════════════════════════════════════════════
+#  DYNAMIC SYMBOLS (quant_shared_db)
+# ══════════════════════════════════════════════════════════════════════
+
+class ActiveSymbol(SharedBase):
+    __tablename__ = "active_symbols"
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, unique=True, nullable=False)
+    is_active = Column(Boolean, default=True)
+
+def get_active_symbols():
+    """
+    Fetch active symbols dynamically from quant_shared_db.
+    Falls back to a default list if the table is missing or empty.
+    """
+    default_symbols = ['BTCUSDT', 'ETHUSDT']
+    session = SharedSessionLocal()
+    try:
+        if not shared_engine.dialect.has_table(shared_engine.connect(), "active_symbols"):
+            return default_symbols
+
+        symbols = session.query(ActiveSymbol).filter(ActiveSymbol.is_active == True).all()
+        symbol_list = [s.symbol for s in symbols]
+        
+        return symbol_list if symbol_list else default_symbols
+    except Exception as e:
+        print(f"⚠️ Error fetching active symbols: {e}")
+        return default_symbols
+    finally:
+        session.close()

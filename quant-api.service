@@ -1,0 +1,13 @@
+[Unit]
+Description=Laravel Quant API Service
+After=network.target
+
+[Service]
+User=$USER
+Group=www-data
+WorkingDirectory=/home/elwady/linux-2026/Projects/me/quant-system/api-laravel
+ExecStart=/usr/bin/php artisan serve --host=127.0.0.1 --port=8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

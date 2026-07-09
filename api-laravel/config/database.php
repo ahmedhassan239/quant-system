@@ -114,6 +114,51 @@ return [
             // 'trust_server_certificate' => env('DB_TRUST_SERVER_CERTIFICATE', 'false'),
         ],
 
+        'quant_shared' => [
+            'driver' => 'pgsql',
+            'url' => env('DATABASE_URL'),
+            'host' => env('DB_HOST', 'postgres_db'),
+            'port' => env('DB_PORT', '5432'),
+            'database' => env('DB_SHARED_DATABASE', 'quant_shared_db'),
+            'username' => env('DB_USERNAME', 'myquantuser'),
+            'password' => env('DB_PASSWORD', 'mysecretpassword'),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => 'prefer',
+        ],
+
+        'exec_15m' => [
+            'driver' => 'pgsql',
+            'url' => env('DATABASE_URL'),
+            'host' => env('DB_HOST', 'postgres_db'),
+            'port' => env('DB_PORT', '5432'),
+            'database' => env('DB_EXEC_DATABASE', 'exec_15m_db'),
+            'username' => env('DB_USERNAME', 'myquantuser'),
+            'password' => env('DB_PASSWORD', 'mysecretpassword'),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => 'prefer',
+        ],
+
+        'macro_1h' => [
+            'driver' => 'pgsql',
+            'url' => env('DATABASE_URL'),
+            'host' => env('DB_HOST', 'postgres_db'),
+            'port' => env('DB_PORT', '5432'),
+            'database' => env('DB_MACRO_DATABASE', 'macro_1h_db'),
+            'username' => env('DB_USERNAME', 'myquantuser'),
+            'password' => env('DB_PASSWORD', 'mysecretpassword'),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => 'prefer',
+        ],
+
     ],
 
     /*

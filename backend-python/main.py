@@ -7,7 +7,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     ENV_TYPE, SCHEDULE_INTERVAL_MINUTES, BINANCE_FUTURES_BASE_URL,
                     FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE,
                     MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD)
-from database import SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS, init_shared_db
+from database import SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS, init_shared_db, get_active_symbols
 from futures_executor import create_futures_client
 
 # ── Initialize Futures client once at module level ──
@@ -30,8 +30,9 @@ def job():
     print(f"{ALERT_PREFIX} Running scheduled job at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     print("="*60, flush=True)
 
-    # 1. Scan for tradeable symbols
-    symbols = scan()
+    # 1. Fetch dynamic symbols from shared DB
+    symbols = get_active_symbols()
+    print(f"Trading active symbols: {symbols}", flush=True)
 
     # 2. Fetch latest Futures candle data for all scanned symbols
     run_fetcher(symbols=symbols)
