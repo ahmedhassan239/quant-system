@@ -1,46 +1,26 @@
-# ═══════════════════════════════════════════════════════════════════════
-#  QUANT SYSTEM — Super Bot MTF Architecture
-#  Engine A (1h MACRO):  Trend detection → writes to shared DB
-#  Engine B (15m EXEC):  Trades with MTF confluence from shared DB
-#  Shared PostgreSQL for cross-engine communication (macro_state table)
-# ═══════════════════════════════════════════════════════════════════════
-
 services:
-  # ─────────────────────────────────────────────────────────────────────
-  #  1. SHARED INFRASTRUCTURE: PostgreSQL
-  #     Creates THREE databases on first boot:
-  #       - macro_1h_db     (Macro Engine's own data)
-  #       - exec_15m_db     (Execution Engine's own data)
-  #       - quant_shared_db (Cross-engine MTF communication)
-  # ─────────────────────────────────────────────────────────────────────
   postgres_db:
     image: postgres:15-alpine
     container_name: quant_postgres
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
-      POSTGRES_DB: quant_shared_db                       # Primary DB (shared MTF)
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    # Auto-create all three databases on first boot
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: secret123
+      POSTGRES_DB: quant_shared_db
     command: >
-      bash -c "docker-entrypoint.sh postgres &
-      until pg_isready -U ${POSTGRES_USER}; do sleep 1; done;
-      psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'macro_1h_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE macro_1h_db;';
-      psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'exec_15m_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE exec_15m_db;';
-      wait"
+      sh -c "docker-entrypoint.sh postgres & until pg_isready -U quant_user; do sleep 1; done; psql -U quant_user -tc \"SELECT 1 FROM pg_database WHERE datname = 'macro_1h_db'\" | grep -q 1 || psql -U quant_user -c 'CREATE DATABASE macro_1h_db;'; psql -U quant_user -tc \"SELECT 1 FROM pg_database WHERE datname = 'exec_15m_db'\" | grep -q 1 || psql -U quant_user -c 'CREATE DATABASE exec_15m_db;'; wait"
     volumes:
       - ./data-volumes/postgres_data:/var/lib/postgresql/data
     networks:
       - quant_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: [ "CMD-SHELL", "pg_isready -U quant_user" ]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # ─────────────────────────────────────────────────────────────────────
-  #  2. SHARED INFRASTRUCTURE: Redis
-  # ─────────────────────────────────────────────────────────────────────
   redis_cache:
     image: redis:7-alpine
     container_name: quant_redis
@@ -50,103 +30,37 @@ services:
     networks:
       - quant_network
 
-  # ═══════════════════════════════════════════════════════════════════════
-  #  ENGINE A: 🔭 MACRO TREND ENGINE (1h)
-  #  Database: macro_1h_db   |   Shared: quant_shared_db
-  #  Schedule: every 60 minutes
-  #  Role: Computes SMA-50, Z-Score, SDC → writes UPTREND/DOWNTREND
-  # ═══════════════════════════════════════════════════════════════════════
   quant_macro_engine:
-    build:
-      context: ./backend-python
-      dockerfile: Dockerfile
+    build: { context: ./backend-python, dockerfile: Dockerfile }
     container_name: quant_macro_engine
     restart: unless-stopped
-    environment:
-      # ── Engine Identity ──
-      ENV_TYPE: TESTNET
-      ENGINE_ROLE: "MACRO"
-      TIMEFRAME: "1h"
-      # ── Binance Futures Testnet ──
-      BINANCE_BASE_URL: "https://testnet.binancefuture.com"
-      BINANCE_FUTURES_BASE_URL: "https://testnet.binancefuture.com"
-      BINANCE_API_KEY: ${TESTNET_15M_API_KEY}
-      BINANCE_API_SECRET: ${TESTNET_15M_SECRET_KEY}
-      # ── Database Isolation ──
-      DB_NAME: macro_1h_db
-      MACRO_DB_NAME: quant_shared_db
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: postgres_db
-      DB_PORT: "5432"
-      # ── Telegram ──
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
     volumes:
       - ./backend-python:/app
     depends_on:
-      postgres_db:
-        condition: service_healthy
-      redis_cache:
-        condition: service_started
+      postgres_db: { condition: service_healthy }
+      redis_cache: { condition: service_started }
     networks:
       - quant_network
 
-  # ═══════════════════════════════════════════════════════════════════════
-  #  ENGINE B: ⚡ EXECUTION ENGINE (15m)
-  #  Database: exec_15m_db   |   Shared: quant_shared_db
-  #  Schedule: every 15 minutes
-  #  Role: Reads macro trend → trades with MTF confluence
-  # ═══════════════════════════════════════════════════════════════════════
   quant_exec_engine:
-    build:
-      context: ./backend-python
-      dockerfile: Dockerfile
+    build: { context: ./backend-python, dockerfile: Dockerfile }
     container_name: quant_exec_engine
     restart: unless-stopped
-    environment:
-      # ── Engine Identity ──
-      ENV_TYPE: TESTNET
-      ENGINE_ROLE: "EXECUTION"
-      TIMEFRAME: "15m"
-      # ── Binance Futures Testnet ──
-      BINANCE_BASE_URL: "https://testnet.binancefuture.com"
-      BINANCE_FUTURES_BASE_URL: "https://testnet.binancefuture.com"
-      BINANCE_API_KEY: ${TESTNET_5M_API_KEY}
-      BINANCE_API_SECRET: ${TESTNET_5M_SECRET_KEY}
-      # ── Database Isolation ──
-      DB_NAME: exec_15m_db
-      MACRO_DB_NAME: quant_shared_db
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: postgres_db
-      DB_PORT: "5432"
-      # ── Telegram ──
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
     volumes:
       - ./backend-python:/app
     depends_on:
-      postgres_db:
-        condition: service_healthy
-      redis_cache:
-        condition: service_started
-      quant_macro_engine:
-        condition: service_started
+      postgres_db: { condition: service_healthy }
+      redis_cache: { condition: service_started }
     networks:
       - quant_network
 
-  # ─────────────────────────────────────────────────────────────────────
-  #  SUPPORT SERVICES (unchanged)
-  # ─────────────────────────────────────────────────────────────────────
   laravel_api:
-    build:
-      context: ./api-laravel
-      dockerfile: Dockerfile
+    build: { context: ./api-laravel, dockerfile: Dockerfile }
     container_name: quant_laravel_api
     restart: unless-stopped
+    command: php -S 0.0.0.0:8000 -t public
     ports:
-      - "127.0.0.1:8000:8000"
+      - "8080:8000"
     volumes:
       - ./api-laravel:/app
     depends_on:
@@ -155,50 +69,19 @@ services:
       - quant_network
 
   vue_dashboard:
-    build:
-      context: ./frontend-vue
-      dockerfile: Dockerfile
+    build: { context: ./frontend-vue, dockerfile: Dockerfile }
     container_name: quant_vue_dashboard
     restart: unless-stopped
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
     ports:
-      - "127.0.0.1:5173:5173"
+      - "5173:5173"
     volumes:
       - ./frontend-vue:/app
-      - /app/node_modules
-    command: npm run dev -- --host 0.0.0.0
-    depends_on:
-      - laravel_api
-    networks:
-      - quant_network
-
-  pgadmin:
-    image: dpage/pgadmin4
-    container_name: quant_pgadmin
-    restart: unless-stopped
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@quant.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-    ports:
-      - "127.0.0.1:5050:80"
-    volumes:
-      - ./data-volumes/pgadmin_data:/var/lib/pgadmin
-    depends_on:
-      - postgres_db
-    networks:
-      - quant_network
-
-  metabase:
-    image: metabase/metabase:latest
-    container_name: quant_metabase
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./metabase-data:/metabase-data
-    environment:
-      MB_DB_FILE: /metabase-data/metabase.db
-    depends_on:
-      - postgres_db
     networks:
       - quant_network
 
