@@ -6,17 +6,17 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     environment:
-      POSTGRES_USER: quant_user
-      POSTGRES_PASSWORD: secret123
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: quant_shared_db
     command: >
-      sh -c "docker-entrypoint.sh postgres & until pg_isready -U quant_user; do sleep 1; done; psql -U quant_user -tc \"SELECT 1 FROM pg_database WHERE datname = 'macro_1h_db'\" | grep -q 1 || psql -U quant_user -c 'CREATE DATABASE macro_1h_db;'; psql -U quant_user -tc \"SELECT 1 FROM pg_database WHERE datname = 'exec_15m_db'\" | grep -q 1 || psql -U quant_user -c 'CREATE DATABASE exec_15m_db;'; wait"
+      sh -c "docker-entrypoint.sh postgres & until pg_isready -U ${POSTGRES_USER}; do sleep 1; done; psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'macro_1h_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE macro_1h_db;'; psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'exec_15m_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE exec_15m_db;'; wait"
     volumes:
       - ./data-volumes/postgres_data:/var/lib/postgresql/data
     networks:
       - quant_network
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U quant_user" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -34,6 +34,8 @@ services:
     build: { context: ./backend-python, dockerfile: Dockerfile }
     container_name: quant_macro_engine
     restart: unless-stopped
+    environment:
+      - ENGINE_ROLE=MACRO
     volumes:
       - ./backend-python:/app
     depends_on:
@@ -46,6 +48,8 @@ services:
     build: { context: ./backend-python, dockerfile: Dockerfile }
     container_name: quant_exec_engine
     restart: unless-stopped
+    environment:
+      - ENGINE_ROLE=EXEC
     volumes:
       - ./backend-python:/app
     depends_on:
