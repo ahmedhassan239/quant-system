@@ -10,13 +10,17 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: quant_shared_db
     command: >
-      sh -c "docker-entrypoint.sh postgres & until pg_isready -U ${POSTGRES_USER}; do sleep 1; done; psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'macro_1h_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE macro_1h_db;'; psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'exec_15m_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE exec_15m_db;'; wait"
+      sh -c "docker-entrypoint.sh postgres &
+      until pg_isready -U ${POSTGRES_USER}; do sleep 1; done;
+      psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'macro_1h_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE macro_1h_db;';
+      psql -U ${POSTGRES_USER} -tc \"SELECT 1 FROM pg_database WHERE datname = 'exec_15m_db'\" | grep -q 1 || psql -U ${POSTGRES_USER} -c 'CREATE DATABASE exec_15m_db;';
+      wait"
     volumes:
       - ./data-volumes/postgres_data:/var/lib/postgresql/data
     networks:
       - quant_network
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
