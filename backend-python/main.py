@@ -1,14 +1,15 @@
 import time
 import schedule
-from scanner import scan
+import threading
+from scanner import scan, update_radar
 from data_fetcher import run_fetcher
 from analyzer import run_analyzer, run_macro_analyzer, send_telegram_alert
 from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     ENV_TYPE, SCHEDULE_INTERVAL_MINUTES, BINANCE_FUTURES_BASE_URL,
                     FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE,
                     MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD)
-from database import SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS, init_shared_db, get_active_symbols
-from futures_executor import create_futures_client
+from database import SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS, init_shared_db, get_active_symbols, save_wallet_balance
+from futures_executor import create_futures_client, get_futures_balance
 
 # ── Initialize Futures client once at module level ──
 futures_client = None
@@ -25,10 +26,28 @@ def init_futures():
         print("   → Running in VIRTUAL-ONLY mode (no real orders).", flush=True)
         futures_client = None
 
+def wallet_balance_worker():
+    """Background thread to poll Wallet Balance every 30 seconds."""
+    while True:
+        try:
+            if futures_client:
+                balance = get_futures_balance(futures_client)
+                save_wallet_balance(balance)
+        except Exception as e:
+            print(f"Wallet balance fetch error: {e}", flush=True)
+        time.sleep(30)
+
 def job():
     print("\n" + "="*60, flush=True)
     print(f"{ALERT_PREFIX} Running scheduled job at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     print("="*60, flush=True)
+
+def scanner_job():
+    print("\n" + "="*60, flush=True)
+    print(f"{ALERT_PREFIX} Running dynamic scanner (Radar) at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print("="*60, flush=True)
+    update_radar()
+    print("Radar update complete.", flush=True)
 
     # 1. Fetch dynamic symbols from shared DB
     symbols = get_active_symbols()
@@ -77,8 +96,13 @@ def main():
     # Initialize Futures client (only needed for execution engine)
     if ENGINE_ROLE.upper() != "MACRO":
         init_futures()
+        threading.Thread(target=wallet_balance_worker, daemon=True).start()
 
     # Run the job immediately once on startup
+    if ENGINE_ROLE.upper() == "MACRO":
+        scanner_job()
+        schedule.every(60).minutes.do(scanner_job)
+        
     job()
 
     # Schedule the job dynamically based on TIMEFRAME
@@ -102,9 +126,9 @@ def main():
     else:
         send_telegram_alert(
             f"{ALERT_EMOJI} *{ALERT_PREFIX} Super Bot — ⚡ Execution Engine Started*\n\n"
-            f"Trading with MTF Confluence (reads 1h macro trend from shared DB).\n"
-            f"LONG: UPTREND + Bullish OB + Z < {ZSCORE_LONG_THRESHOLD}\n"
-            f"SHORT: DOWNTREND + Bearish OB + Z > +{ZSCORE_SHORT_THRESHOLD}\n"
+            f"Trading with Dual-Strategy MTF Confluence (reads 1h macro trend from shared DB).\n"
+            f"Strategy A (Pullback): Extreme Z-Score + Order Blocks\n"
+            f"Strategy B (Breakout): Volume Anomalies + Consolidation Zones\n"
             f"Max {MAX_CONCURRENT_POSITIONS} positions | ${SLOT_BUDGET:,.0f}/slot | *{TIMEFRAME}*.\n"
             f"Leverage: {FUTURES_LEVERAGE}x | Margin: {FUTURES_MARGIN_TYPE}\n"
             f"Capital: ${TOTAL_CAPITAL:,.0f} | Slot: ${SLOT_BUDGET:,.0f}"

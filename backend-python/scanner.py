@@ -25,13 +25,13 @@ EXCLUDED_FRAGMENTS = {'USDC', 'FDUSD', 'TUSD', 'EUR', 'BUSD', 'DAI', 'RLUSD', 'U
 # Portfolio anchor — always included regardless of filters
 ANCHOR_SYMBOL = 'PAXGUSDT'
 
-TOP_N = 10
+TOP_N = 30
 
 # ──────────────────────────────────────────────────────────────────────
 #  ⚠️ TESTNET OVERRIDE: Static symbol list
 #     Set to False to re-enable the dynamic volume/volatility radar.
 # ──────────────────────────────────────────────────────────────────────
-USE_STATIC_SYMBOLS = True
+USE_STATIC_SYMBOLS = False
 
 TARGET_SYMBOLS = [
     "BTCUSDT",
@@ -141,6 +141,16 @@ def scan():
     print("=" * 70, flush=True)
     print(f"\n  Result: {symbols}\n", flush=True)
 
+    return symbols
+
+def update_radar():
+    """
+    Run the scanner and update the active_symbols table in the shared DB.
+    Called every 60 minutes by the Macro engine.
+    """
+    from database import update_active_symbols
+    symbols = scan()
+    update_active_symbols(symbols)
     return symbols
 
 

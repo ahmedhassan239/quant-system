@@ -4,8 +4,8 @@ config.py — Central Environment-Driven Configuration
 Single source of truth for ALL environment-variable-driven settings.
 
 Super Bot MTF Architecture:
-  Engine A (MACRO):     1h timeframe — trend detection via Z-Score + SMA-50
-  Engine B (EXECUTION): 15m timeframe — entry execution with MTF confluence
+  Engine A (MACRO):     15m timeframe — trend detection via Z-Score + SMA-50
+  Engine B (EXECUTION): 5m timeframe — entry execution with MTF confluence
 """
 
 import os
@@ -48,7 +48,7 @@ FUTURES_MARGIN_TYPE = os.environ.get("FUTURES_MARGIN_TYPE", "ISOLATED")
 # ──────────────────────────────────────────────────────────────────────
 #  TIMEFRAME & SCHEDULING
 # ──────────────────────────────────────────────────────────────────────
-TIMEFRAME = os.environ.get("TIMEFRAME", "15m")          # "1h" macro, "15m" execution
+TIMEFRAME = os.environ.get("TIMEFRAME", "5m")          # "15m" macro, "5m" execution
 
 # Derive the scheduling interval in minutes from the timeframe string
 # e.g. "15m" → 15, "5m" → 5, "1h" → 60
@@ -77,14 +77,18 @@ MACRO_DB_NAME = os.environ.get("MACRO_DB_NAME", "quant_shared_db")
 MACRO_SMA_PERIOD = 50              # SMA window for macro trend
 MACRO_SDC_MULTIPLIER = 2.0         # ±2σ Standard Deviation Channel
 
-# Execution Engine (15m) — Z-Score thresholds for entry
-ZSCORE_LONG_THRESHOLD = -1.5       # Z < -1.5 → oversold (LONG entry)
-ZSCORE_SHORT_THRESHOLD = 1.5       # Z > +1.5 → overbought (SHORT entry)
+# Execution Engine (5m) — Z-Score thresholds for entry (Relaxed for Pullback Strategy)
+ZSCORE_LONG_THRESHOLD = -0.8       # Z < -0.8 → oversold (LONG entry)
+ZSCORE_SHORT_THRESHOLD = 0.8       # Z > +0.8 → overbought (SHORT entry)
 ZSCORE_SMA_PERIOD = 50             # SMA window for execution Z-Score
 
 # Order Block volume filter
 OB_VOLUME_MULTIPLIER = 1.5         # OB candle volume must be > 1.5x 20-period avg
 OB_VOLUME_MA_PERIOD = 20           # Moving average window for volume baseline
+
+# Breakout volume filter (Strategy B)
+BREAKOUT_VOLUME_MULTIPLIER = 2.5   # Breakout candle volume > 2.5x 20-period avg
+BREAKOUT_CONSOLIDATION_PERIOD = 20 # Lookback for consolidation zone
 
 # ──────────────────────────────────────────────────────────────────────
 #  TELEGRAM ALERT PREFIX

@@ -14,7 +14,17 @@
       </header>
 
       <!-- Stats Overview Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+        
+        <!-- NEW WALLET BALANCE CARD -->
+        <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-emerald-500/50 transition-colors relative overflow-hidden group">
+          <div class="absolute inset-0 bg-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+          <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase relative z-10">Wallet Balance (USDT)</div>
+          <div class="text-4xl font-bold text-white relative z-10 flex items-center gap-2">
+            ${{ walletBalance.toFixed(2) }}
+          </div>
+        </div>
+
         <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-gray-600 transition-colors">
           <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase">Total PNL</div>
           <div :class="stats.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'" class="text-4xl font-bold">
@@ -99,11 +109,13 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
+import axios from 'axios'
 
 const stats = ref({})
 const macroTrends = ref([])
 const activeSymbols = ref([])
 const newSymbol = ref('')
+const walletBalance = ref(0.00)
 
 const API_BASE = '/api/dashboard'
 
@@ -153,20 +165,37 @@ const addSymbol = async () => {
   }
 }
 
+const fetchWalletBalance = async () => {
+  try {
+    const res = await axios.get('/api/portfolio/balance')
+    if (res.data && res.data.wallet_balance !== undefined) {
+      walletBalance.value = res.data.wallet_balance
+    }
+  } catch (e) { 
+    console.error('Failed to fetch wallet balance', e) 
+  }
+}
+
 let pollingInterval;
+let walletInterval;
 
 onMounted(() => {
   fetchStats()
   fetchMacroTrends()
   fetchSymbols()
+  fetchWalletBalance()
+  
   
   pollingInterval = setInterval(() => {
     fetchStats()
     fetchMacroTrends()
   }, 10000)
+
+  walletInterval = setInterval(fetchWalletBalance, 30000)
 })
 
 onUnmounted(() => {
   clearInterval(pollingInterval)
+  clearInterval(walletInterval)
 })
 </script>

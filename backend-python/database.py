@@ -36,7 +36,7 @@ SharedBase = declarative_base()     # Shared MTF tables
 #  GLOBAL PORTFOLIO CONSTANTS
 # ──────────────────────────────────────────────────────────────────────
 TOTAL_CAPITAL = 1000.0             # Total virtual capital
-MAX_CONCURRENT_POSITIONS = 2       # Max symbols with open positions
+MAX_CONCURRENT_POSITIONS = 5       # Max symbols with open positions
 SLOT_BUDGET = 500.0                # Max USDT allocated per symbol
 
 
@@ -77,6 +77,7 @@ class TradingSignal(Base):
     bearish_ob_low = Column(Float, nullable=True)
     bearish_ob_high = Column(Float, nullable=True)
     decision = Column(String, nullable=False)             # LONG, SHORT, or WAIT
+    strategy_type = Column(String, nullable=True)         # PULLBACK or BREAKOUT
 
 class PortfolioState(Base):
     __tablename__ = "portfolio_state"
@@ -95,6 +96,8 @@ class PortfolioState(Base):
     total_cost = Column(Float, nullable=False, default=0.0)
     highest_price_since_entry = Column(Float, nullable=True)
     lowest_price_since_entry = Column(Float, nullable=True)
+    stop_loss_price = Column(Float, nullable=True)
+    trailing_active = Column(Boolean, nullable=True, default=False)
     pnl_pct = Column(Float, nullable=True)
     pnl_usd = Column(Float, nullable=True)
     total_portfolio_value = Column(Float, nullable=False)
@@ -125,6 +128,15 @@ class MacroState(SharedBase):
     current_price = Column(Float, nullable=False)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+class WalletBalance(SharedBase):
+    """
+    Stores the live Futures Wallet Balance.
+    Updated every 30 seconds by the background worker.
+    """
+    __tablename__ = "wallet_balance"
+    id = Column(Integer, primary_key=True, index=True)
+    balance = Column(Float, nullable=False, default=0.0)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 # ══════════════════════════════════════════════════════════════════════
 #  HELPERS — Per-Engine
@@ -260,6 +272,26 @@ def get_macro_trend(symbol):
     finally:
         session.close()
 
+def save_wallet_balance(balance: float):
+    """
+    Upsert the live Wallet Balance in the shared DB.
+    """
+    session = SharedSessionLocal()
+    try:
+        record = session.query(WalletBalance).first()
+        if record:
+            record.balance = balance
+            record.updated_at = datetime.utcnow()
+        else:
+            record = WalletBalance(balance=balance, updated_at=datetime.utcnow())
+            session.add(record)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"⚠️ Failed to save wallet balance: {e}", flush=True)
+    finally:
+        session.close()
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  INITIALIZATION
@@ -308,5 +340,40 @@ def get_active_symbols():
     except Exception as e:
         print(f"⚠️ Error fetching active symbols: {e}")
         return default_symbols
+    finally:
+        session.close()
+
+def update_active_symbols(new_symbols: list[str]):
+    """
+    Update the active symbols in quant_shared_db.
+    Inserts new symbols, activates existing ones in the list,
+    and deactivates ones not in the list.
+    """
+    session = SharedSessionLocal()
+    try:
+        if not shared_engine.dialect.has_table(shared_engine.connect(), "active_symbols"):
+            print("⚠️ active_symbols table not found. Run init_shared_db() first.")
+            return
+
+        # Fetch all existing
+        existing_records = session.query(ActiveSymbol).all()
+        existing_dict = {record.symbol: record for record in existing_records}
+
+        for sym in new_symbols:
+            if sym in existing_dict:
+                existing_dict[sym].is_active = True
+            else:
+                new_record = ActiveSymbol(symbol=sym, is_active=True)
+                session.add(new_record)
+
+        for sym, record in existing_dict.items():
+            if sym not in new_symbols:
+                record.is_active = False
+                
+        session.commit()
+        print(f"Radar updated DB: {len(new_symbols)} active symbols synced.", flush=True)
+    except Exception as e:
+        session.rollback()
+        print(f"⚠️ Error updating active symbols: {e}", flush=True)
     finally:
         session.close()
