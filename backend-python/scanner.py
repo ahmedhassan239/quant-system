@@ -32,7 +32,7 @@ TOP_N = 15
 #  ⚠️ TESTNET OVERRIDE: Static symbol list
 #     Set to False to re-enable the dynamic volume/volatility radar.
 # ──────────────────────────────────────────────────────────────────────
-USE_STATIC_SYMBOLS = False
+USE_STATIC_SYMBOLS = True
 
 TARGET_SYMBOLS = [
     "BTCUSDT",
@@ -40,9 +40,11 @@ TARGET_SYMBOLS = [
     "SOLUSDT",
     "BNBUSDT",
     "XRPUSDT",
-    "ZECUSDT",
     "ADAUSDT",
-    "PAXGUSDT",
+    "LINKUSDT",
+    "AVAXUSDT",
+    "DOGEUSDT",
+    "DOTUSDT",
 ]
 
 
