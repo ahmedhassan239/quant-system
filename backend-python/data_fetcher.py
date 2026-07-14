@@ -1,3 +1,4 @@
+import time
 import requests
 import pandas as pd
 from datetime import datetime
@@ -88,13 +89,17 @@ def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250):
     # Ensure tables exist before trying to save
     init_db()
 
-    for sym in symbols:
+    for i, sym in enumerate(symbols):
         print(f"Fetching {limit} x {interval} Futures candles for {sym}...", flush=True)
         try:
             df = fetch_binance_klines(symbol=sym, interval=interval, limit=limit)
             save_to_db(df)
         except Exception as e:
             print(f"  ⚠️ Failed to fetch {sym}: {e}", flush=True)
+
+        # Rate-limit protection: 500ms delay between API calls
+        if i < len(symbols) - 1:
+            time.sleep(0.5)
 
     print("--- Fetcher Completed (Futures) ---", flush=True)
 

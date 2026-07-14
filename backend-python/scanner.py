@@ -10,6 +10,7 @@ Usage:
     python scanner.py
 """
 
+import re
 import requests
 from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME, ALERT_PREFIX
 
@@ -25,7 +26,7 @@ EXCLUDED_FRAGMENTS = {'USDC', 'FDUSD', 'TUSD', 'EUR', 'BUSD', 'DAI', 'RLUSD', 'U
 # Portfolio anchor — always included regardless of filters
 ANCHOR_SYMBOL = 'PAXGUSDT'
 
-TOP_N = 30
+TOP_N = 15
 
 # ──────────────────────────────────────────────────────────────────────
 #  ⚠️ TESTNET OVERRIDE: Static symbol list
@@ -65,6 +66,10 @@ def fetch_top_symbols():
 
     for t in tickers:
         symbol = t['symbol']
+
+        # Rule 0: Skip garbage/testnet symbols with non-ASCII characters
+        if not re.match(r'^[A-Z0-9]+$', symbol):
+            continue
 
         # Rule 1: Must be a USDT pair
         if not symbol.endswith('USDT'):
@@ -123,7 +128,7 @@ def scan():
 
     # Pretty-print the results
     print("=" * 70, flush=True)
-    print(f"  {ALERT_PREFIX} MULTI-ASSET RADAR — Top 10 Volatile USDT Futures Pairs", flush=True)
+    print(f"  {ALERT_PREFIX} MULTI-ASSET RADAR — Top {TOP_N} Volatile USDT Futures Pairs", flush=True)
     print("=" * 70, flush=True)
     print(f"  {'#':<4} {'Symbol':<14} {'Price':>12} {'24h Chg %':>10} {'24h Vol ($M)':>14}", flush=True)
     print("-" * 70, flush=True)

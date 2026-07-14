@@ -27,7 +27,7 @@ def init_futures():
         futures_client = None
 
 def wallet_balance_worker():
-    """Background thread to poll Wallet Balance every 30 seconds."""
+    """Background thread to poll Wallet Balance every 5 minutes (300s)."""
     while True:
         try:
             if futures_client:
@@ -35,7 +35,7 @@ def wallet_balance_worker():
                 save_wallet_balance(balance)
         except Exception as e:
             print(f"Wallet balance fetch error: {e}", flush=True)
-        time.sleep(30)
+        time.sleep(300)
 
 def job():
     print("\n" + "="*60, flush=True)
