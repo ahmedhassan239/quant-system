@@ -73,7 +73,12 @@ class DashboardController extends Controller
 
     public function macroTrends()
     {
-        return response()->json(MacroState::all());
+        // Only return macro trends for symbols currently active in the scanner
+        $activeSymbols = ActiveSymbol::where('is_active', true)->pluck('symbol');
+
+        $trends = MacroState::whereIn('symbol', $activeSymbols)->get();
+
+        return response()->json($trends);
     }
 
     public function symbols()

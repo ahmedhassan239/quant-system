@@ -44,7 +44,7 @@
       <!-- Macro Trends Grid -->
       <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700">
         <h2 class="text-xl font-bold mb-6 text-gray-100 flex items-center gap-2">
-          Macro Trends (1H)
+          Macro Trends (15m)
         </h2>
         <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
           <div 
