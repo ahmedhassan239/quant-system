@@ -585,9 +585,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
     try:
         # ── 0. Fetch macro trend from shared DB ──
         macro_info = get_macro_trend(symbol)
+        # ⚠️ TESTING BYPASS: Allow trades even without macro trend data
         if macro_info is None:
-            print(f"⏳ [{symbol}] No macro trend available (1h engine hasn't run yet). WAIT.", flush=True)
-            return
+            print(f"⚠️ [{symbol}] No macro trend — bypassed for testing (MTF disabled).", flush=True)
+            macro_info = {'macro_trend': 'UPTREND', 'z_score': 0.0, 'sma_50': 0.0}
 
         macro_trend = macro_info['macro_trend']
         macro_zscore = macro_info['z_score']
@@ -723,7 +724,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             active_count = count_active_positions(session)
 
             # ── LONG Confluence ──
-            if macro_trend == 'UPTREND' and not in_position:
+            # ⚠️ TESTING BYPASS: macro_trend gate disabled — accept LONGs regardless of trend
+            if not in_position:  # [PROD: if macro_trend == 'UPTREND' and not in_position:]
                 # Strategy A: Aggressive Pullback
                 if (bullish_ob and current_price <= bullish_ob['high'] and current_zscore < ZSCORE_LONG_THRESHOLD):
                     if active_count >= MAX_CONCURRENT_POSITIONS:
@@ -745,7 +747,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         print(f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro=UPTREND + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x)", flush=True)
 
             # ── SHORT Confluence ──
-            if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position:
+            # ⚠️ TESTING BYPASS: macro_trend gate disabled — accept SHORTs regardless of trend
+            if decision == 'WAIT' and not in_position:  # [PROD: if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position:]
                 # Strategy A: Aggressive Pullback
                 if (bearish_ob and current_price >= bearish_ob['low'] and current_zscore > ZSCORE_SHORT_THRESHOLD):
                     if active_count >= MAX_CONCURRENT_POSITIONS:
