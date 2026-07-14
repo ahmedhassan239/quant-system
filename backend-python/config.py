@@ -77,17 +77,17 @@ MACRO_DB_NAME = os.environ.get("MACRO_DB_NAME", "quant_shared_db")
 MACRO_SMA_PERIOD = 50              # SMA window for macro trend
 MACRO_SDC_MULTIPLIER = 2.0         # ±2σ Standard Deviation Channel
 
-# Execution Engine (5m) — Z-Score thresholds for entry (Relaxed for Pullback Strategy)
-ZSCORE_LONG_THRESHOLD = -0.8       # Z < -0.8 → oversold (LONG entry)
-ZSCORE_SHORT_THRESHOLD = 0.8       # Z > +0.8 → overbought (SHORT entry)
+# Execution Engine (5m) — Z-Score thresholds for entry (⚠️ TEMPORARILY RELAXED FOR TESTING)
+ZSCORE_LONG_THRESHOLD = -0.15      # Z < -0.15 → oversold (LONG entry)   [PROD: -0.8]
+ZSCORE_SHORT_THRESHOLD = 0.15      # Z > +0.15 → overbought (SHORT entry) [PROD: +0.8]
 ZSCORE_SMA_PERIOD = 50             # SMA window for execution Z-Score
 
-# Order Block volume filter
-OB_VOLUME_MULTIPLIER = 1.5         # OB candle volume must be > 1.5x 20-period avg
+# Order Block volume filter (⚠️ TEMPORARILY RELAXED FOR TESTING)
+OB_VOLUME_MULTIPLIER = 1.1         # OB candle volume must be > 1.1x 20-period avg  [PROD: 1.5]
 OB_VOLUME_MA_PERIOD = 20           # Moving average window for volume baseline
 
-# Breakout volume filter (Strategy B)
-BREAKOUT_VOLUME_MULTIPLIER = 2.5   # Breakout candle volume > 2.5x 20-period avg
+# Breakout volume filter — Strategy B (⚠️ TEMPORARILY RELAXED FOR TESTING)
+BREAKOUT_VOLUME_MULTIPLIER = 1.1   # Breakout candle volume > 1.1x 20-period avg  [PROD: 2.5]
 BREAKOUT_CONSOLIDATION_PERIOD = 20 # Lookback for consolidation zone
 
 # ──────────────────────────────────────────────────────────────────────
