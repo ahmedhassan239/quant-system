@@ -86,6 +86,7 @@ class PortfolioState(Base):
     timestamp = Column(DateTime, nullable=False)
     symbol = Column(String, nullable=False)
     decision = Column(String, nullable=False)       # LONG, SHORT, CLOSE_LONG, CLOSE_SHORT, HOLD
+    entry_reason = Column(String, nullable=True)    # E.g. "Strategy A (Pullback) | Macro: UPTREND..."
     current_price = Column(Float, nullable=False)
     usdt_balance = Column(Float, nullable=False)
     asset_balance = Column(Float, nullable=False)

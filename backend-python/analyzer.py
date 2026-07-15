@@ -870,6 +870,19 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
+                        # Generate reason_msg before DB insertion
+                        if strategy_type == 'PULLBACK':
+                            ob_low = bullish_ob['low'] if bullish_ob else 0
+                            ob_high = bullish_ob['high'] if bullish_ob else 0
+                            vol_ratio = f"{bullish_ob['vol_ratio']:.1f}x" if bullish_ob and 'vol_ratio' in bullish_ob else "N/A"
+                            reason_msg = (f"Strategy A (Pullback) | Macro: {macro_trend} | Z: {current_zscore:+.2f} | "
+                                          f"OB: ${float(ob_low):.2f}-${float(ob_high):.2f} (Vol {vol_ratio})")
+                        elif strategy_type == 'BREAKOUT':
+                            vol_ratio = f"{bullish_breakout['vol_ratio']:.1f}x" if bullish_breakout and 'vol_ratio' in bullish_breakout else "N/A"
+                            reason_msg = (f"Strategy B (Breakout) | Macro: {macro_trend} | Vol {vol_ratio} avg | Consolidation High Cleared")
+                        else:
+                            reason_msg = f"Strategy: Unknown"
+
                         portfolio_record = PortfolioState(
                             timestamp=datetime.now(),
                             symbol=symbol,
@@ -888,7 +901,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             lowest_price_since_entry=None,
                             pnl_pct=None,
                             pnl_usd=None,
-                            total_portfolio_value=float(round(total_value, 2))
+                            total_portfolio_value=float(round(total_value, 2)),
+                            entry_reason=reason_msg
                         )
                         try:
                             session.add(portfolio_record)
@@ -902,22 +916,18 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
                         
                         if strategy_type == 'PULLBACK':
-                            ob_low = bullish_ob['low'] if bullish_ob else 0
-                            ob_high = bullish_ob['high'] if bullish_ob else 0
-                            vol_ratio = f"{bullish_ob['vol_ratio']:.1f}x" if bullish_ob and 'vol_ratio' in bullish_ob else "N/A"
-                            reason_msg = (f"- Strategy: A (Pullback)\n"
+                            alert_reason = (f"- Strategy: A (Pullback)\n"
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                           f"- 15m Z-Score: {current_zscore:+.2f} (threshold: {ZSCORE_LONG_THRESHOLD})\n"
                                           f"- Bullish OB: ${float(ob_low):.2f} - ${float(ob_high):.2f}\n"
                                           f"- OB Volume: {vol_ratio} avg")
                         elif strategy_type == 'BREAKOUT':
-                            vol_ratio = f"{bullish_breakout['vol_ratio']:.1f}x" if bullish_breakout and 'vol_ratio' in bullish_breakout else "N/A"
-                            reason_msg = (f"- Strategy: B (Momentum Breakout)\n"
+                            alert_reason = (f"- Strategy: B (Momentum Breakout)\n"
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                           f"- Breakout Volume: {vol_ratio} avg\n"
                                           f"- Consolidation High Cleared!")
                         else:
-                            reason_msg = f"- Strategy: Unknown"
+                            alert_reason = f"- Strategy: Unknown"
 
                         alert_msg = (
                             f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: OPEN LONG* \U0001f6a8\n"
@@ -927,7 +937,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"*Time:* {alert_time}\n"
                             f"\n"
                             f"\U0001f4a1 *MTF Confluence:*\n"
-                            f"{reason_msg}\n"
+                            f"{alert_reason}\n"
                             f"\n"
                             f"\U0001f6e1 *Risk Management:*\n"
                             f"- Entry Price: ${float(portfolio['average_entry_price']):.2f}\n"
@@ -968,6 +978,19 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
+                        # Generate reason_msg before DB insertion
+                        if strategy_type == 'PULLBACK':
+                            ob_low = bearish_ob['low'] if bearish_ob else 0
+                            ob_high = bearish_ob['high'] if bearish_ob else 0
+                            vol_ratio = f"{bearish_ob['vol_ratio']:.1f}x" if bearish_ob and 'vol_ratio' in bearish_ob else "N/A"
+                            reason_msg = (f"Strategy A (Pullback) | Macro: {macro_trend} | Z: {current_zscore:+.2f} | "
+                                          f"OB: ${float(ob_low):.2f}-${float(ob_high):.2f} (Vol {vol_ratio})")
+                        elif strategy_type == 'BREAKOUT':
+                            vol_ratio = f"{bearish_breakout['vol_ratio']:.1f}x" if bearish_breakout and 'vol_ratio' in bearish_breakout else "N/A"
+                            reason_msg = (f"Strategy B (Breakout) | Macro: {macro_trend} | Vol {vol_ratio} avg | Consolidation Low Broken")
+                        else:
+                            reason_msg = f"Strategy: Unknown"
+
                         portfolio_record = PortfolioState(
                             timestamp=datetime.now(),
                             symbol=symbol,
@@ -986,7 +1009,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             trailing_active=False,
                             pnl_pct=None,
                             pnl_usd=None,
-                            total_portfolio_value=float(round(total_value, 2))
+                            total_portfolio_value=float(round(total_value, 2)),
+                            entry_reason=reason_msg
                         )
                         try:
                             session.add(portfolio_record)
@@ -1000,22 +1024,18 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
                         
                         if strategy_type == 'PULLBACK':
-                            ob_low = bearish_ob['low'] if bearish_ob else 0
-                            ob_high = bearish_ob['high'] if bearish_ob else 0
-                            vol_ratio = f"{bearish_ob['vol_ratio']:.1f}x" if bearish_ob and 'vol_ratio' in bearish_ob else "N/A"
-                            reason_msg = (f"- Strategy: A (Pullback)\n"
+                            alert_reason = (f"- Strategy: A (Pullback)\n"
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                           f"- 15m Z-Score: {current_zscore:+.2f} (threshold: +{ZSCORE_SHORT_THRESHOLD})\n"
                                           f"- Bearish OB: ${float(ob_low):.2f} - ${float(ob_high):.2f}\n"
                                           f"- OB Volume: {vol_ratio} avg")
                         elif strategy_type == 'BREAKOUT':
-                            vol_ratio = f"{bearish_breakout['vol_ratio']:.1f}x" if bearish_breakout and 'vol_ratio' in bearish_breakout else "N/A"
-                            reason_msg = (f"- Strategy: B (Momentum Breakout)\n"
+                            alert_reason = (f"- Strategy: B (Momentum Breakout)\n"
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                           f"- Breakout Volume: {vol_ratio} avg\n"
                                           f"- Consolidation Low Broken!")
                         else:
-                            reason_msg = f"- Strategy: Unknown"
+                            alert_reason = f"- Strategy: Unknown"
 
                         alert_msg = (
                             f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: OPEN SHORT* \U0001f6a8\n"
@@ -1025,7 +1045,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"*Time:* {alert_time}\n"
                             f"\n"
                             f"\U0001f4a1 *MTF Confluence:*\n"
-                            f"{reason_msg}\n"
+                            f"{alert_reason}\n"
                             f"\n"
                             f"\U0001f6e1 *Risk Management:*\n"
                             f"- Entry Price: ${float(portfolio['average_entry_price']):.2f}\n"
@@ -1137,7 +1157,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 trailing_status = "ACTIVE" if (ep - cp) / ep >= TRAILING_ACTIVATE_PCT else "INACTIVE"
                 print(f"\n--- Risk Management (SHORT) ---", flush=True)
                 print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}%", flush=True)
-                print(f"Stop-Loss @ ${ep * (1 + HARD_STOP_LOSS_PCT):.2f} | "
+                print(f"Stop-Loss @ ${ep * (1 + STOP_LOSS_PCT):.2f} | "
                       f"Trailing: {trailing_status} (Trough: ${lp:.2f})", flush=True)
 
         if risk_exit_triggered:

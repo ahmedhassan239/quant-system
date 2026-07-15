@@ -68,6 +68,49 @@
         </div>
       </div>
 
+      <!-- Active Positions Grid -->
+      <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700">
+        <h2 class="text-xl font-bold mb-6 text-gray-100 flex items-center gap-2">
+          Active Positions
+        </h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="text-gray-400 text-sm border-b border-gray-700">
+                <th class="pb-3 px-4 font-semibold uppercase tracking-wide">Symbol</th>
+                <th class="pb-3 px-4 font-semibold uppercase tracking-wide">Direction</th>
+                <th class="pb-3 px-4 font-semibold uppercase tracking-wide">Entry Price</th>
+                <th class="pb-3 px-4 font-semibold uppercase tracking-wide">Current Price</th>
+                <th class="pb-3 px-4 font-semibold uppercase tracking-wide text-right">Unrealized PNL</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="pos in activePositions" :key="pos.id" class="border-b border-gray-700/50 hover:bg-gray-700/20 transition-colors">
+                <td class="py-4 px-4">
+                  <div class="font-bold text-lg text-white">{{ pos.symbol }}</div>
+                  <div class="text-xs text-gray-500 mt-1 max-w-xs truncate" :title="pos.entry_reason">
+                    {{ pos.entry_reason || 'Unknown strategy' }}
+                  </div>
+                </td>
+                <td class="py-4 px-4">
+                  <span :class="pos.position_direction === 'LONG' ? 'text-emerald-400 bg-emerald-500/10' : 'text-red-400 bg-red-500/10'" class="px-3 py-1 rounded-full text-xs font-bold tracking-wider">
+                    {{ pos.position_direction }}
+                  </span>
+                </td>
+                <td class="py-4 px-4 text-gray-300">${{ pos.average_entry_price?.toFixed(2) }}</td>
+                <td class="py-4 px-4 text-gray-300">${{ pos.current_price?.toFixed(2) }}</td>
+                <td class="py-4 px-4 text-right font-bold" :class="(pos.pnl_usd || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'">
+                  ${{ (pos.pnl_usd || 0).toFixed(2) }}
+                </td>
+              </tr>
+              <tr v-if="activePositions.length === 0">
+                <td colspan="5" class="py-8 text-center text-gray-500 italic">No active positions currently running.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- Symbol Manager -->
       <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700">
         <h2 class="text-xl font-bold mb-6 text-gray-100">Symbol Manager</h2>
@@ -113,6 +156,7 @@ import axios from 'axios'
 
 const stats = ref({})
 const macroTrends = ref([])
+const activePositions = ref([])
 const activeSymbols = ref([])
 const newSymbol = ref('')
 const walletBalance = ref(0.00)
@@ -131,6 +175,13 @@ const fetchMacroTrends = async () => {
     const res = await fetch(`${API_BASE}/macro-trends`, { headers: { 'Accept': 'application/json' } })
     if (res.ok) macroTrends.value = await res.json()
   } catch (e) { console.error('Failed to fetch macro trends', e) }
+}
+
+const fetchActivePositions = async () => {
+  try {
+    const res = await fetch(`${API_BASE}/active-positions`, { headers: { 'Accept': 'application/json' } })
+    if (res.ok) activePositions.value = await res.json()
+  } catch (e) { console.error('Failed to fetch active positions', e) }
 }
 
 const fetchSymbols = async () => {
@@ -182,6 +233,7 @@ let walletInterval;
 onMounted(() => {
   fetchStats()
   fetchMacroTrends()
+  fetchActivePositions()
   fetchSymbols()
   fetchWalletBalance()
   
@@ -189,6 +241,7 @@ onMounted(() => {
   pollingInterval = setInterval(() => {
     fetchStats()
     fetchMacroTrends()
+    fetchActivePositions()
   }, 10000)
 
   walletInterval = setInterval(fetchWalletBalance, 30000)

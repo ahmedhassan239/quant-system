@@ -81,6 +81,20 @@ class DashboardController extends Controller
         return response()->json($trends);
     }
 
+    public function activePositions()
+    {
+        // Fetch the latest position state per active symbol where asset_balance > 0
+        $positions = Position::where('asset_balance', '>', 0)
+            ->whereIn('id', function($query) {
+                $query->selectRaw('MAX(id)')
+                      ->from('portfolio_state')
+                      ->groupBy('symbol');
+            })
+            ->get();
+            
+        return response()->json($positions);
+    }
+
     public function symbols()
     {
         return response()->json(ActiveSymbol::where('is_active', true)->get());
