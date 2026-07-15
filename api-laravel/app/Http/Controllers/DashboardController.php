@@ -20,26 +20,11 @@ class DashboardController extends Controller
         $totalTrades = Position::whereNotNull('pnl_usd')->count() ?: 1;
         $winRate = round(($winningTrades / $totalTrades) * 100, 2);
 
-        // 3. Wallet Balance from Binance
-        $apiKey = null;
-        $apiSecret = null;
-        $envPath = base_path('../.env'); 
-        
-        if (file_exists($envPath)) {
-            $envLines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-            foreach ($envLines as $line) {
-                if (strpos(trim($line), '#') === 0) continue;
-                $parts = explode('=', $line, 2);
-                if (count($parts) == 2) {
-                    $key = trim($parts[0]);
-                    $val = trim(trim($parts[1]), "\"'");
-                    if ($key === 'BINANCE_API_KEY') $apiKey = $val;
-                    if ($key === 'BINANCE_API_SECRET') $apiSecret = $val;
-                }
-            }
-        }
-
+        // 3. Wallet Balance from Binance Testnet
+        $apiKey = env('BINANCE_API_KEY');
+        $apiSecret = env('BINANCE_API_SECRET');
         $walletBalance = 0.00;
+
         if ($apiKey && $apiSecret) {
             $timestamp = round(microtime(true) * 1000);
             $queryString = "timestamp=" . $timestamp;
@@ -48,13 +33,13 @@ class DashboardController extends Controller
             try {
                 $response = Http::withHeaders([
                     'X-MBX-APIKEY' => $apiKey
-                ])->get("https://fapi.binance.com/fapi/v2/balance?{$queryString}&signature={$signature}");
+                ])->get("https://testnet.binancefuture.com/fapi/v2/balance?{$queryString}&signature={$signature}");
 
                 if ($response->successful()) {
                     $balances = $response->json();
                     foreach ($balances as $asset) {
-                        if ($asset['asset'] === 'USDT') {
-                            $walletBalance = round((float) $asset['balance'], 2);
+                        if (isset($asset['asset']) && $asset['asset'] === 'USDT') {
+                            $walletBalance = (float) $asset['balance'];
                             break;
                         }
                     }
@@ -73,7 +58,7 @@ class DashboardController extends Controller
             })
             ->get();
             
-        // Calculate unrealized PNL on the fly and map to the exact JSON structure requested
+        // Map to exact JSON structure requested
         $mappedPositions = $positions->map(function ($pos) {
             $unrealized = 0;
             if ($pos->position_direction === 'LONG') {
@@ -85,17 +70,17 @@ class DashboardController extends Controller
             return [
                 'symbol' => $pos->symbol,
                 'direction' => $pos->position_direction,
-                'entry_price' => number_format($pos->average_entry_price, 2, '.', ''),
-                'current_price' => number_format($pos->current_price, 2, '.', ''),
-                'unrealized_pnl' => number_format($unrealized, 2, '.', ''),
+                'entry_price' => number_format((float)$pos->average_entry_price, 2, '.', ''),
+                'current_price' => number_format((float)$pos->current_price, 2, '.', ''),
+                'unrealized_pnl' => number_format((float)$unrealized, 2, '.', ''),
                 'entry_reason' => $pos->entry_reason
             ];
         });
 
         return response()->json([
+            'wallet_balance' => number_format($walletBalance, 2, '.', ''),
             'total_pnl' => number_format($totalPnl, 2, '.', ''),
             'win_rate' => $winRate,
-            'wallet_balance' => number_format($walletBalance, 2, '.', ''),
             'active_positions' => $mappedPositions
         ]);
     }
