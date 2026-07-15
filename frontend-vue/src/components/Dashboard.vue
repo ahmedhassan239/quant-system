@@ -21,23 +21,23 @@
           <div class="absolute inset-0 bg-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
           <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase relative z-10">Wallet Balance (USDT)</div>
           <div class="text-4xl font-bold text-white relative z-10 flex items-center gap-2">
-            ${{ walletBalance.toFixed(2) }}
+            ${{ metrics.wallet_balance.toFixed(2) }}
           </div>
         </div>
 
         <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-gray-600 transition-colors">
           <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase">Total PNL</div>
-          <div :class="stats.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'" class="text-4xl font-bold">
-            ${{ stats.total_pnl?.toFixed(2) ?? '0.00' }}
+          <div :class="metrics.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'" class="text-4xl font-bold">
+            ${{ metrics.total_pnl?.toFixed(2) ?? '0.00' }}
           </div>
         </div>
         <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-gray-600 transition-colors">
           <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase">Win Rate</div>
-          <div class="text-4xl font-bold text-blue-400">{{ stats.win_rate ?? 0 }}%</div>
+          <div class="text-4xl font-bold text-blue-400">{{ metrics.win_rate ?? 0 }}%</div>
         </div>
         <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-gray-600 transition-colors">
           <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase">Active Positions</div>
-          <div class="text-4xl font-bold text-purple-400">{{ stats.active_positions_count ?? 0 }}</div>
+          <div class="text-4xl font-bold text-purple-400">{{ metrics.active_positions?.length ?? 0 }}</div>
         </div>
       </div>
 
@@ -85,7 +85,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="pos in activePositions" :key="pos.id" class="border-b border-gray-700/50 hover:bg-gray-700/20 transition-colors">
+              <tr v-for="pos in metrics.active_positions" :key="pos.id" class="border-b border-gray-700/50 hover:bg-gray-700/20 transition-colors">
                 <td class="py-4 px-4">
                   <div class="font-bold text-lg text-white">{{ pos.symbol }}</div>
                   <div class="text-xs text-gray-500 mt-1 max-w-xs truncate" :title="pos.entry_reason">
@@ -99,11 +99,11 @@
                 </td>
                 <td class="py-4 px-4 text-gray-300">${{ pos.average_entry_price?.toFixed(2) }}</td>
                 <td class="py-4 px-4 text-gray-300">${{ pos.current_price?.toFixed(2) }}</td>
-                <td class="py-4 px-4 text-right font-bold" :class="(pos.pnl_usd || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'">
-                  ${{ (pos.pnl_usd || 0).toFixed(2) }}
+                <td class="py-4 px-4 text-right font-bold" :class="(pos.unrealized_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'">
+                  ${{ (pos.unrealized_pnl || 0).toFixed(2) }}
                 </td>
               </tr>
-              <tr v-if="activePositions.length === 0">
+              <tr v-if="!metrics.active_positions || metrics.active_positions.length === 0">
                 <td colspan="5" class="py-8 text-center text-gray-500 italic">No active positions currently running.</td>
               </tr>
             </tbody>
@@ -154,20 +154,23 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 
-const stats = ref({})
+const metrics = ref({
+  total_pnl: 0,
+  win_rate: 0,
+  wallet_balance: 0,
+  active_positions: []
+})
 const macroTrends = ref([])
-const activePositions = ref([])
 const activeSymbols = ref([])
 const newSymbol = ref('')
-const walletBalance = ref(0.00)
 
 const API_BASE = '/api/dashboard'
 
-const fetchStats = async () => {
+const fetchMetrics = async () => {
   try {
-    const res = await fetch(`${API_BASE}/stats`, { headers: { 'Accept': 'application/json' } })
-    if (res.ok) stats.value = await res.json()
-  } catch (e) { console.error('Failed to fetch stats', e) }
+    const res = await fetch(`${API_BASE}/metrics`, { headers: { 'Accept': 'application/json' } })
+    if (res.ok) metrics.value = await res.json()
+  } catch (e) { console.error('Failed to fetch metrics', e) }
 }
 
 const fetchMacroTrends = async () => {
@@ -175,13 +178,6 @@ const fetchMacroTrends = async () => {
     const res = await fetch(`${API_BASE}/macro-trends`, { headers: { 'Accept': 'application/json' } })
     if (res.ok) macroTrends.value = await res.json()
   } catch (e) { console.error('Failed to fetch macro trends', e) }
-}
-
-const fetchActivePositions = async () => {
-  try {
-    const res = await fetch(`${API_BASE}/active-positions`, { headers: { 'Accept': 'application/json' } })
-    if (res.ok) activePositions.value = await res.json()
-  } catch (e) { console.error('Failed to fetch active positions', e) }
 }
 
 const fetchSymbols = async () => {
@@ -216,39 +212,20 @@ const addSymbol = async () => {
   }
 }
 
-const fetchWalletBalance = async () => {
-  try {
-    const res = await axios.get('/api/portfolio/balance')
-    if (res.data && res.data.wallet_balance !== undefined) {
-      walletBalance.value = res.data.wallet_balance
-    }
-  } catch (e) { 
-    console.error('Failed to fetch wallet balance', e) 
-  }
-}
-
 let pollingInterval;
-let walletInterval;
 
 onMounted(() => {
-  fetchStats()
+  fetchMetrics()
   fetchMacroTrends()
-  fetchActivePositions()
   fetchSymbols()
-  fetchWalletBalance()
-  
   
   pollingInterval = setInterval(() => {
-    fetchStats()
+    fetchMetrics()
     fetchMacroTrends()
-    fetchActivePositions()
-  }, 10000)
-
-  walletInterval = setInterval(fetchWalletBalance, 30000)
+  }, 5000)
 })
 
 onUnmounted(() => {
   clearInterval(pollingInterval)
-  clearInterval(walletInterval)
 })
 </script>

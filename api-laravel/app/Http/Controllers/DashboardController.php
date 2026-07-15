@@ -10,16 +10,17 @@ use Illuminate\Support\Facades\Http;
 
 class DashboardController extends Controller
 {
-    public function stats()
+    public function getDashboardMetrics()
     {
-        $activePositionsCount = Position::where('asset_balance', '>', 0)->count();
-        $totalPnl = Position::sum('pnl_usd'); 
+        // 1. Total PNL from CLOSED trades
+        $totalPnl = Position::whereNotNull('pnl_usd')->sum('pnl_usd'); 
         
+        // 2. Win Rate from CLOSED trades
         $winningTrades = Position::where('pnl_usd', '>', 0)->count();
-        $totalTrades = Position::count() ?: 1;
+        $totalTrades = Position::whereNotNull('pnl_usd')->count() ?: 1;
         $winRate = round(($winningTrades / $totalTrades) * 100, 2);
 
-        // قراءة المفاتيح من ملف .env الأساسي اللي بره فولدر لارافيل
+        // 3. Wallet Balance from Binance
         $apiKey = null;
         $apiSecret = null;
         $envPath = base_path('../.env'); 
@@ -63,11 +64,32 @@ class DashboardController extends Controller
             }
         }
 
+        // 4. Active Positions
+        $positions = Position::where('asset_balance', '>', 0)
+            ->whereIn('id', function($query) {
+                $query->selectRaw('MAX(id)')
+                      ->from('portfolio_state')
+                      ->groupBy('symbol');
+            })
+            ->get();
+            
+        // Calculate unrealized PNL on the fly
+        $positions = $positions->map(function ($pos) {
+            if ($pos->position_direction === 'LONG') {
+                $pos->unrealized_pnl = ($pos->current_price - $pos->average_entry_price) * $pos->asset_balance;
+            } else if ($pos->position_direction === 'SHORT') {
+                $pos->unrealized_pnl = ($pos->average_entry_price - $pos->current_price) * $pos->asset_balance;
+            } else {
+                $pos->unrealized_pnl = 0;
+            }
+            return $pos;
+        });
+
         return response()->json([
             'total_pnl' => $totalPnl,
             'win_rate' => $winRate,
-            'active_positions_count' => $activePositionsCount,
-            'wallet_balance' => $walletBalance
+            'wallet_balance' => $walletBalance,
+            'active_positions' => $positions
         ]);
     }
 
@@ -81,19 +103,7 @@ class DashboardController extends Controller
         return response()->json($trends);
     }
 
-    public function activePositions()
-    {
-        // Fetch the latest position state per active symbol where asset_balance > 0
-        $positions = Position::where('asset_balance', '>', 0)
-            ->whereIn('id', function($query) {
-                $query->selectRaw('MAX(id)')
-                      ->from('portfolio_state')
-                      ->groupBy('symbol');
-            })
-            ->get();
-            
-        return response()->json($positions);
-    }
+
 
     public function symbols()
     {
