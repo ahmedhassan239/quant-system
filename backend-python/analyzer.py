@@ -769,12 +769,24 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         new_stop_loss = bearish_breakout['breakout_candle_high'] * 1.001 # Above breakout candle
                         print(f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro=DOWNTREND + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x)", flush=True)
 
-            # ── Log blocked directions ──
+            # ── 🚨 DEBUG LOGGER: Why is the bot skipping? ──
             if decision == 'WAIT' and not risk_exit_triggered:
-                if macro_trend == 'UPTREND' and current_zscore and current_zscore > ZSCORE_SHORT_THRESHOLD:
-                    print(f"🚫 [{symbol}] SHORT blocked: macro=UPTREND", flush=True)
-                elif macro_trend == 'DOWNTREND' and current_zscore and current_zscore < ZSCORE_LONG_THRESHOLD:
-                    print(f"🚫 [{symbol}] LONG blocked: macro=DOWNTREND", flush=True)
+                if in_position:
+                    print(f"  [DEBUG] {symbol} | Skipping entry: Already in position.", flush=True)
+                else:
+                    print(f"  [DEBUG] {symbol} | Z: {current_zscore:+.3f} (Req: <{ZSCORE_LONG_THRESHOLD} or >{ZSCORE_SHORT_THRESHOLD})", flush=True)
+                    
+                    if bullish_ob:
+                        print(f"  [DEBUG] {symbol} | Bullish OB detected. High=${bullish_ob['high']:.2f}, Price=${current_price:.2f} (Req: Price <= OB High)", flush=True)
+                    if bearish_ob:
+                        print(f"  [DEBUG] {symbol} | Bearish OB detected. Low=${bearish_ob['low']:.2f}, Price=${current_price:.2f} (Req: Price >= OB Low)", flush=True)
+                    
+                    if not bullish_ob and not bearish_ob and not bullish_breakout and not bearish_breakout:
+                        print(f"  [DEBUG] {symbol} | Skipping trade: No Order Block or Breakout detected on 5m chart.", flush=True)
+                    elif active_count >= MAX_CONCURRENT_POSITIONS:
+                        print(f"  [DEBUG] {symbol} | Skipping trade: Max concurrent slots reached ({active_count}/{MAX_CONCURRENT_POSITIONS}).", flush=True)
+                    else:
+                        print(f"  [DEBUG] {symbol} | Skipping trade: Signal does not match all criteria (Z-score not extreme enough OR Price not inside OB).", flush=True)
 
         # ── 6. Save signal to Database ──
         signal = TradingSignal(
