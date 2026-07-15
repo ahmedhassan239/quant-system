@@ -10,6 +10,7 @@ Route::get('/user', function (Request $request) {
 })->middleware('auth:sanctum');
 
 Route::prefix('dashboard')->group(function () {
+    Route::get('/dashboard-metrics', [DashboardController::class, 'getDashboardMetrics']);
     Route::get('/metrics', [DashboardController::class, 'getDashboardMetrics']);
     Route::get('/macro-trends', [DashboardController::class, 'macroTrends']);
     Route::get('/symbols', [DashboardController::class, 'symbols']);

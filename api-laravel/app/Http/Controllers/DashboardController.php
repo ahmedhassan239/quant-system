@@ -73,23 +73,30 @@ class DashboardController extends Controller
             })
             ->get();
             
-        // Calculate unrealized PNL on the fly
-        $positions = $positions->map(function ($pos) {
+        // Calculate unrealized PNL on the fly and map to the exact JSON structure requested
+        $mappedPositions = $positions->map(function ($pos) {
+            $unrealized = 0;
             if ($pos->position_direction === 'LONG') {
-                $pos->unrealized_pnl = ($pos->current_price - $pos->average_entry_price) * $pos->asset_balance;
+                $unrealized = ($pos->current_price - $pos->average_entry_price) * $pos->asset_balance;
             } else if ($pos->position_direction === 'SHORT') {
-                $pos->unrealized_pnl = ($pos->average_entry_price - $pos->current_price) * $pos->asset_balance;
-            } else {
-                $pos->unrealized_pnl = 0;
+                $unrealized = ($pos->average_entry_price - $pos->current_price) * $pos->asset_balance;
             }
-            return $pos;
+
+            return [
+                'symbol' => $pos->symbol,
+                'direction' => $pos->position_direction,
+                'entry_price' => number_format($pos->average_entry_price, 2, '.', ''),
+                'current_price' => number_format($pos->current_price, 2, '.', ''),
+                'unrealized_pnl' => number_format($unrealized, 2, '.', ''),
+                'entry_reason' => $pos->entry_reason
+            ];
         });
 
         return response()->json([
-            'total_pnl' => $totalPnl,
+            'total_pnl' => number_format($totalPnl, 2, '.', ''),
             'win_rate' => $winRate,
-            'wallet_balance' => $walletBalance,
-            'active_positions' => $positions
+            'wallet_balance' => number_format($walletBalance, 2, '.', ''),
+            'active_positions' => $mappedPositions
         ]);
     }
 
