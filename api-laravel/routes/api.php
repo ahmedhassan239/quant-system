@@ -9,8 +9,9 @@ Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
 
+Route::get('/dashboard-metrics', [DashboardController::class, 'getDashboardMetrics']);
+
 Route::prefix('dashboard')->group(function () {
-    Route::get('/dashboard-metrics', [DashboardController::class, 'getDashboardMetrics']);
     Route::get('/metrics', [DashboardController::class, 'getDashboardMetrics']);
     Route::get('/macro-trends', [DashboardController::class, 'macroTrends']);
     Route::get('/symbols', [DashboardController::class, 'symbols']);
