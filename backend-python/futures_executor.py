@@ -151,7 +151,7 @@ def open_position(client: Client, symbol: str, direction: str,
         order = client.futures_create_order(
             symbol=symbol,
             side=side,
-            type=Client.ORDER_TYPE_MARKET,
+            type='MARKET',
             quantity=quantity,
         )
 
