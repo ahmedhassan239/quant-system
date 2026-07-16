@@ -11,7 +11,9 @@ from database import (SessionLocal, MarketData, TradingSignal, PortfolioState,
 from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     MACRO_SMA_PERIOD, MACRO_SDC_MULTIPLIER,
                     ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
-                    ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD, BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD)
+                    ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
+                    BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
+                    TESTNET_FORCE_TRADES)
 from futures_executor import open_position, close_position
 
 # ──────────────────────────────────────────────────────────────────────
@@ -746,6 +748,16 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999 # Below breakout candle
                         print(f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro=UPTREND + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x)", flush=True)
 
+                # Strategy C: Testnet — Pure Trend Alignment (force trades)
+                elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma:
+                    if active_count >= MAX_CONCURRENT_POSITIONS:
+                        print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
+                    else:
+                        decision = 'LONG'
+                        strategy_type = 'TREND_ALIGN'
+                        new_stop_loss = current_sma * 0.995  # SL just below the SMA
+                        print(f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro=UPTREND + Price > SMA-50", flush=True)
+
             # ── SHORT Confluence ──
             # ⚠️ TESTING BYPASS: macro_trend gate disabled — accept SHORTs regardless of trend
             if decision == 'WAIT' and not in_position:  # [PROD: if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position:]
@@ -768,6 +780,16 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         strategy_type = 'BREAKOUT'
                         new_stop_loss = bearish_breakout['breakout_candle_high'] * 1.001 # Above breakout candle
                         print(f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro=DOWNTREND + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x)", flush=True)
+
+                # Strategy C: Testnet — Pure Trend Alignment (force trades)
+                elif TESTNET_FORCE_TRADES and current_sma and current_price < current_sma:
+                    if active_count >= MAX_CONCURRENT_POSITIONS:
+                        print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
+                    else:
+                        decision = 'SHORT'
+                        strategy_type = 'TREND_ALIGN'
+                        new_stop_loss = current_sma * 1.005  # SL just above the SMA
+                        print(f"🧪 [{symbol}] SHORT Strategy C (TREND_ALIGN): Macro=DOWNTREND + Price < SMA-50", flush=True)
 
             # ── 🚨 DEBUG LOGGER: Why is the bot skipping? ──
             if decision == 'WAIT' and not risk_exit_triggered:
@@ -880,6 +902,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         elif strategy_type == 'BREAKOUT':
                             vol_ratio = f"{bullish_breakout['vol_ratio']:.1f}x" if bullish_breakout and 'vol_ratio' in bullish_breakout else "N/A"
                             reason_msg = (f"Strategy B (Breakout) | Macro: {macro_trend} | Vol {vol_ratio} avg | Consolidation High Cleared")
+                        elif strategy_type == 'TREND_ALIGN':
+                            reason_msg = (f"Strategy C (Trend Align) | Macro: {macro_trend} | "
+                                          f"Price ${current_price:.2f} > SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY")
                         else:
                             reason_msg = f"Strategy: Unknown"
 
@@ -926,6 +951,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                           f"- Breakout Volume: {vol_ratio} avg\n"
                                           f"- Consolidation High Cleared!")
+                        elif strategy_type == 'TREND_ALIGN':
+                            alert_reason = (f"- Strategy: C (Trend Alignment) 🧪\n"
+                                          f"- Macro Trend: {macro_emoji} {macro_trend}\n"
+                                          f"- Price: ${current_price:.2f} > SMA-50: ${current_sma:.2f}\n"
+                                          f"- ⚠️ TESTNET ONLY — No OB/Volume confirmation")
                         else:
                             alert_reason = f"- Strategy: Unknown"
 
@@ -988,6 +1018,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         elif strategy_type == 'BREAKOUT':
                             vol_ratio = f"{bearish_breakout['vol_ratio']:.1f}x" if bearish_breakout and 'vol_ratio' in bearish_breakout else "N/A"
                             reason_msg = (f"Strategy B (Breakout) | Macro: {macro_trend} | Vol {vol_ratio} avg | Consolidation Low Broken")
+                        elif strategy_type == 'TREND_ALIGN':
+                            reason_msg = (f"Strategy C (Trend Align) | Macro: {macro_trend} | "
+                                          f"Price ${current_price:.2f} < SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY")
                         else:
                             reason_msg = f"Strategy: Unknown"
 
@@ -1034,6 +1067,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                           f"- Breakout Volume: {vol_ratio} avg\n"
                                           f"- Consolidation Low Broken!")
+                        elif strategy_type == 'TREND_ALIGN':
+                            alert_reason = (f"- Strategy: C (Trend Alignment) 🧪\n"
+                                          f"- Macro Trend: {macro_emoji} {macro_trend}\n"
+                                          f"- Price: ${current_price:.2f} < SMA-50: ${current_sma:.2f}\n"
+                                          f"- ⚠️ TESTNET ONLY — No OB/Volume confirmation")
                         else:
                             alert_reason = f"- Strategy: Unknown"
 

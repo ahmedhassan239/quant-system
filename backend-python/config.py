@@ -71,6 +71,13 @@ SCHEDULE_INTERVAL_MINUTES = _parse_interval_minutes(TIMEFRAME)
 MACRO_DB_NAME = os.environ.get("MACRO_DB_NAME", "quant_shared_db")
 
 # ──────────────────────────────────────────────────────────────────────
+#  TESTNET TESTING MODE
+# ──────────────────────────────────────────────────────────────────────
+# ⚠️ Force trades on pure trend alignment (bypasses OB + Z-Score gates).
+#    Set to False for production!
+TESTNET_FORCE_TRADES = True
+
+# ──────────────────────────────────────────────────────────────────────
 #  STATISTICAL ANALYSIS CONSTANTS
 # ──────────────────────────────────────────────────────────────────────
 # Macro Engine (1h)
