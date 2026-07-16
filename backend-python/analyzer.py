@@ -14,7 +14,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
                     BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT)
-from futures_executor import open_position, close_position, get_futures_balance
+from futures_executor import open_position, close_position, get_futures_balance, get_position_info
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -400,21 +400,34 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
     return portfolio
 
 
-def _save_tracking_update(portfolio, current_price, symbol, session):
+def _save_tracking_update(portfolio, current_price, symbol, session, futures_client=None):
     """
     Save a portfolio snapshot that only updates highest/lowest_price_since_entry.
     """
     total_value = float(portfolio['usdt_balance']) + (float(portfolio['asset_balance']) * float(current_price))
 
+    db_decision = 'HOLD'
+    db_position_direction = portfolio.get('position_direction')
+    db_entry_price = float(portfolio['average_entry_price']) if portfolio['average_entry_price'] is not None else None
+    db_pnl_usd = None
+
+    if futures_client:
+        pos_info = get_position_info(futures_client, symbol)
+        if pos_info and pos_info['size'] > 0:
+            db_decision = pos_info['direction']  # Force 'LONG' or 'SHORT'
+            db_position_direction = pos_info['direction']
+            db_entry_price = pos_info['entry_price']
+            db_pnl_usd = pos_info['unrealized_pnl']
+
     portfolio_record = PortfolioState(
         timestamp=datetime.now(),
         symbol=symbol,
-        decision='HOLD',
+        decision=db_decision,
         current_price=float(current_price),
         usdt_balance=float(portfolio['usdt_balance']),
         asset_balance=float(portfolio['asset_balance']),
-        position_direction=portfolio.get('position_direction'),
-        average_entry_price=float(portfolio['average_entry_price']) if portfolio['average_entry_price'] is not None else None,
+        position_direction=db_position_direction,
+        average_entry_price=db_entry_price,
         dca_level=int(portfolio['dca_level']),
         last_exec_price=float(portfolio['last_exec_price']) if portfolio['last_exec_price'] is not None else None,
         total_cost=float(portfolio['total_cost']),
@@ -423,7 +436,7 @@ def _save_tracking_update(portfolio, current_price, symbol, session):
         stop_loss_price=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
         trailing_active=portfolio.get('trailing_active', False),
         pnl_pct=None,
-        pnl_usd=None,
+        pnl_usd=db_pnl_usd,
         total_portfolio_value=float(round(total_value, 2))
     )
     try:
@@ -1182,7 +1195,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         watermark_updated = True
 
                 if watermark_updated:
-                    _save_tracking_update(portfolio, current_price, symbol, session)
+                    _save_tracking_update(portfolio, current_price, symbol, session, futures_client)
 
         # ── 7. Print summary ──
         print(f"\n=== Execution Summary [{symbol}] (15m MTF) ===", flush=True)
