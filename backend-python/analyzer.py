@@ -905,7 +905,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             if order:
                                 print(f"✅ [{symbol}] Futures OPEN LONG executed | OrderID: {order['orderId']}", flush=True)
                             else:
-                                print(f"⚠️ [{symbol}] Futures OPEN LONG order failed — portfolio updated virtually", flush=True)
+                                print(f"⚠️ [{symbol}] Futures OPEN LONG order failed — aborting database save.", flush=True)
+                                return
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
@@ -1023,7 +1024,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             if order:
                                 print(f"✅ [{symbol}] Futures OPEN SHORT executed | OrderID: {order['orderId']}", flush=True)
                             else:
-                                print(f"⚠️ [{symbol}] Futures OPEN SHORT order failed — portfolio updated virtually", flush=True)
+                                print(f"⚠️ [{symbol}] Futures OPEN SHORT order failed — aborting database save.", flush=True)
+                                return
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
