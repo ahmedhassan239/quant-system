@@ -14,7 +14,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
                     BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT)
-from futures_executor import open_position, close_position
+from futures_executor import open_position, close_position, get_futures_balance
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -582,8 +582,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
     All risk management (stop-loss, trailing stop, DCA) is preserved.
     """
     print(f"\n--- Execution Analyzer Started [{symbol}] (15m MTF Confluence) ---", flush=True)
-    init_db()
-    init_shared_db()
 
     session = SessionLocal()
     try:
@@ -879,6 +877,12 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 dca_level = portfolio.get('dca_level', 0)
                 if decision == 'LONG':
                     spend = SLOT_BUDGET * ENTRY_WEIGHT
+                    
+                    if futures_client:
+                        actual_balance = get_futures_balance(futures_client)
+                        if actual_balance < spend:
+                            print(f"⚠️ Skipping execution: Insufficient USDT balance ({actual_balance:.2f} USDT available)", flush=True)
+                            return
                     if portfolio['usdt_balance'] >= spend:
                         effective_usdt = spend * (1 - TRADING_FEE)
                         asset_bought = effective_usdt / float(current_price)
@@ -1004,6 +1008,12 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 # ── Execute SHORT (open new short position) ──
                 elif decision == 'SHORT' and not in_position:
                     spend = SLOT_BUDGET * ENTRY_WEIGHT
+
+                    if futures_client:
+                        actual_balance = get_futures_balance(futures_client)
+                        if actual_balance < spend:
+                            print(f"⚠️ Skipping execution: Insufficient USDT balance ({actual_balance:.2f} USDT available)", flush=True)
+                            return
                     if portfolio['usdt_balance'] >= spend:
                         effective_usdt = spend * (1 - TRADING_FEE)
                         asset_shorted = effective_usdt / float(current_price)

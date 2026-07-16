@@ -300,7 +300,6 @@ def save_wallet_balance(balance: float):
 
 def init_db():
     """Create tables if they don't exist, drop/recreate positions for clean schema."""
-    PortfolioState.__table__.drop(bind=engine, checkfirst=True)
     Base.metadata.create_all(bind=engine)
 
 def init_shared_db():
