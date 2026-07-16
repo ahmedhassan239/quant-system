@@ -25,6 +25,8 @@ TRADING_FEE = 0.001                       # 0.1 % per side
 MIN_PROFIT_PCT = 0.01                     # +1.0 %
 TRAILING_ACTIVATE_PCT = 0.02              # +2.0 %
 TRAILING_PULLBACK_PCT = 0.005             # -0.5 %
+HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
+STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -897,6 +899,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             portfolio['highest_price_since_entry'] = float(current_price)
                             portfolio['lowest_price_since_entry'] = None
 
+                        order = None
                         if futures_client:
                             order = open_position(futures_client, symbol, 'LONG', spend)
                             if order:
@@ -994,7 +997,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
                             f"- Total Value: ${total_value:.2f}"
                         )
-                        send_telegram_alert(alert_msg)
+                        if not futures_client or order:
+                            send_telegram_alert(alert_msg)
 
                 # ── Execute SHORT (open new short position) ──
                 elif decision == 'SHORT' and not in_position:
@@ -1013,6 +1017,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['lowest_price_since_entry'] = float(current_price)
                         portfolio['highest_price_since_entry'] = None
 
+                        order = None
                         if futures_client:
                             order = open_position(futures_client, symbol, 'SHORT', spend)
                             if order:
@@ -1110,7 +1115,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
                             f"- Total Value: ${total_value:.2f}"
                         )
-                        send_telegram_alert(alert_msg)
+                        if not futures_client or order:
+                            send_telegram_alert(alert_msg)
 
                 # ── Close LONG via SHORT signal (if holding LONG) ──
                 elif decision == 'SHORT' and in_position and pos_direction == 'LONG':

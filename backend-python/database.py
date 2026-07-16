@@ -37,7 +37,7 @@ SharedBase = declarative_base()     # Shared MTF tables
 # ──────────────────────────────────────────────────────────────────────
 TOTAL_CAPITAL = 1000.0             # Total virtual capital
 MAX_CONCURRENT_POSITIONS = 5       # Max symbols with open positions
-SLOT_BUDGET = 500.0                # Max USDT allocated per symbol
+SLOT_BUDGET = 100.0                # Max USDT allocated per symbol
 
 
 # ══════════════════════════════════════════════════════════════════════
