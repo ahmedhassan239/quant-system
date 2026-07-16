@@ -98,15 +98,15 @@ def main():
         init_futures()
         threading.Thread(target=wallet_balance_worker, daemon=True).start()
 
-    # Run the job immediately once on startup
-    if ENGINE_ROLE.upper() == "MACRO":
-        scanner_job()
-        schedule.every(60).minutes.do(scanner_job)
-        
-    job()
+    # Run scanner_job immediately on startup (both engines)
+    job()            # Print header banner
+    scanner_job()    # Fetch data + analyze
 
-    # Schedule the job dynamically based on TIMEFRAME
-    schedule.every(SCHEDULE_INTERVAL_MINUTES).minutes.do(job)
+    # Schedule recurring runs based on engine role
+    if ENGINE_ROLE.upper() == "MACRO":
+        schedule.every(60).minutes.do(scanner_job)
+    else:
+        schedule.every(SCHEDULE_INTERVAL_MINUTES).minutes.do(scanner_job)
 
     print(f"{ALERT_PREFIX} Scheduled job to run every {SCHEDULE_INTERVAL_MINUTES} minutes. Daemon is active.", flush=True)
 

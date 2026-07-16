@@ -630,6 +630,20 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
               f"RSI: {current_rsi:.1f}" if current_zscore and current_rsi else
               f"  📊 [{symbol}] Indicators computing...", flush=True)
 
+        # ── Strategy C Heartbeat: diagnose trend alignment + data starvation ──
+        candle_count = len(df)
+        sma_label = f"${current_sma:,.2f}" if current_sma else "None ⚠️ DATA STARVATION"
+        if current_sma is None:
+            trend_action = f"SKIP (SMA-50 is None — only {candle_count} candles, need ≥{ZSCORE_SMA_PERIOD})"
+        elif macro_trend == 'UPTREND' and current_price > current_sma:
+            trend_action = "✅ LONG eligible (Price > SMA)"
+        elif macro_trend == 'DOWNTREND' and current_price < current_sma:
+            trend_action = "✅ SHORT eligible (Price < SMA)"
+        else:
+            trend_action = f"⏸️ SKIP ({macro_trend} but price {'<' if current_price < current_sma else '>'} SMA)"
+        print(f"  🔍 [{symbol}] Candles: {candle_count} | Macro: {macro_trend} | "
+              f"Price: ${current_price:,.2f} | SMA-50: {sma_label} | {trend_action}", flush=True)
+
         # ── 5. Load portfolio state ──
         portfolio = load_portfolio(session, symbol)
         in_position = portfolio['asset_balance'] is not None and portfolio['asset_balance'] > 0

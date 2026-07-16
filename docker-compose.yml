@@ -64,6 +64,8 @@ services:
       - DB_NAME=${POSTGRES_DB}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - BINANCE_API_KEY=${TESTNET_5M_API_KEY}
+      - BINANCE_API_SECRET=${TESTNET_5M_SECRET_KEY}
     volumes:
       - ./backend-python:/app
     depends_on:
