@@ -80,7 +80,7 @@ class TradingSignal(Base):
     strategy_type = Column(String, nullable=True)         # PULLBACK or BREAKOUT
 
 class PortfolioState(Base):
-    __tablename__ = "portfolio_state"
+    __tablename__ = "positions"
 
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime, nullable=False)
@@ -299,7 +299,7 @@ def save_wallet_balance(balance: float):
 # ══════════════════════════════════════════════════════════════════════
 
 def init_db():
-    """Create tables if they don't exist, drop/recreate portfolio_state for clean schema."""
+    """Create tables if they don't exist, drop/recreate positions for clean schema."""
     PortfolioState.__table__.drop(bind=engine, checkfirst=True)
     Base.metadata.create_all(bind=engine)
 

@@ -84,6 +84,10 @@ TESTNET_FORCE_TRADES = True
 MACRO_SMA_PERIOD = 50              # SMA window for macro trend
 MACRO_SDC_MULTIPLIER = 2.0         # ±2σ Standard Deviation Channel
 
+# Execution Engine (5m) — Risk thresholds
+HARD_STOP_LOSS_PCT = 0.05          # 5% absolute stop loss
+STOP_LOSS_PCT = 0.05               # 5% trailing/soft stop loss
+
 # Execution Engine (5m) — Z-Score thresholds for entry (⚠️ TEMPORARILY RELAXED FOR TESTING)
 ZSCORE_LONG_THRESHOLD = -0.15      # Z < -0.15 → oversold (LONG entry)   [PROD: -0.8]
 ZSCORE_SHORT_THRESHOLD = 0.15      # Z > +0.15 → overbought (SHORT entry) [PROD: +0.8]

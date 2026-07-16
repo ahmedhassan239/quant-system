@@ -13,7 +13,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
                     BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
-                    TESTNET_FORCE_TRADES)
+                    TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT)
 from futures_executor import open_position, close_position
 
 # ──────────────────────────────────────────────────────────────────────
