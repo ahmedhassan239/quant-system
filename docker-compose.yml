@@ -45,6 +45,8 @@ services:
       - DB_NAME=${POSTGRES_DB}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - BINANCE_API_KEY=${TESTNET_15M_API_KEY}
+      - BINANCE_API_SECRET=${TESTNET_15M_SECRET_KEY}
     volumes:
       - ./backend-python:/app
     depends_on:
@@ -78,6 +80,14 @@ services:
     build: { context: ./api-laravel, dockerfile: Dockerfile }
     container_name: quant_laravel_api
     restart: unless-stopped
+    environment:
+      - DB_HOST=quant_postgres
+      - DB_PORT=5432
+      - DB_DATABASE=${POSTGRES_DB}
+      - DB_USERNAME=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - BINANCE_API_KEY=${TESTNET_5M_API_KEY}
+      - BINANCE_API_SECRET=${TESTNET_5M_SECRET_KEY}
     command: php -S 0.0.0.0:8000 -t public
     ports:
       - "8080:8000"
@@ -93,11 +103,6 @@ services:
     container_name: quant_vue_dashboard
     restart: unless-stopped
     command: npm run dev -- --host 0.0.0.0 --port 5173
-    deploy:
-      resources:
-        limits:
-          cpus: '0.50'
-          memory: 512M
     ports:
       - "5173:5173"
     volumes:
