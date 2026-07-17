@@ -837,25 +837,30 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     else:
                         print(f"  [DEBUG] {symbol} | Skipping trade: Signal does not match all criteria (Z-score not extreme enough OR Price not inside OB).", flush=True)
 
-        # ── 5.5 DECISION OVERRIDE: Never save 'WAIT' when a position is open ──
-        # This prevents the Laravel dashboard from hiding active positions
-        # because the latest DB row flipped from 'LONG'/'SHORT' to 'WAIT'.
+        # ── 6. Save signal to Database ──
+        # Build db_decision from live Binance state WITHOUT mutating `decision`.
+        # This keeps execution logic untouched (no duplicate orders) while
+        # ensuring the DB row reflects the true position for Laravel.
+        db_decision = decision  # default: whatever the signal logic decided
+
         if decision == 'WAIT' and not risk_exit_triggered:
-            # Priority 1: Check live Binance position (source of truth)
+            # Check live Binance position (source of truth)
             if futures_client:
                 pos_info = get_position_info(futures_client, symbol)
                 if pos_info and pos_info['size'] > 0:
-                    decision = pos_info['direction']  # 'LONG' or 'SHORT'
-                    print(f"  🔒 [{symbol}] Decision overridden to '{decision}' "
-                          f"(live Binance position detected, amt={pos_info['size']})", flush=True)
+                    db_decision = pos_info['direction']  # 'LONG' or 'SHORT'
+                    print(f"  🔒 [{symbol}] DB decision synced to '{db_decision}' "
+                          f"(live Binance position, size={pos_info['size']})", flush=True)
 
-            # Priority 2: Fall back to local portfolio state
-            if decision == 'WAIT' and in_position and pos_direction in ('LONG', 'SHORT'):
-                decision = pos_direction
-                print(f"  🔒 [{symbol}] Decision overridden to '{decision}' "
+            # Fallback: local portfolio state
+            if db_decision == 'WAIT' and in_position and pos_direction in ('LONG', 'SHORT'):
+                db_decision = pos_direction
+                print(f"  🔒 [{symbol}] DB decision synced to '{db_decision}' "
                       f"(local portfolio has open position)", flush=True)
 
-        # ── 6. Save signal to Database ──
+        if risk_exit_triggered:
+            db_decision = f"CLOSE_{pos_direction}" if pos_direction in ('LONG', 'SHORT') else 'WAIT'
+
         signal = TradingSignal(
             symbol=symbol,
             timeframe=timeframe,
@@ -868,13 +873,12 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             bullish_ob_high=float(bullish_ob['high']) if bullish_ob else None,
             bearish_ob_low=float(bearish_ob['low']) if bearish_ob else None,
             bearish_ob_high=float(bearish_ob['high']) if bearish_ob else None,
-            decision='CLOSE_LONG' if risk_exit_triggered and pos_direction == 'LONG'
-                     else 'CLOSE_SHORT' if risk_exit_triggered and pos_direction == 'SHORT'
-                     else decision
+            decision=db_decision
         )
 
         session.add(signal)
         session.commit()
+
 
         # ──────────────────────────────────────────────────────────
         #  EXECUTE SIGNALS (LONG / SHORT with position management)
@@ -1185,24 +1189,47 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 print(f"[{symbol}] Duplicate {decision} signal — Telegram alert suppressed.", flush=True)
 
         # ──────────────────────────────────────────────────────────
-        #  UPDATE TRAILING STOP WATERMARK
+        #  SYNC POSITION STATE TO DB (for Laravel dashboard)
+        #  When decision=='WAIT' but a live position exists, we MUST
+        #  write a PortfolioState row with Binance-synced fields so
+        #  the dashboard always shows accurate active positions.
         # ──────────────────────────────────────────────────────────
         if not risk_exit_triggered and decision == 'WAIT':
             portfolio = load_portfolio(session, symbol)
             in_position = portfolio['asset_balance'] is not None and portfolio['asset_balance'] > 0
 
-            if in_position:
-                pos_direction = portfolio.get('position_direction')
-                cp = float(current_price)
-                watermark_updated = False
+            # ── Fetch live Binance position (source of truth) ──
+            db_decision = 'WAIT'
+            db_pos_direction = portfolio.get('position_direction')
+            db_entry_price = float(portfolio['average_entry_price']) if portfolio.get('average_entry_price') else None
+            db_unrealized_pnl = None
 
+            if futures_client:
+                pos_info = get_position_info(futures_client, symbol)
+                if pos_info and pos_info['size'] > 0:
+                    db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
+                    db_pos_direction = pos_info['direction']
+                    db_entry_price = pos_info['entry_price']
+                    db_unrealized_pnl = pos_info['unrealized_pnl']
+                    in_position = True  # Binance confirms position is open
+                    print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
+                          f"Entry=${db_entry_price:.2f} | "
+                          f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
+            elif in_position and db_pos_direction in ('LONG', 'SHORT'):
+                # No futures_client — fall back to local portfolio
+                db_decision = db_pos_direction
+
+            if in_position:
+                pos_direction = db_pos_direction or portfolio.get('position_direction')
+                cp = float(current_price)
+
+                # ── Update watermarks ──
                 if pos_direction == 'LONG':
                     old_highest = portfolio.get('highest_price_since_entry')
                     if old_highest is None or cp > float(old_highest):
                         portfolio['highest_price_since_entry'] = cp
                         old_val = f"${float(old_highest):.2f}" if old_highest else "$0.00"
                         print(f"📈 [{symbol}] LONG new high watermark: ${cp:.2f} (was {old_val})", flush=True)
-                        watermark_updated = True
 
                 elif pos_direction == 'SHORT':
                     old_lowest = portfolio.get('lowest_price_since_entry')
@@ -1210,10 +1237,38 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['lowest_price_since_entry'] = cp
                         old_val = f"${float(old_lowest):.2f}" if old_lowest else "$0.00"
                         print(f"📉 [{symbol}] SHORT new low watermark: ${cp:.2f} (was {old_val})", flush=True)
-                        watermark_updated = True
 
-                if watermark_updated:
-                    _save_tracking_update(portfolio, current_price, symbol, session, futures_client)
+                # ── Always save synced PortfolioState row ──
+                total_value = float(portfolio['usdt_balance']) + (float(portfolio['asset_balance']) * cp)
+                portfolio_record = PortfolioState(
+                    timestamp=datetime.now(),
+                    symbol=symbol,
+                    decision=db_decision,
+                    current_price=cp,
+                    usdt_balance=float(portfolio['usdt_balance']),
+                    asset_balance=float(portfolio['asset_balance']),
+                    position_direction=db_pos_direction,
+                    average_entry_price=float(db_entry_price) if db_entry_price else None,
+                    dca_level=int(portfolio['dca_level']),
+                    last_exec_price=float(portfolio['last_exec_price']) if portfolio['last_exec_price'] is not None else None,
+                    total_cost=float(portfolio['total_cost']),
+                    highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
+                    lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
+                    stop_loss_price=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
+                    trailing_active=portfolio.get('trailing_active', False),
+                    pnl_pct=None,
+                    pnl_usd=float(db_unrealized_pnl) if db_unrealized_pnl is not None else None,
+                    total_portfolio_value=float(round(total_value, 2))
+                )
+                try:
+                    session.add(portfolio_record)
+                    session.commit()
+                    print(f"  ✅ [{symbol}] Position state synced to DB: decision='{db_decision}', "
+                          f"direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}", flush=True)
+                except Exception as e:
+                    session.rollback()
+                    print(f"Warning: Failed to save synced portfolio state to DB: {e}", flush=True)
+                    traceback.print_exc()
 
         # ── 7. Print summary ──
         print(f"\n=== Execution Summary [{symbol}] (15m MTF) ===", flush=True)
