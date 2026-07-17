@@ -4,7 +4,7 @@ import traceback
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from database import (SessionLocal, MarketData, TradingSignal, PortfolioState,
+from database import (SessionLocal, MarketData, TradingSignal, PortfolioState, BotLog,
                       engine, init_db, init_shared_db, count_active_positions,
                       save_macro_state, get_macro_trend,
                       SLOT_BUDGET, MAX_CONCURRENT_POSITIONS, TOTAL_CAPITAL)
@@ -28,6 +28,22 @@ TRAILING_PULLBACK_PCT = 0.005             # -0.5 %
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
 
+
+# ══════════════════════════════════════════════════════════════════════
+#  DATABASE LOGGING
+# ══════════════════════════════════════════════════════════════════════
+def log_to_db(session, symbol, action, message):
+    try:
+        log_entry = BotLog(
+            symbol=symbol,
+            action=action,
+            message=message
+        )
+        session.add(log_entry)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"Warning: Failed to save bot log to DB: {e}", flush=True)
 
 # ══════════════════════════════════════════════════════════════════════
 #  STATISTICAL INDICATORS
@@ -689,7 +705,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['stop_loss_price'] = max(stop_loss, ep) # Move to breakeven
                     stop_loss = portfolio['stop_loss_price']
                     trailing_active = True
-                    print(f"✅ [{symbol}] LONG Trailing Stop ACTIVATED! SL moved to Breakeven ${stop_loss:.2f}", flush=True)
+                    msg = f"✅ [{symbol}] LONG Trailing Stop ACTIVATED! SL moved to Breakeven ${stop_loss:.2f}"
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "INFO", msg)
 
                 if trailing_active and highest_price:
                     hp = float(highest_price)
@@ -700,7 +718,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         
                 # Check Stop Loss hit
                 if stop_loss > 0 and cp <= stop_loss:
-                    print(f"⛔ [{symbol}] LONG STOP-LOSS hit at ${cp:.2f} (SL: ${stop_loss:.2f})", flush=True)
+                    msg = f"⛔ [{symbol}] LONG STOP-LOSS hit at ${cp:.2f} (SL: ${stop_loss:.2f})"
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "EXIT", msg)
                     portfolio = _close_position_handler(
                         portfolio, current_price, symbol, session, 'STOP_LOSS' if not trailing_active else 'TRAILING_STOP',
                         futures_client, bullish_ob, bearish_ob, current_rsi,
@@ -721,7 +741,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['stop_loss_price'] = min(stop_loss, ep) if stop_loss > 0 else ep # Move to breakeven
                     stop_loss = portfolio['stop_loss_price']
                     trailing_active = True
-                    print(f"✅ [{symbol}] SHORT Trailing Stop ACTIVATED! SL moved to Breakeven ${stop_loss:.2f}", flush=True)
+                    msg = f"✅ [{symbol}] SHORT Trailing Stop ACTIVATED! SL moved to Breakeven ${stop_loss:.2f}"
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "INFO", msg)
 
                 if trailing_active and lowest_price:
                     lp = float(lowest_price)
@@ -732,7 +754,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         
                 # Check Stop Loss hit
                 if stop_loss > 0 and cp >= stop_loss:
-                    print(f"⛔ [{symbol}] SHORT STOP-LOSS hit at ${cp:.2f} (SL: ${stop_loss:.2f})", flush=True)
+                    msg = f"⛔ [{symbol}] SHORT STOP-LOSS hit at ${cp:.2f} (SL: ${stop_loss:.2f})"
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "EXIT", msg)
                     portfolio = _close_position_handler(
                         portfolio, current_price, symbol, session, 'STOP_LOSS' if not trailing_active else 'TRAILING_STOP',
                         futures_client, bullish_ob, bearish_ob, current_rsi,
@@ -763,7 +787,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'LONG'
                         strategy_type = 'PULLBACK'
                         new_stop_loss = bullish_ob['low'] * 0.999 # Strictly below OB
-                        print(f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro=UPTREND + Bullish OB + Z={current_zscore:+.2f}", flush=True)
+                        msg = f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro=UPTREND + Bullish OB + Z={current_zscore:+.2f}"
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "ENTRY", msg)
                 
                 # Strategy B: Momentum Breakout
                 elif bullish_breakout:
@@ -773,7 +799,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'LONG'
                         strategy_type = 'BREAKOUT'
                         new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999 # Below breakout candle
-                        print(f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro=UPTREND + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x)", flush=True)
+                        msg = f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro=UPTREND + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x)"
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "ENTRY", msg)
 
                 # Strategy C: Testnet — Pure Trend Alignment (force trades)
                 elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma:
@@ -783,7 +811,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'LONG'
                         strategy_type = 'TREND_ALIGN'
                         new_stop_loss = current_sma * 0.995  # SL just below the SMA
-                        print(f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro=UPTREND + Price > SMA-50", flush=True)
+                        msg = f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro=UPTREND + Price > SMA-50"
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "ENTRY", msg)
 
             # ── SHORT Confluence ──
             # ⚠️ TESTING BYPASS: macro_trend gate disabled — accept SHORTs regardless of trend
@@ -796,7 +826,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'SHORT'
                         strategy_type = 'PULLBACK'
                         new_stop_loss = bearish_ob['high'] * 1.001 # Strictly above OB
-                        print(f"✨ [{symbol}] SHORT Strategy A (PULLBACK): Macro=DOWNTREND + Bearish OB + Z={current_zscore:+.2f}", flush=True)
+                        msg = f"✨ [{symbol}] SHORT Strategy A (PULLBACK): Macro=DOWNTREND + Bearish OB + Z={current_zscore:+.2f}"
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "ENTRY", msg)
                 
                 # Strategy B: Momentum Breakout
                 elif bearish_breakout:
@@ -806,7 +838,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'SHORT'
                         strategy_type = 'BREAKOUT'
                         new_stop_loss = bearish_breakout['breakout_candle_high'] * 1.001 # Above breakout candle
-                        print(f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro=DOWNTREND + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x)", flush=True)
+                        msg = f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro=DOWNTREND + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x)"
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "ENTRY", msg)
 
                 # Strategy C: Testnet — Pure Trend Alignment (force trades)
                 elif TESTNET_FORCE_TRADES and current_sma and current_price < current_sma:
@@ -816,7 +850,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'SHORT'
                         strategy_type = 'TREND_ALIGN'
                         new_stop_loss = current_sma * 1.005  # SL just above the SMA
-                        print(f"🧪 [{symbol}] SHORT Strategy C (TREND_ALIGN): Macro=DOWNTREND + Price < SMA-50", flush=True)
+                        msg = f"🧪 [{symbol}] SHORT Strategy C (TREND_ALIGN): Macro=DOWNTREND + Price < SMA-50"
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "ENTRY", msg)
 
             # ── 🚨 DEBUG LOGGER: Why is the bot skipping? ──
             if decision == 'WAIT' and not risk_exit_triggered:
@@ -1199,7 +1235,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             in_position = portfolio['asset_balance'] is not None and portfolio['asset_balance'] > 0
 
             # ── Fetch live Binance position (source of truth) ──
-            db_decision = 'WAIT'
+            # NOTE: db_decision carries forward from the TradingSignal block above.
+            # Do NOT reset it here — it already holds 'LONG'/'SHORT' if Binance
+            # confirmed a live position during signal save.
             db_pos_direction = portfolio.get('position_direction')
             db_entry_price = float(portfolio['average_entry_price']) if portfolio.get('average_entry_price') else None
             db_unrealized_pnl = None
@@ -1215,8 +1253,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
                           f"Entry=${db_entry_price:.2f} | "
                           f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
-            elif in_position and db_pos_direction in ('LONG', 'SHORT'):
-                # No futures_client — fall back to local portfolio
+
+            # Fallback: if db_decision is still WAIT but local portfolio has a position
+            if db_decision == 'WAIT' and in_position and db_pos_direction in ('LONG', 'SHORT'):
                 db_decision = db_pos_direction
 
             if in_position:
@@ -1263,12 +1302,28 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 try:
                     session.add(portfolio_record)
                     session.commit()
-                    print(f"  ✅ [{symbol}] Position state synced to DB: decision='{db_decision}', "
-                          f"direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}", flush=True)
+                    msg = f"✅ [{symbol}] Position state synced to DB: decision='{db_decision}', direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}"
+                    print(f"  {msg}", flush=True)
+                    log_to_db(session, symbol, "INFO", msg)
                 except Exception as e:
                     session.rollback()
                     print(f"Warning: Failed to save synced portfolio state to DB: {e}", flush=True)
                     traceback.print_exc()
+
+        # ── Back-patch TradingSignal if sync changed db_decision ──
+        # The TradingSignal was committed early (before execution & sync).
+        # If the sync block upgraded db_decision (e.g. WAIT → LONG),
+        # we must update the already-committed row so the dashboard reads
+        # the correct state.
+        if signal.decision != db_decision:
+            print(f"  🔄 [{symbol}] Patching TradingSignal: "
+                  f"'{signal.decision}' → '{db_decision}'", flush=True)
+            signal.decision = db_decision
+            try:
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                print(f"Warning: Failed to patch TradingSignal decision: {e}", flush=True)
 
         # ── 7. Print summary ──
         print(f"\n=== Execution Summary [{symbol}] (15m MTF) ===", flush=True)
@@ -1319,7 +1374,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         if risk_exit_triggered:
             print(f"\n⚠️ [{symbol}] Risk exit was triggered this cycle.", flush=True)
         else:
-            print(f"\n[{symbol}] Decision {decision} saved to database successfully.", flush=True)
+            print(f"\n[{symbol}] Decision '{db_decision}' saved to database successfully.", flush=True)
 
     except Exception as e:
         session.rollback()

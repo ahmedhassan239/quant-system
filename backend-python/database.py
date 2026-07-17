@@ -103,6 +103,15 @@ class PortfolioState(Base):
     pnl_usd = Column(Float, nullable=True)
     total_portfolio_value = Column(Float, nullable=False)
 
+class BotLog(Base):
+    __tablename__ = "bot_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)           # e.g. "INFO", "WARNING", "ENTRY", "EXIT", "ERROR"
+    message = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  SHARED MTF MODEL (in quant_shared_db database)

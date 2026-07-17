@@ -145,12 +145,16 @@
         </div>
       </div>
 
+      <!-- Live Terminal Section -->
+      <LiveTerminal />
+
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
+import LiveTerminal from './LiveTerminal.vue'
 
 const metrics = ref({
   total_pnl: '0.00',

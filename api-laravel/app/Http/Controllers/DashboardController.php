@@ -7,9 +7,16 @@ use App\Models\ActiveSymbol;
 use App\Models\MacroState;
 use App\Models\Position;
 use Illuminate\Support\Facades\Http;
+use App\Models\BotLog;
 
 class DashboardController extends Controller
 {
+    public function logs()
+    {
+        $logs = BotLog::orderBy('created_at', 'desc')->take(100)->get();
+        return response()->json(array_reverse($logs->toArray()));
+    }
+
     public function getDashboardMetrics()
     {
         // 1. Total PNL from CLOSED trades
@@ -53,7 +60,7 @@ class DashboardController extends Controller
         $positions = Position::where('asset_balance', '>', 0)
             ->whereIn('id', function($query) {
                 $query->selectRaw('MAX(id)')
-                      ->from('portfolio_state')
+                      ->from('positions')
                       ->groupBy('symbol');
             })
             ->get();

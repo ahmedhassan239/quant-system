@@ -5,10 +5,17 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\MarketData;
 use App\Models\TradingSignal;
+use App\Models\BotLog;
 use Illuminate\Http\Request;
 
 class DashboardController extends Controller
 {
+    public function logs()
+    {
+        $logs = BotLog::orderBy('created_at', 'desc')->take(100)->get();
+        return response()->json(array_reverse($logs->toArray()));
+    }
+
     public function index()
     {
         // Fetch the latest 100 records from the market_data table ordered by timestamp ASC

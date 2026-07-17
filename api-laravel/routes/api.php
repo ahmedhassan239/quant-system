@@ -16,6 +16,7 @@ Route::prefix('dashboard')->group(function () {
     Route::get('/macro-trends', [DashboardController::class, 'macroTrends']);
     Route::get('/symbols', [DashboardController::class, 'symbols']);
     Route::post('/symbols', [DashboardController::class, 'addSymbol']);
+    Route::get('/logs', [DashboardController::class, 'logs']);
 });
 
 Route::prefix('portfolio')->group(function () {
