@@ -97,6 +97,12 @@ def scan():
     top = fetch_top_symbols()
     symbols = [c['symbol'] for c in top]
 
+    # Ensure ALWAYS_INCLUDE symbols are in the list
+    ALWAYS_INCLUDE = ['PAXGUSDT']
+    for sym in ALWAYS_INCLUDE:
+        if sym not in symbols:
+            symbols.append(sym)
+
     # Pretty-print the results
     print("=" * 70, flush=True)
     print(f"  {ALERT_PREFIX} DYNAMIC RADAR — Top {TOP_N} Whitelisted USDT Futures Pairs", flush=True)
