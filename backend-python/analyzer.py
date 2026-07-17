@@ -837,6 +837,24 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     else:
                         print(f"  [DEBUG] {symbol} | Skipping trade: Signal does not match all criteria (Z-score not extreme enough OR Price not inside OB).", flush=True)
 
+        # ── 5.5 DECISION OVERRIDE: Never save 'WAIT' when a position is open ──
+        # This prevents the Laravel dashboard from hiding active positions
+        # because the latest DB row flipped from 'LONG'/'SHORT' to 'WAIT'.
+        if decision == 'WAIT' and not risk_exit_triggered:
+            # Priority 1: Check live Binance position (source of truth)
+            if futures_client:
+                pos_info = get_position_info(futures_client, symbol)
+                if pos_info and pos_info['size'] > 0:
+                    decision = pos_info['direction']  # 'LONG' or 'SHORT'
+                    print(f"  🔒 [{symbol}] Decision overridden to '{decision}' "
+                          f"(live Binance position detected, amt={pos_info['size']})", flush=True)
+
+            # Priority 2: Fall back to local portfolio state
+            if decision == 'WAIT' and in_position and pos_direction in ('LONG', 'SHORT'):
+                decision = pos_direction
+                print(f"  🔒 [{symbol}] Decision overridden to '{decision}' "
+                      f"(local portfolio has open position)", flush=True)
+
         # ── 6. Save signal to Database ──
         signal = TradingSignal(
             symbol=symbol,
