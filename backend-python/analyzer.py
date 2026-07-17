@@ -1296,7 +1296,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     stop_loss_price=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
                     trailing_active=portfolio.get('trailing_active', False),
                     pnl_pct=None,
-                    pnl_usd=float(db_unrealized_pnl) if db_unrealized_pnl is not None else None,
+                    pnl_usd=None,
                     total_portfolio_value=float(round(total_value, 2))
                 )
                 try:

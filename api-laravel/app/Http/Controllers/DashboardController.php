@@ -20,11 +20,17 @@ class DashboardController extends Controller
     public function getDashboardMetrics()
     {
         // 1. Total PNL from CLOSED trades
-        $totalPnl = Position::whereNotNull('pnl_usd')->sum('pnl_usd'); 
+        $totalPnl = Position::whereIn('decision', ['CLOSE_LONG', 'CLOSE_SHORT'])
+                            ->whereNotNull('pnl_usd')
+                            ->sum('pnl_usd'); 
         
         // 2. Win Rate from CLOSED trades
-        $winningTrades = Position::where('pnl_usd', '>', 0)->count();
-        $totalTrades = Position::whereNotNull('pnl_usd')->count() ?: 1;
+        $winningTrades = Position::whereIn('decision', ['CLOSE_LONG', 'CLOSE_SHORT'])
+                                 ->where('pnl_usd', '>', 0)
+                                 ->count();
+        $totalTrades = Position::whereIn('decision', ['CLOSE_LONG', 'CLOSE_SHORT'])
+                               ->whereNotNull('pnl_usd')
+                               ->count() ?: 1;
         $winRate = round(($winningTrades / $totalTrades) * 100, 2);
 
         // 3. Wallet Balance from Binance Testnet
