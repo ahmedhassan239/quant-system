@@ -130,7 +130,10 @@ class DashboardController extends Controller
     {
         $symbol = strtoupper($symbol);
         
-        $position = Position::where('symbol', $symbol)->where('asset_balance', '>', 0)->latest()->first();
+        $position = Position::where('symbol', $symbol)
+                            ->where('asset_balance', '>', 0)
+                            ->orderBy('id', 'desc')
+                            ->first();
         if (!$position) {
             return response()->json(['message' => 'No active position found in database for ' . $symbol], 404);
         }
