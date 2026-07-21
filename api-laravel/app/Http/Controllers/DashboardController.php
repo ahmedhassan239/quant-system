@@ -37,6 +37,8 @@ class DashboardController extends Controller
         $apiKey = env('BINANCE_API_KEY');
         $apiSecret = env('BINANCE_API_SECRET');
         $walletBalance = 0.00;
+        $totalUnrealizedProfit = 0.00;
+        $totalMarginBalance = 0.00;
 
         if ($apiKey && $apiSecret) {
             $timestamp = round(microtime(true) * 1000);
@@ -53,9 +55,17 @@ class DashboardController extends Controller
                     if (isset($account['totalWalletBalance'])) {
                         $walletBalance = (float) $account['totalWalletBalance'];
                     }
+                    if (isset($account['totalUnrealizedProfit'])) {
+                        $totalUnrealizedProfit = (float) $account['totalUnrealizedProfit'];
+                    }
+                    if (isset($account['totalMarginBalance'])) {
+                        $totalMarginBalance = (float) $account['totalMarginBalance'];
+                    }
                 }
             } catch (\Exception $e) {
                 $walletBalance = 0.00;
+                $totalUnrealizedProfit = 0.00;
+                $totalMarginBalance = 0.00;
             }
         }
 
@@ -89,7 +99,8 @@ class DashboardController extends Controller
 
         return response()->json([
             'wallet_balance' => number_format($walletBalance, 2, '.', ''),
-            'total_pnl' => number_format($totalPnl, 2, '.', ''),
+            'total_pnl' => number_format($totalUnrealizedProfit, 2, '.', ''),
+            'total_margin_balance' => number_format($totalMarginBalance, 2, '.', ''),
             'win_rate' => $winRate,
             'active_positions' => $mappedPositions
         ]);
@@ -145,22 +156,58 @@ class DashboardController extends Controller
             return response()->json(['message' => 'Binance API credentials missing'], 500);
         }
         
-        $side = $position->position_direction === 'LONG' ? 'SELL' : 'BUY';
-        $quantity = $position->asset_balance;
-        
-        $params = [
-            'symbol' => $symbol,
-            'side' => $side,
-            'type' => 'MARKET',
-            'quantity' => $quantity,
-            'reduceOnly' => 'true',
-            'timestamp' => round(microtime(true) * 1000)
-        ];
-        
-        $queryString = http_build_query($params, '', '&');
-        $signature = hash_hmac('sha256', $queryString, $apiSecret);
-        
         try {
+            // 1. Fetch exact positionAmt from Binance
+            $timestamp = round(microtime(true) * 1000);
+            $riskParams = [
+                'symbol' => $symbol,
+                'timestamp' => $timestamp
+            ];
+            $riskQueryString = http_build_query($riskParams, '', '&', PHP_QUERY_RFC3986);
+            $riskSignature = hash_hmac('sha256', $riskQueryString, $apiSecret);
+
+            $riskResponse = Http::withHeaders([
+                'X-MBX-APIKEY' => $apiKey
+            ])->get("https://testnet.binancefuture.com/fapi/v2/positionRisk?{$riskQueryString}&signature={$riskSignature}");
+
+            $positionAmt = 0;
+            if ($riskResponse->successful()) {
+                $riskData = $riskResponse->json();
+                if (is_array($riskData) && count($riskData) > 0) {
+                    foreach ($riskData as $risk) {
+                        if (isset($risk['positionAmt']) && abs((float)$risk['positionAmt']) > 0) {
+                            $positionAmt = (float)$risk['positionAmt'];
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if ($positionAmt == 0) {
+                // If position is 0 on Binance, fallback to DB quantity
+                $positionAmt = $position->position_direction === 'LONG' ? $position->asset_balance : -$position->asset_balance;
+            }
+
+            // 2. Prepare parameters array
+            $side = $positionAmt > 0 ? 'SELL' : 'BUY';
+            $quantity = abs($positionAmt);
+            
+            $params = [
+                'symbol' => $symbol,
+                'side' => $side,
+                'type' => 'MARKET',
+                'quantity' => $quantity,
+                'reduceOnly' => 'true',
+                'timestamp' => round(microtime(true) * 1000)
+            ];
+            
+            // 3. Build the query string using strict RFC3986 encoding
+            $queryString = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+            
+            // 4. Hash the signature
+            $signature = hash_hmac('sha256', $queryString, $apiSecret);
+            
+            // 5. Make the POST request
             $response = Http::withHeaders([
                 'X-MBX-APIKEY' => $apiKey
             ])->post("https://testnet.binancefuture.com/fapi/v1/order?{$queryString}&signature={$signature}");

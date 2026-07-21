@@ -166,6 +166,7 @@ const metrics = ref({
   total_pnl: '0.00',
   win_rate: 0,
   wallet_balance: '0.00',
+  total_margin_balance: '0.00',
   active_positions: []
 })
 const macroTrends = ref([])
@@ -181,16 +182,21 @@ const getPnlColor = (val) => {
   return num > 0 ? 'text-green-400' : 'text-red-400'
 }
 
-const fetchMetrics = async () => {
-  try {
-    // Calling the exact endpoint specified
-    const res = await fetch(`/api/dashboard-metrics`, { headers: { 'Accept': 'application/json' } })
-    if (res.ok) {
-      metrics.value = await res.json()
-    }
-  } catch (e) { 
-    console.error('Failed to fetch metrics', e) 
-  }
+const fetchMetrics = () => {
+  fetch(`/api/dashboard-metrics`, { headers: { 'Accept': 'application/json' } })
+    .then(res => {
+      if (res.ok) return res.json()
+      throw new Error('Network response was not ok.')
+    })
+    .then(data => {
+      // Explicitly update reactive variables so the DOM re-renders immediately
+      metrics.value.wallet_balance = data.wallet_balance
+      metrics.value.total_pnl = data.total_pnl
+      metrics.value.total_margin_balance = data.total_margin_balance || '0.00'
+      metrics.value.win_rate = data.win_rate
+      metrics.value.active_positions = data.active_positions
+    })
+    .catch(e => console.error('Failed to fetch metrics', e))
 }
 
 const fetchMacroTrends = async () => {
