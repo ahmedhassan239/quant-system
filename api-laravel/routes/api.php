@@ -22,3 +22,5 @@ Route::prefix('dashboard')->group(function () {
 Route::prefix('portfolio')->group(function () {
     Route::get('/balance', [PortfolioController::class, 'balance']);
 });
+
+Route::post('/positions/{symbol}/close', [DashboardController::class, 'closePosition']);

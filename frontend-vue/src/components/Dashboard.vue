@@ -81,6 +81,7 @@
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Entry Price</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Current Price</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide text-right">Unrealized PNL</th>
+                <th class="py-4 px-5 font-semibold uppercase tracking-wide text-right rounded-tr-lg">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -101,9 +102,14 @@
                 <td class="py-4 px-5 text-right font-bold font-mono" :class="getPnlColor(pos.unrealized_pnl)">
                   ${{ pos.unrealized_pnl }}
                 </td>
+                <td class="py-4 px-5 text-right">
+                  <button @click="closePosition(pos.symbol)" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold py-1 px-3 rounded shadow transition-colors">
+                    Close
+                  </button>
+                </td>
               </tr>
               <tr v-if="metrics.active_positions.length === 0">
-                <td colspan="5" class="py-12 text-center text-gray-500 italic">No active positions currently running.</td>
+                <td colspan="6" class="py-12 text-center text-gray-500 italic">No active positions currently running.</td>
               </tr>
             </tbody>
           </table>
@@ -230,6 +236,30 @@ const addSymbol = async () => {
   }
 }
 
+const closePosition = async (symbol) => {
+  if (!confirm(`Are you sure you want to market close ${symbol}?`)) return
+  
+  try {
+    const res = await fetch(`/api/positions/${symbol}/close`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json'
+      }
+    })
+    
+    if (res.ok) {
+      alert(`Successfully closed ${symbol}`)
+      await fetchMetrics() // Refresh right away
+    } else {
+      const errorData = await res.json()
+      alert(`Failed to close: ${errorData.message || 'Unknown error'}`)
+    }
+  } catch (e) {
+    console.error('Error closing position', e)
+    alert('Network error while closing position')
+  }
+}
+
 let pollingInterval
 
 onMounted(() => {
@@ -238,11 +268,11 @@ onMounted(() => {
   fetchMacroTrends()
   fetchSymbols()
   
-  // 5-second Live Polling
+  // 3-second Live Polling
   pollingInterval = setInterval(() => {
     fetchMetrics()
     fetchMacroTrends()
-  }, 5000)
+  }, 3000)
 })
 
 onUnmounted(() => {

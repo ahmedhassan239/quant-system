@@ -1253,6 +1253,12 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
                           f"Entry=${db_entry_price:.2f} | "
                           f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
+                elif pos_info and pos_info['size'] == 0.0:
+                    if in_position and db_pos_direction in ('LONG', 'SHORT'):
+                        print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
+                        db_decision = 'MANUAL_CLOSE'
+                        portfolio['asset_balance'] = 0.0
+                        in_position = False
 
             # Fallback: if db_decision is still WAIT but local portfolio has a position
             if db_decision == 'WAIT' and in_position and db_pos_direction in ('LONG', 'SHORT'):

@@ -46,15 +46,12 @@ class DashboardController extends Controller
             try {
                 $response = Http::withHeaders([
                     'X-MBX-APIKEY' => $apiKey
-                ])->get("https://testnet.binancefuture.com/fapi/v2/balance?{$queryString}&signature={$signature}");
+                ])->get("https://testnet.binancefuture.com/fapi/v2/account?{$queryString}&signature={$signature}");
 
                 if ($response->successful()) {
-                    $balances = $response->json();
-                    foreach ($balances as $asset) {
-                        if (isset($asset['asset']) && $asset['asset'] === 'USDT') {
-                            $walletBalance = (float) $asset['balance'];
-                            break;
-                        }
+                    $account = $response->json();
+                    if (isset($account['totalWalletBalance'])) {
+                        $walletBalance = (float) $account['totalWalletBalance'];
                     }
                 }
             } catch (\Exception $e) {
@@ -127,5 +124,49 @@ class DashboardController extends Controller
         ]);
 
         return response()->json(['message' => 'Symbol added successfully', 'data' => $symbol]);
+    }
+
+    public function closePosition($symbol)
+    {
+        $symbol = strtoupper($symbol);
+        
+        $position = Position::where('symbol', $symbol)->where('asset_balance', '>', 0)->latest()->first();
+        if (!$position) {
+            return response()->json(['message' => 'No active position found in database for ' . $symbol], 404);
+        }
+
+        $apiKey = env('BINANCE_API_KEY');
+        $apiSecret = env('BINANCE_API_SECRET');
+        
+        if (!$apiKey || !$apiSecret) {
+            return response()->json(['message' => 'Binance API credentials missing'], 500);
+        }
+        
+        $side = $position->position_direction === 'LONG' ? 'SELL' : 'BUY';
+        
+        $timestamp = round(microtime(true) * 1000);
+        $queryString = "symbol={$symbol}&side={$side}&type=MARKET&reduceOnly=true&timestamp={$timestamp}";
+        $signature = hash_hmac('sha256', $queryString, $apiSecret);
+        
+        try {
+            $response = Http::withHeaders([
+                'X-MBX-APIKEY' => $apiKey
+            ])->post("https://testnet.binancefuture.com/fapi/v1/order?{$queryString}&signature={$signature}");
+            
+            if ($response->successful()) {
+                $position->decision = 'MANUAL_CLOSE';
+                $position->asset_balance = 0;
+                $position->save();
+                
+                return response()->json(['message' => 'Position closed successfully', 'data' => $response->json()]);
+            } else {
+                return response()->json([
+                    'message' => 'Failed to close position on Binance',
+                    'error' => $response->json()
+                ], $response->status());
+            }
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'Error communicating with Binance API', 'error' => $e->getMessage()], 500);
+        }
     }
 }
