@@ -146,12 +146,18 @@ class DashboardController extends Controller
         }
         
         $side = $position->position_direction === 'LONG' ? 'SELL' : 'BUY';
-        
-        // Binance requires the quantity for MARKET reduceOnly orders
         $quantity = $position->asset_balance;
         
-        $timestamp = round(microtime(true) * 1000);
-        $queryString = "symbol={$symbol}&side={$side}&type=MARKET&quantity={$quantity}&reduceOnly=true&timestamp={$timestamp}";
+        $params = [
+            'symbol' => $symbol,
+            'side' => $side,
+            'type' => 'MARKET',
+            'quantity' => $quantity,
+            'reduceOnly' => 'true',
+            'timestamp' => round(microtime(true) * 1000)
+        ];
+        
+        $queryString = http_build_query($params, '', '&');
         $signature = hash_hmac('sha256', $queryString, $apiSecret);
         
         try {
