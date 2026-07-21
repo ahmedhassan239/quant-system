@@ -147,8 +147,11 @@ class DashboardController extends Controller
         
         $side = $position->position_direction === 'LONG' ? 'SELL' : 'BUY';
         
+        // Binance requires the quantity for MARKET reduceOnly orders
+        $quantity = $position->asset_balance;
+        
         $timestamp = round(microtime(true) * 1000);
-        $queryString = "symbol={$symbol}&side={$side}&type=MARKET&reduceOnly=true&timestamp={$timestamp}";
+        $queryString = "symbol={$symbol}&side={$side}&type=MARKET&quantity={$quantity}&reduceOnly=true&timestamp={$timestamp}";
         $signature = hash_hmac('sha256', $queryString, $apiSecret);
         
         try {
@@ -163,13 +166,16 @@ class DashboardController extends Controller
                 
                 return response()->json(['message' => 'Position closed successfully', 'data' => $response->json()]);
             } else {
+                $errorData = $response->json();
+                $binanceMessage = $errorData['msg'] ?? 'Unknown Binance Error';
+                
                 return response()->json([
-                    'message' => 'Failed to close position on Binance',
-                    'error' => $response->json()
+                    'message' => $binanceMessage,
+                    'error' => $errorData
                 ], $response->status());
             }
         } catch (\Exception $e) {
-            return response()->json(['message' => 'Error communicating with Binance API', 'error' => $e->getMessage()], 500);
+            return response()->json(['message' => 'Error communicating with Binance API: ' . $e->getMessage()], 500);
         }
     }
 }
