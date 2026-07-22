@@ -16,7 +16,7 @@
     
     <div 
       ref="terminalContainer" 
-      class="flex-1 overflow-y-auto h-64 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent pr-2"
+      class="flex-1 overflow-y-auto overflow-x-hidden h-64 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent pr-2 w-full text-xs sm:text-sm"
     >
       <div v-if="logs.length === 0" class="text-gray-600 italic">
         Awaiting bot initialization...
@@ -24,17 +24,17 @@
       <div 
         v-for="log in logs" 
         :key="log.id"
-        class="flex items-start gap-3 hover:bg-gray-900/50 p-1 rounded transition-colors"
+        class="flex items-start gap-2 sm:gap-3 hover:bg-gray-900/50 p-1 rounded transition-colors"
       >
-        <span class="text-gray-500 whitespace-nowrap">[{{ formatTime(log.created_at) }}]</span>
+        <span class="text-gray-500 shrink-0">[{{ formatTime(log.created_at) }}]</span>
         <span 
           :class="getLogColor(log.action)"
-          class="font-bold whitespace-nowrap min-w-[70px]"
+          class="font-bold shrink-0 w-12 sm:w-auto sm:min-w-[70px]"
         >
           {{ log.action }}
         </span>
-        <span class="text-gray-300 font-bold whitespace-nowrap">[{{ log.symbol }}]</span>
-        <span class="text-green-400 break-words">{{ log.message }}</span>
+        <span class="text-gray-300 font-bold shrink-0">[{{ log.symbol }}]</span>
+        <span class="text-green-400 break-words flex-1 min-w-0">{{ log.message }}</span>
       </div>
     </div>
   </div>

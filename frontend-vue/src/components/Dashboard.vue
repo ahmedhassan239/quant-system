@@ -1,6 +1,6 @@
 <template>
-  <div class="min-h-screen bg-gray-900 text-white p-8 font-sans">
-    <div class="w-full px-4 mx-auto space-y-8">
+  <div class="min-h-screen bg-gray-900 text-white p-2 sm:p-8 font-sans">
+    <div class="w-full px-2 sm:px-4 mx-auto space-y-8">
       
       <!-- Header -->
       <header class="flex flex-col md:flex-row justify-between items-start md:items-center pb-6 border-b border-gray-700 gap-4">
@@ -14,7 +14,7 @@
       </header>
 
       <!-- Stats Overview Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-5 gap-6">
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-6">
         
         <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-emerald-500/50 transition-colors relative overflow-hidden group">
           <div class="absolute inset-0 bg-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
@@ -78,7 +78,8 @@
         <h2 class="text-xl font-bold mb-6 text-gray-100 flex items-center gap-2">
           Active Positions
         </h2>
-        <div class="overflow-x-auto">
+        <!-- Desktop Table View -->
+        <div class="hidden md:block overflow-x-auto">
           <table class="w-full text-left border-collapse">
             <thead>
               <tr class="text-gray-400 text-sm border-b border-gray-700 bg-gray-900/50">
@@ -123,6 +124,45 @@
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- Mobile Card View -->
+        <div class="md:hidden space-y-4">
+          <div v-if="metrics.active_positions.length === 0" class="py-8 text-center text-gray-500 italic">
+            No active positions currently running.
+          </div>
+          <div v-for="pos in metrics.active_positions" :key="'mob-'+pos.symbol" class="bg-gray-900/50 rounded-xl p-4 border border-gray-700/50 flex flex-col gap-3">
+            <div class="flex justify-between items-start">
+              <div>
+                <div class="font-bold text-lg text-white">{{ pos.symbol }}</div>
+                <div class="text-xs text-gray-400 mt-1 max-w-[200px] truncate" :title="pos.entry_reason">
+                  {{ pos.entry_reason || pos.strategy || 'Manual / Undefined' }}
+                </div>
+              </div>
+              <span :class="pos.direction === 'LONG' ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'" class="px-3 py-1 rounded-full text-xs font-bold tracking-wider border">
+                {{ pos.direction }}
+              </span>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-2 text-sm mt-1">
+              <div class="text-gray-400">Entry: <span class="text-gray-300 font-mono ml-1">${{ pos.entry_price }}</span></div>
+              <div class="text-gray-400">Current: <span class="text-gray-300 font-mono ml-1">${{ pos.current_price }}</span></div>
+              <div class="text-gray-400">Margin: <span class="text-gray-300 font-mono ml-1">${{ pos.allocated_usdt || '0.00' }}</span></div>
+              <div class="text-gray-400">Stop Loss: <span class="text-gray-300 font-mono ml-1">{{ pos.stop_loss !== 'N/A' ? '$' + Number(pos.stop_loss).toFixed(4) : 'N/A' }}</span></div>
+            </div>
+            
+            <div class="flex justify-between items-center mt-2 pt-3 border-t border-gray-800">
+              <div class="flex flex-col">
+                <span class="text-xs text-gray-400 uppercase tracking-wide">Unrealized PNL</span>
+                <span class="text-lg font-bold font-mono mt-0.5" :class="getPnlColor(pos.unrealized_pnl)">
+                  ${{ pos.unrealized_pnl }}
+                </span>
+              </div>
+              <button @click="closePosition(pos.symbol)" class="bg-red-500/20 hover:bg-red-500/40 text-red-400 border border-red-500/30 text-sm font-bold py-2 px-6 rounded-lg transition-colors">
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
