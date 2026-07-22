@@ -294,6 +294,36 @@ def get_futures_balance(client: Client) -> float:
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  GLOBAL POSITION COUNTER (Live Binance)
+# ──────────────────────────────────────────────────────────────────────
+
+def count_all_open_positions(client: Client) -> int:
+    """
+    Count ALL open Futures positions on Binance (any symbol with positionAmt != 0).
+    This is the source-of-truth counter that prevents race conditions
+    vs. counting from the local DB.
+
+    Returns:
+        int: number of symbols with an active position.
+    """
+    try:
+        positions = client.futures_position_information()
+        count = 0
+        for pos in positions:
+            amt = float(pos.get('positionAmt', 0))
+            if amt != 0:
+                count += 1
+        logger.debug(f"Live Binance open positions: {count}")
+        return count
+    except BinanceAPIException as e:
+        logger.error(f"Failed to count open positions: [{e.code}] {e.message}")
+        return 999  # Fail-safe: assume max so we don't open more
+    except Exception as e:
+        logger.error(f"Unexpected error counting open positions: {e}")
+        return 999  # Fail-safe
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  HELPERS
 # ──────────────────────────────────────────────────────────────────────
 

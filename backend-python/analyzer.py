@@ -14,7 +14,8 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
                     BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT)
-from futures_executor import open_position, close_position, get_futures_balance, get_position_info
+from futures_executor import (open_position, close_position, get_futures_balance,
+                              get_position_info, count_all_open_positions)
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -23,10 +24,12 @@ MAX_BUYS = 1
 ENTRY_WEIGHT = 1.0
 TRADING_FEE = 0.001                       # 0.1 % per side
 MIN_PROFIT_PCT = 0.01                     # +1.0 %
-TRAILING_ACTIVATE_PCT = 0.02              # +2.0 %
-TRAILING_PULLBACK_PCT = 0.005             # -0.5 %
+TRAILING_ACTIVATE_PCT = 0.015             # +1.5 % unrealized PnL to activate TSL
+TRAILING_DISTANCE_PCT = 0.01              # 1.0 % trailing distance from peak/trough
+TRAILING_PULLBACK_PCT = 0.005             # -0.5 % (legacy, kept for compat)
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
+MAX_GLOBAL_POSITIONS = 10                 # Hard limit: max open positions on Binance
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -318,11 +321,20 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
     else:
         sell_value = asset_balance * float(current_price) * (1 - TRADING_FEE)
 
-    # ── Execute Futures close order ──
+    # ── Execute Futures close order (use LIVE Binance position size) ──
     if futures_client and asset_balance > 0:
-        order = close_position(futures_client, symbol, direction, asset_balance)
+        import logging as _close_logging
+        _close_logger = _close_logging.getLogger("FuturesExecutor")
+        # Query the REAL position size from Binance to avoid quantity mismatches
+        live_pos = get_position_info(futures_client, symbol)
+        close_qty = live_pos['size'] if (live_pos and live_pos['size'] > 0) else asset_balance
+        _close_logger.warning(
+            f"🚨 SL TRIGGERED & EXECUTED: {symbol} at {current_price} "
+            f"(exit_reason={exit_reason}, closing qty={close_qty})"
+        )
+        order = close_position(futures_client, symbol, direction, close_qty)
         if order:
-            print(f"✅ [{symbol}] Futures CLOSE {direction} executed | OrderID: {order['orderId']}", flush=True)
+            print(f"✅ [{symbol}] Futures CLOSE {direction} executed | OrderID: {order['orderId']} | Qty: {close_qty}", flush=True)
         else:
             print(f"⚠️ [{symbol}] Futures CLOSE {direction} order failed — portfolio updated virtually", flush=True)
 
@@ -699,27 +711,62 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             if pos_direction == 'LONG':
                 unrealized_pct = (cp - ep) / ep
 
+                # Track new peak price
                 if highest_price is None or cp > float(highest_price):
                     portfolio['highest_price_since_entry'] = cp
                     highest_price = cp
 
-                # Trailing Stop Loss
-                TRAILING_PERCENT = 0.005
-                dynamic_sl = cp * (1 - TRAILING_PERCENT)
-                if stop_loss > 0 and dynamic_sl > stop_loss:
-                    portfolio['stop_loss_price'] = dynamic_sl
-                    stop_loss = dynamic_sl
-                    msg = f"✅ [{symbol}] Trailing SL updated for LONG to ${stop_loss:.4f}"
-                    print(msg, flush=True)
-                    log_to_db(session, symbol, "INFO", msg)
-                        
-                # Check Stop Loss hit
+                # ── Trailing Stop Loss (Profit-Locking) ──
+                # Only activates once unrealized PnL >= TRAILING_ACTIVATE_PCT
+                if unrealized_pct >= TRAILING_ACTIVATE_PCT:
+                    if not trailing_active:
+                        trailing_active = True
+                        portfolio['trailing_active'] = True
+                        msg = (f"📈 [{symbol}] TRAILING STOP ACTIVATED for LONG | "
+                               f"Unrealized: {unrealized_pct*100:+.2f}% (threshold: {TRAILING_ACTIVATE_PCT*100:.1f}%)")
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "INFO", msg)
+
+                    # Trail from the PEAK price, not current price
+                    peak = float(highest_price) if highest_price else cp
+                    new_sl = peak * (1 - TRAILING_DISTANCE_PCT)
+
+                    if new_sl > stop_loss:
+                        old_sl = stop_loss
+                        portfolio['stop_loss_price'] = new_sl
+                        stop_loss = new_sl
+                        locked_pnl = ((new_sl - ep) / ep) * 100
+                        msg = (f"📈 TRAILING STOP UPDATED: {symbol} | "
+                               f"New SL: ${new_sl:.4f} (was ${old_sl:.4f}) | "
+                               f"Peak: ${peak:.2f} | Locked Profit: {locked_pnl:+.2f}%")
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "INFO", msg)
+
+                    # Persist trailing state to DB for frontend
+                    try:
+                        latest_record = session.query(PortfolioState).filter(
+                            PortfolioState.symbol == symbol,
+                            PortfolioState.position_direction == 'LONG'
+                        ).order_by(PortfolioState.id.desc()).first()
+                        if latest_record:
+                            latest_record.stop_loss_price = stop_loss
+                            latest_record.stop_loss = stop_loss
+                            latest_record.trailing_active = True
+                            latest_record.highest_price_since_entry = float(highest_price) if highest_price else cp
+                            session.commit()
+                    except Exception as e:
+                        session.rollback()
+                        print(f"Warning: Failed to persist trailing SL to DB: {e}", flush=True)
+
+                # ── Check Stop Loss hit ──
                 if stop_loss > 0 and cp <= stop_loss:
-                    msg = f"⛔ [{symbol}] LONG STOP-LOSS hit at ${cp:.2f} (SL: ${stop_loss:.2f})"
+                    sl_type = 'TRAILING_STOP' if trailing_active else 'STOP_LOSS'
+                    msg = (f"🚨 [{symbol}] LONG {sl_type} HIT at ${cp:.2f} "
+                           f"(SL: ${stop_loss:.2f}) — EXECUTING CLOSE ON BINANCE")
                     print(msg, flush=True)
                     log_to_db(session, symbol, "EXIT", msg)
                     portfolio = _close_position_handler(
-                        portfolio, current_price, symbol, session, 'TRAILING_STOP',
+                        portfolio, current_price, symbol, session, sl_type,
                         futures_client, bullish_ob, bearish_ob, current_rsi,
                         current_zscore, macro_info)
                     risk_exit_triggered = True
@@ -728,27 +775,62 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             elif pos_direction == 'SHORT':
                 unrealized_pct = (ep - cp) / ep
 
+                # Track new trough price
                 if lowest_price is None or cp < float(lowest_price):
                     portfolio['lowest_price_since_entry'] = cp
                     lowest_price = cp
 
-                # Trailing Stop Loss
-                TRAILING_PERCENT = 0.005
-                dynamic_sl = cp * (1 + TRAILING_PERCENT)
-                if stop_loss > 0 and dynamic_sl < stop_loss:
-                    portfolio['stop_loss_price'] = dynamic_sl
-                    stop_loss = dynamic_sl
-                    msg = f"✅ [{symbol}] Trailing SL updated for SHORT to ${stop_loss:.4f}"
-                    print(msg, flush=True)
-                    log_to_db(session, symbol, "INFO", msg)
-                        
-                # Check Stop Loss hit
+                # ── Trailing Stop Loss (Profit-Locking) ──
+                # Only activates once unrealized PnL >= TRAILING_ACTIVATE_PCT
+                if unrealized_pct >= TRAILING_ACTIVATE_PCT:
+                    if not trailing_active:
+                        trailing_active = True
+                        portfolio['trailing_active'] = True
+                        msg = (f"📈 [{symbol}] TRAILING STOP ACTIVATED for SHORT | "
+                               f"Unrealized: {unrealized_pct*100:+.2f}% (threshold: {TRAILING_ACTIVATE_PCT*100:.1f}%)")
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "INFO", msg)
+
+                    # Trail from the TROUGH price, not current price
+                    trough = float(lowest_price) if lowest_price else cp
+                    new_sl = trough * (1 + TRAILING_DISTANCE_PCT)
+
+                    if stop_loss == 0 or new_sl < stop_loss:
+                        old_sl = stop_loss
+                        portfolio['stop_loss_price'] = new_sl
+                        stop_loss = new_sl
+                        locked_pnl = ((ep - new_sl) / ep) * 100
+                        msg = (f"📈 TRAILING STOP UPDATED: {symbol} | "
+                               f"New SL: ${new_sl:.4f} (was ${old_sl:.4f}) | "
+                               f"Trough: ${trough:.2f} | Locked Profit: {locked_pnl:+.2f}%")
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "INFO", msg)
+
+                    # Persist trailing state to DB for frontend
+                    try:
+                        latest_record = session.query(PortfolioState).filter(
+                            PortfolioState.symbol == symbol,
+                            PortfolioState.position_direction == 'SHORT'
+                        ).order_by(PortfolioState.id.desc()).first()
+                        if latest_record:
+                            latest_record.stop_loss_price = stop_loss
+                            latest_record.stop_loss = stop_loss
+                            latest_record.trailing_active = True
+                            latest_record.lowest_price_since_entry = float(lowest_price) if lowest_price else cp
+                            session.commit()
+                    except Exception as e:
+                        session.rollback()
+                        print(f"Warning: Failed to persist trailing SL to DB: {e}", flush=True)
+
+                # ── Check Stop Loss hit ──
                 if stop_loss > 0 and cp >= stop_loss:
-                    msg = f"⛔ [{symbol}] SHORT STOP-LOSS hit at ${cp:.2f} (SL: ${stop_loss:.2f})"
+                    sl_type = 'TRAILING_STOP' if trailing_active else 'STOP_LOSS'
+                    msg = (f"🚨 [{symbol}] SHORT {sl_type} HIT at ${cp:.2f} "
+                           f"(SL: ${stop_loss:.2f}) — EXECUTING CLOSE ON BINANCE")
                     print(msg, flush=True)
                     log_to_db(session, symbol, "EXIT", msg)
                     portfolio = _close_position_handler(
-                        portfolio, current_price, symbol, session, 'TRAILING_STOP',
+                        portfolio, current_price, symbol, session, sl_type,
                         futures_client, bullish_ob, bearish_ob, current_rsi,
                         current_zscore, macro_info)
                     risk_exit_triggered = True
@@ -1042,46 +1124,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
                             traceback.print_exc()
 
-                        # --- EXECUTION ENGINE: API ORDER PLACEMENT ---
-                        if futures_client:
-                            import logging
-                            logger = logging.getLogger("FuturesExecutor")
-                            
-                            allocated_usdt = spend
-                            entry_price = float(current_price)
-                            qty = allocated_usdt / entry_price
-                            direction = 'LONG'
-                            
-                            try:
-                                # Strict Precision Formatting based on Binance stepSize
-                                info = futures_client.futures_exchange_info()
-                                step_size = 0.001 # safe fallback
-                                for s in info['symbols']:
-                                    if s['symbol'] == symbol:
-                                        for f in s['filters']:
-                                            if f['filterType'] == 'LOT_SIZE':
-                                                step_size = float(f['stepSize'])
-                                                break
-                                        break
-                                        
-                                precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
-                                qty = round(qty - (qty % step_size), precision)
-                                
-                                # Explicit Logging
-                                logger.info(f"Placing {direction} order for {symbol} | Qty: {qty} | Allocated: ${allocated_usdt}")
-                                
-                                order = futures_client.futures_create_order(
-                                    symbol=symbol,
-                                    side='BUY',
-                                    type='MARKET',
-                                    quantity=qty
-                                )
-                                print(f"✅ [{symbol}] Futures OPEN {direction} executed | OrderID: {order['orderId']}", flush=True)
-                                
-                            except Exception as e:
-                                logger.error(f"❌ Execution Error for {symbol} {direction}: {str(e)}")
-                                traceback.print_exc()
-                        # -----------------------------------------------
+
 
                         # Telegram alert
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
@@ -1229,46 +1272,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
                             traceback.print_exc()
 
-                        # --- EXECUTION ENGINE: API ORDER PLACEMENT ---
-                        if futures_client:
-                            import logging
-                            logger = logging.getLogger("FuturesExecutor")
-                            
-                            allocated_usdt = spend
-                            entry_price = float(current_price)
-                            qty = allocated_usdt / entry_price
-                            direction = 'SHORT'
-                            
-                            try:
-                                # Strict Precision Formatting based on Binance stepSize
-                                info = futures_client.futures_exchange_info()
-                                step_size = 0.001 # safe fallback
-                                for s in info['symbols']:
-                                    if s['symbol'] == symbol:
-                                        for f in s['filters']:
-                                            if f['filterType'] == 'LOT_SIZE':
-                                                step_size = float(f['stepSize'])
-                                                break
-                                        break
-                                        
-                                precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
-                                qty = round(qty - (qty % step_size), precision)
-                                
-                                # Explicit Logging
-                                logger.info(f"Placing {direction} order for {symbol} | Qty: {qty} | Allocated: ${allocated_usdt}")
-                                
-                                order = futures_client.futures_create_order(
-                                    symbol=symbol,
-                                    side='SELL',
-                                    type='MARKET',
-                                    quantity=qty
-                                )
-                                print(f"✅ [{symbol}] Futures OPEN {direction} executed | OrderID: {order['orderId']}", flush=True)
-                                
-                            except Exception as e:
-                                logger.error(f"❌ Execution Error for {symbol} {direction}: {str(e)}")
-                                traceback.print_exc()
-                        # -----------------------------------------------
+
 
                         # Telegram alert
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
@@ -1479,72 +1483,164 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             cp = float(current_price)
             if pos_direction == 'LONG':
                 hp = float(portfolio['highest_price_since_entry']) if portfolio.get('highest_price_since_entry') else cp
+                current_sl = float(portfolio.get('stop_loss_price', 0) or 0)
                 unrealized = ((cp - ep) / ep) * 100
-                trailing_status = "ACTIVE" if (cp - ep) / ep >= TRAILING_ACTIVATE_PCT else "INACTIVE"
+                is_trailing = portfolio.get('trailing_active', False)
+                trailing_status = "🟢 ACTIVE" if is_trailing else "⚪ INACTIVE"
                 print(f"\n--- Risk Management (LONG) ---", flush=True)
-                print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}%", flush=True)
-                print(f"Stop-Loss @ ${ep * (1 - HARD_STOP_LOSS_PCT):.2f} | "
-                      f"Trailing: {trailing_status} (Peak: ${hp:.2f})", flush=True)
+                print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}% | Peak: ${hp:.2f}", flush=True)
+                print(f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} "
+                      f"(activates at +{TRAILING_ACTIVATE_PCT*100:.1f}%, trails {TRAILING_DISTANCE_PCT*100:.1f}%)", flush=True)
             elif pos_direction == 'SHORT':
                 lp = float(portfolio['lowest_price_since_entry']) if portfolio.get('lowest_price_since_entry') else cp
+                current_sl = float(portfolio.get('stop_loss_price', 0) or 0)
                 unrealized = ((ep - cp) / ep) * 100
-                trailing_status = "ACTIVE" if (ep - cp) / ep >= TRAILING_ACTIVATE_PCT else "INACTIVE"
+                is_trailing = portfolio.get('trailing_active', False)
+                trailing_status = "🟢 ACTIVE" if is_trailing else "⚪ INACTIVE"
                 print(f"\n--- Risk Management (SHORT) ---", flush=True)
-                print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}%", flush=True)
-                print(f"Stop-Loss @ ${ep * (1 + STOP_LOSS_PCT):.2f} | "
-                      f"Trailing: {trailing_status} (Trough: ${lp:.2f})", flush=True)
+                print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}% | Trough: ${lp:.2f}", flush=True)
+                print(f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} "
+                      f"(activates at +{TRAILING_ACTIVATE_PCT*100:.1f}%, trails {TRAILING_DISTANCE_PCT*100:.1f}%)", flush=True)
 
         if risk_exit_triggered:
             print(f"\n⚠️ [{symbol}] Risk exit was triggered this cycle.", flush=True)
         else:
             print(f"\n[{symbol}] Decision '{db_decision}' saved to database successfully.", flush=True)
 
-        # --------------------------------------------------------------------------------
-        # 🚀 EXECUTION ENGINE: BINANCE API PLACEMENT
-        # --------------------------------------------------------------------------------
+        # ════════════════════════════════════════════════════════════════════
+        # 🚀 EXECUTION ENGINE: BINANCE API PLACEMENT (Production Guards)
+        # ════════════════════════════════════════════════════════════════════
+        MAX_POSITION_USDT = 250.0        # Hard cap: never allocate more than $250
+        MAX_WALLET_PCT    = 0.05         # Hard cap: never allocate more than 5% of wallet
+
         if futures_client and db_decision in ('LONG', 'SHORT'):
             import logging
-            logger = logging.getLogger("FuturesExecutor")
-            
-            # 1. Ensure allocated margin is clearly available. 
-            # Using $100 to verify the API call fires, as requested. 
-            # (Replace with: `allocated_usdt = portfolio['usdt_balance'] * allocation_pct` once verified)
-            allocated_usdt = 100.0 
+            _exec_logger = logging.getLogger("FuturesExecutor")
             direction = db_decision
-            
-            try:
-                # 2. Dynamically fetch the symbol's stepSize/precision
-                info = futures_client.futures_exchange_info()
-                step_size = 0.001  # Safe fallback
-                for s in info['symbols']:
-                    if s['symbol'] == symbol:
-                        for f in s['filters']:
-                            if f['filterType'] == 'LOT_SIZE':
-                                step_size = float(f['stepSize'])
-                                break
-                        break
-                
-                precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
-                
-                # 3. Calculate correct quantity dynamically
-                qty = round(allocated_usdt / current_price, precision)
-                
-                # 4. Execute the market order
-                side = 'BUY' if direction == 'LONG' else 'SELL'
-                order = futures_client.futures_create_order(
-                    symbol=symbol,
-                    side=side,
-                    type='MARKET',
-                    quantity=qty
+
+            # ── GUARD 0: Global Max Positions (Live Binance Count) ──
+            current_open_count = count_all_open_positions(futures_client)
+            if current_open_count >= MAX_GLOBAL_POSITIONS:
+                _exec_logger.warning(
+                    f"🛑 [SKIP ENTRY] Max global positions ({MAX_GLOBAL_POSITIONS}) reached. "
+                    f"Currently open: {current_open_count}. "
+                    f"Skipping {symbol} {direction} this cycle."
                 )
-                
-                # 5. Add Explicit Log
-                logger.info(f"✅ EXECUTED ON BINANCE: {direction} | Symbol: {symbol} | Qty: {qty} | Allocated: ${allocated_usdt}")
-                
-            except Exception as e:
-                # 6. logger.error the exact exception
-                logger.error(f"❌ BINANCE REJECTED ORDER: {symbol} {direction} | Error: {str(e)}")
-        # --------------------------------------------------------------------------------
+            else:
+                # ── GUARD 1: No Duplicate Entries ──
+                live_pos = get_position_info(futures_client, symbol)
+                if live_pos and live_pos['size'] > 0:
+                    _exec_logger.info(
+                        f"🔒 [SKIP ENTRY] {symbol} already has an active Binance "
+                        f"{live_pos['direction']} position (size={live_pos['size']}). Skipping."
+                    )
+                else:
+                    # ── GUARD 2: Live Free Margin Check ──
+                    available_balance = get_futures_balance(futures_client)
+
+                    # ── Position Sizing: Conviction Tier (capped) ──
+                    _alloc_pct = 0.05  # Tier 3 default
+                    _abs_z = abs(current_zscore) if current_zscore else 0.0
+                    _vol_ratio = 0.0
+                    if bullish_ob and 'vol_ratio' in bullish_ob:
+                        _vol_ratio = bullish_ob['vol_ratio']
+                    elif bearish_ob and 'vol_ratio' in bearish_ob:
+                        _vol_ratio = bearish_ob['vol_ratio']
+                    if _abs_z >= 2.0 and _vol_ratio >= 4.0:
+                        _alloc_pct = 0.10   # Tier 1 (was 0.20 — capped for safety)
+                    elif _abs_z >= 1.0 and _vol_ratio >= 2.0:
+                        _alloc_pct = 0.05   # Tier 2 (was 0.10 — capped for safety)
+
+                    # ── GUARD 3: Position Size Hard Cap ──
+                    calculated_size = available_balance * _alloc_pct
+                    wallet_cap      = available_balance * MAX_WALLET_PCT
+                    allocated_usdt  = min(calculated_size, wallet_cap, MAX_POSITION_USDT)
+
+                    _exec_logger.info(
+                        f"[{symbol}] Sizing: calculated=${calculated_size:.2f}, "
+                        f"wallet_cap=${wallet_cap:.2f}, hard_cap=${MAX_POSITION_USDT}, "
+                        f"final_allocated=${allocated_usdt:.2f}"
+                    )
+
+                    # ── GUARD 4: Safety Bypass ──
+                    if available_balance < 10.0:
+                        _exec_logger.warning(
+                            f"⚠️ [SKIP EXECUTION] Insufficient Free Margin: "
+                            f"${available_balance:.2f} available (Required: ${allocated_usdt:.2f}) "
+                            f"for {symbol} {direction}."
+                        )
+                    elif allocated_usdt > available_balance:
+                        _exec_logger.warning(
+                            f"⚠️ [SKIP EXECUTION] Insufficient Free Margin: "
+                            f"${available_balance:.2f} available (Required: ${allocated_usdt:.2f}) "
+                            f"for {symbol} {direction}."
+                        )
+                    elif allocated_usdt < 5.0:
+                        _exec_logger.warning(
+                            f"⚠️ [SKIP EXECUTION] Allocated amount too small: "
+                            f"${allocated_usdt:.2f} for {symbol} {direction}."
+                        )
+                    else:
+                        try:
+                            # ── Fetch stepSize precision for this symbol ──
+                            info = futures_client.futures_exchange_info()
+                            step_size = 0.001  # Safe fallback
+                            for s in info['symbols']:
+                                if s['symbol'] == symbol:
+                                    for flt in s['filters']:
+                                        if flt['filterType'] == 'LOT_SIZE':
+                                            step_size = float(flt['stepSize'])
+                                            break
+                                    break
+
+                            precision = (
+                                len(str(step_size).rstrip('0').split('.')[-1])
+                                if '.' in str(step_size) else 0
+                            )
+
+                            # ── Calculate quantity with strict precision ──
+                            raw_qty = allocated_usdt / float(current_price)
+                            qty = round(raw_qty - (raw_qty % step_size), precision)
+
+                            if qty <= 0:
+                                _exec_logger.error(
+                                    f"❌ [{symbol}] Calculated qty is 0 after rounding "
+                                    f"(allocated=${allocated_usdt:.2f}, price=${current_price:.2f}, "
+                                    f"step={step_size}, precision={precision})"
+                                )
+                            else:
+                                side = 'BUY' if direction == 'LONG' else 'SELL'
+
+                                _exec_logger.info(
+                                    f"Placing {direction} order for {symbol} | "
+                                    f"Qty: {qty} | Allocated: ${allocated_usdt:.2f} | "
+                                    f"Balance: ${available_balance:.2f} | "
+                                    f"Tier: {_alloc_pct*100:.0f}%"
+                                )
+
+                                order = futures_client.futures_create_order(
+                                    symbol=symbol,
+                                    side=side,
+                                    type='MARKET',
+                                    quantity=qty,
+                                )
+
+                                _exec_logger.info(
+                                    f"✅ EXECUTED ON BINANCE: {direction} | "
+                                    f"Symbol: {symbol} | Qty: {qty} | "
+                                    f"OrderID: {order['orderId']} | "
+                                    f"Allocated: ${allocated_usdt:.2f}"
+                                )
+                                return True
+
+                        except Exception as e:
+                            _exec_logger.error(
+                                f"❌ BINANCE REJECTED ORDER: {symbol} {direction} | "
+                                f"Allocated: ${allocated_usdt:.2f} | "
+                                f"Error: {str(e)}"
+                            )
+                            traceback.print_exc()
+        # ════════════════════════════════════════════════════════════════════
 
 
     except Exception as e:
@@ -1554,6 +1650,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
     finally:
         session.close()
         print(f"--- Execution Analyzer Completed [{symbol}] ---", flush=True)
+
+    return False
 
 
 if __name__ == "__main__":

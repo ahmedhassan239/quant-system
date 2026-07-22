@@ -3,13 +3,13 @@ import schedule
 import threading
 from scanner import scan, update_radar
 from data_fetcher import run_fetcher
-from analyzer import run_analyzer, run_macro_analyzer, send_telegram_alert
+from analyzer import run_analyzer, run_macro_analyzer, send_telegram_alert, MAX_GLOBAL_POSITIONS
 from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     ENV_TYPE, SCHEDULE_INTERVAL_MINUTES, BINANCE_FUTURES_BASE_URL,
                     FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE,
                     MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD)
 from database import SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS, init_shared_db, get_active_symbols, save_wallet_balance
-from futures_executor import create_futures_client, get_futures_balance
+from futures_executor import create_futures_client, get_futures_balance, count_all_open_positions
 
 # ── Initialize Futures client once at module level ──
 futures_client = None
@@ -63,8 +63,20 @@ def scanner_job():
             run_macro_analyzer(symbol=sym)
     else:
         # ── Execution Engine (15m) — trades with MTF confluence ──
+        import logging
+        logger = logging.getLogger("ExecutionEngine")
+        
+        current_open_count = count_all_open_positions(futures_client)
+        
         for sym in symbols:
-            run_analyzer(symbol=sym, futures_client=futures_client)
+            if current_open_count >= MAX_GLOBAL_POSITIONS:
+                logger.warning(f"Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping remaining symbols this cycle.")
+                print(f"🛑 Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping {sym} and remaining symbols.", flush=True)
+                continue  # Skip attempting to open any new positions
+                
+            newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+            if newly_executed:
+                current_open_count += 1
 
     print("\nJob completed. Sleeping until next interval...", flush=True)
     print("="*60 + "\n", flush=True)
