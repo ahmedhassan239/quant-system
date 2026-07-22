@@ -159,7 +159,7 @@ class DashboardController extends Controller
         }
         
         try {
-            // 1. Fetch exact positionAmt from Binance using raw cURL
+            // 1. Fetch exact positionAmt string from Binance using raw cURL
             $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
             $riskParams = [
                 'symbol' => $symbol,
@@ -176,46 +176,51 @@ class DashboardController extends Controller
             $riskResult = curl_exec($chRisk);
             curl_close($chRisk);
 
-            $positionAmt = 0;
+            $rawPositionAmt = '0';
             $riskData = json_decode($riskResult, true);
             if (is_array($riskData) && count($riskData) > 0) {
                 foreach ($riskData as $risk) {
-                    if (isset($risk['positionAmt']) && abs((float)$risk['positionAmt']) > 0) {
-                        $positionAmt = (float)$risk['positionAmt'];
+                    if (isset($risk['positionAmt']) && (float)$risk['positionAmt'] != 0) {
+                        $rawPositionAmt = (string)$risk['positionAmt'];
                         break;
                     }
                 }
             }
 
-            if ($positionAmt == 0) {
+            if ((float)$rawPositionAmt == 0) {
                 // If position is 0 on Binance, fallback to DB quantity
-                $positionAmt = $position->position_direction === 'LONG' ? $position->asset_balance : -$position->asset_balance;
+                $rawPositionAmt = (string)$position->asset_balance;
+                if ($position->position_direction === 'SHORT' && !str_starts_with($rawPositionAmt, '-')) {
+                    $rawPositionAmt = '-' . $rawPositionAmt;
+                }
             }
 
-            // 2. Prepare parameters strictly as strings
-            $side = $positionAmt > 0 ? 'SELL' : 'BUY';
-            $quantity = abs($positionAmt);
-            
+            // 2. Strict string manipulation to remove negative sign (preserving exact precision without float/abs mutation)
+            $isShort = str_starts_with($rawPositionAmt, '-');
+            $side = $isShort ? 'BUY' : 'SELL';
+            $exactQuantity = ltrim($rawPositionAmt, '-');
+
+            // 3. Prepare parameters strictly as strings
             $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
             $params = [
                 'symbol' => $symbol,
                 'side' => $side,
                 'type' => 'MARKET',
-                'quantity' => (string)$quantity,
+                'quantity' => $exactQuantity,
                 'reduceOnly' => 'true',
                 'timestamp' => $timestamp
             ];
             
-            // 3. Build exact query
+            // 4. Build exact query
             $queryString = http_build_query($params, '', '&');
             
-            // 4. Hash signature
+            // 5. Hash signature
             $signature = hash_hmac('sha256', $queryString, env('BINANCE_API_SECRET'));
             
-            // 5. Append signature to URL
+            // 6. Append signature to URL
             $url = "https://testnet.binancefuture.com/fapi/v1/order?{$queryString}&signature={$signature}";
             
-            // 6. Execute raw cURL
+            // 7. Execute raw cURL
             $ch = curl_init();
             curl_setopt($ch, CURLOPT_URL, $url);
             curl_setopt($ch, CURLOPT_POST, true);
