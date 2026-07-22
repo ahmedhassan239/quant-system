@@ -951,13 +951,35 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 # ── Execute LONG (open or DCA) ──
                 dca_level = portfolio.get('dca_level', 0)
                 if decision == 'LONG':
-                    spend = SLOT_BUDGET * ENTRY_WEIGHT
-                    
+                    # Determine Conviction Tier
+                    vol_ratio = 0.0
+                    if strategy_type == 'PULLBACK' and bullish_ob and 'vol_ratio' in bullish_ob:
+                        vol_ratio = bullish_ob['vol_ratio']
+                    elif strategy_type == 'BREAKOUT' and bullish_breakout and 'vol_ratio' in bullish_breakout:
+                        vol_ratio = bullish_breakout['vol_ratio']
+
+                    abs_z = abs(current_zscore) if current_zscore else 0.0
+
+                    allocation_pct = 0.05
+                    tier_str = "Tier 3"
+                    if abs_z >= 2.0 and vol_ratio >= 4.0:
+                        allocation_pct = 0.20
+                        tier_str = "Tier 1"
+                    elif abs_z >= 1.0 and vol_ratio >= 2.0:
+                        allocation_pct = 0.10
+                        tier_str = "Tier 2"
+
                     if futures_client:
                         actual_balance = get_futures_balance(futures_client)
-                        if actual_balance < spend:
-                            print(f"⚠️ Skipping execution: Insufficient USDT balance ({actual_balance:.2f} USDT available)", flush=True)
-                            return
+                    else:
+                        actual_balance = portfolio.get('usdt_balance', 0.0)
+                    
+                    spend = actual_balance * allocation_pct
+
+                    if actual_balance < spend or actual_balance <= 0:
+                        print(f"⚠️ Skipping execution: Insufficient USDT balance ({actual_balance:.2f} USDT available)", flush=True)
+                        return
+
                     if portfolio['usdt_balance'] >= spend:
                         effective_usdt = spend * (1 - TRADING_FEE)
                         asset_bought = effective_usdt / float(current_price)
@@ -982,7 +1004,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         if futures_client:
                             order = open_position(futures_client, symbol, 'LONG', spend)
                             if order:
-                                print(f"✅ [{symbol}] Futures OPEN LONG executed | OrderID: {order['orderId']}", flush=True)
+                                print(f"✅ [{symbol}] Futures OPEN LONG executed | OrderID: {order['orderId']} | Allocated: ${spend:.2f} ({allocation_pct*100}%)", flush=True)
                             else:
                                 print(f"⚠️ [{symbol}] Futures OPEN LONG order failed — aborting database save.", flush=True)
                                 return
@@ -991,22 +1013,20 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         # Generate reason_msg before DB insertion
                         if strategy_type == 'PULLBACK':
-                            strategy_name = 'Strategy A (Pullback)'
+                            strategy_name = f"{tier_str} [Z:{abs_z:.1f}, OB:{vol_ratio:.1f}x] - Pullback"
                             ob_low = bullish_ob['low'] if bullish_ob else 0
                             ob_high = bullish_ob['high'] if bullish_ob else 0
-                            vol_ratio = f"{bullish_ob['vol_ratio']:.1f}x" if bullish_ob and 'vol_ratio' in bullish_ob else "N/A"
-                            reason_msg = (f"Strategy A (Pullback) | Macro: {macro_trend} | Z: {current_zscore:+.2f} | "
-                                          f"OB: ${float(ob_low):.2f}-${float(ob_high):.2f} (Vol {vol_ratio})")
+                            reason_msg = (f"{strategy_name} | Macro: {macro_trend} | "
+                                          f"OB: ${float(ob_low):.2f}-${float(ob_high):.2f}")
                         elif strategy_type == 'BREAKOUT':
-                            strategy_name = 'Strategy B (Breakout)'
-                            vol_ratio = f"{bullish_breakout['vol_ratio']:.1f}x" if bullish_breakout and 'vol_ratio' in bullish_breakout else "N/A"
-                            reason_msg = (f"Strategy B (Breakout) | Macro: {macro_trend} | Vol {vol_ratio} avg | Consolidation High Cleared")
+                            strategy_name = f"{tier_str} [Z:{abs_z:.1f}, OB:{vol_ratio:.1f}x] - Breakout"
+                            reason_msg = (f"{strategy_name} | Macro: {macro_trend} | Consolidation High Cleared")
                         elif strategy_type == 'TREND_ALIGN':
-                            strategy_name = 'Strategy C (Trend Align)'
-                            reason_msg = (f"Strategy C (Trend Align) | Macro: {macro_trend} | "
+                            strategy_name = f"{tier_str} - Trend Align"
+                            reason_msg = (f"{strategy_name} | Macro: {macro_trend} | "
                                           f"Price ${current_price:.2f} > SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY")
                         else:
-                            strategy_name = 'Unknown'
+                            strategy_name = f"{tier_str} - Unknown"
                             reason_msg = f"Strategy: Unknown"
                         
                         portfolio['strategy'] = strategy_name
@@ -1090,13 +1110,35 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                 # ── Execute SHORT (open new short position) ──
                 elif decision == 'SHORT' and not in_position:
-                    spend = SLOT_BUDGET * ENTRY_WEIGHT
+                    # Determine Conviction Tier
+                    vol_ratio = 0.0
+                    if strategy_type == 'PULLBACK' and bearish_ob and 'vol_ratio' in bearish_ob:
+                        vol_ratio = bearish_ob['vol_ratio']
+                    elif strategy_type == 'BREAKOUT' and bearish_breakout and 'vol_ratio' in bearish_breakout:
+                        vol_ratio = bearish_breakout['vol_ratio']
+
+                    abs_z = abs(current_zscore) if current_zscore else 0.0
+
+                    allocation_pct = 0.05
+                    tier_str = "Tier 3"
+                    if abs_z >= 2.0 and vol_ratio >= 4.0:
+                        allocation_pct = 0.20
+                        tier_str = "Tier 1"
+                    elif abs_z >= 1.0 and vol_ratio >= 2.0:
+                        allocation_pct = 0.10
+                        tier_str = "Tier 2"
 
                     if futures_client:
                         actual_balance = get_futures_balance(futures_client)
-                        if actual_balance < spend:
-                            print(f"⚠️ Skipping execution: Insufficient USDT balance ({actual_balance:.2f} USDT available)", flush=True)
-                            return
+                    else:
+                        actual_balance = portfolio.get('usdt_balance', 0.0)
+
+                    spend = actual_balance * allocation_pct
+
+                    if actual_balance < spend or actual_balance <= 0:
+                        print(f"⚠️ Skipping execution: Insufficient USDT balance ({actual_balance:.2f} USDT available)", flush=True)
+                        return
+
                     if portfolio['usdt_balance'] >= spend:
                         effective_usdt = spend * (1 - TRADING_FEE)
                         asset_shorted = effective_usdt / float(current_price)
@@ -1115,7 +1157,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         if futures_client:
                             order = open_position(futures_client, symbol, 'SHORT', spend)
                             if order:
-                                print(f"✅ [{symbol}] Futures OPEN SHORT executed | OrderID: {order['orderId']}", flush=True)
+                                print(f"✅ [{symbol}] Futures OPEN SHORT executed | OrderID: {order['orderId']} | Allocated: ${spend:.2f} ({allocation_pct*100}%)", flush=True)
                             else:
                                 print(f"⚠️ [{symbol}] Futures OPEN SHORT order failed — aborting database save.", flush=True)
                                 return
@@ -1124,22 +1166,20 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         # Generate reason_msg before DB insertion
                         if strategy_type == 'PULLBACK':
-                            strategy_name = 'Strategy A (Pullback)'
+                            strategy_name = f"{tier_str} [Z:{abs_z:.1f}, OB:{vol_ratio:.1f}x] - Pullback"
                             ob_low = bearish_ob['low'] if bearish_ob else 0
                             ob_high = bearish_ob['high'] if bearish_ob else 0
-                            vol_ratio = f"{bearish_ob['vol_ratio']:.1f}x" if bearish_ob and 'vol_ratio' in bearish_ob else "N/A"
-                            reason_msg = (f"Strategy A (Pullback) | Macro: {macro_trend} | Z: {current_zscore:+.2f} | "
-                                          f"OB: ${float(ob_low):.2f}-${float(ob_high):.2f} (Vol {vol_ratio})")
+                            reason_msg = (f"{strategy_name} | Macro: {macro_trend} | "
+                                          f"OB: ${float(ob_low):.2f}-${float(ob_high):.2f}")
                         elif strategy_type == 'BREAKOUT':
-                            strategy_name = 'Strategy B (Breakout)'
-                            vol_ratio = f"{bearish_breakout['vol_ratio']:.1f}x" if bearish_breakout and 'vol_ratio' in bearish_breakout else "N/A"
-                            reason_msg = (f"Strategy B (Breakout) | Macro: {macro_trend} | Vol {vol_ratio} avg | Consolidation Low Broken")
+                            strategy_name = f"{tier_str} [Z:{abs_z:.1f}, OB:{vol_ratio:.1f}x] - Breakout"
+                            reason_msg = (f"{strategy_name} | Macro: {macro_trend} | Consolidation Low Broken")
                         elif strategy_type == 'TREND_ALIGN':
-                            strategy_name = 'Strategy C (Trend Align)'
-                            reason_msg = (f"Strategy C (Trend Align) | Macro: {macro_trend} | "
+                            strategy_name = f"{tier_str} - Trend Align"
+                            reason_msg = (f"{strategy_name} | Macro: {macro_trend} | "
                                           f"Price ${current_price:.2f} < SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY")
                         else:
-                            strategy_name = 'Unknown'
+                            strategy_name = f"{tier_str} - Unknown"
                             reason_msg = f"Strategy: Unknown"
                         
                         portfolio['strategy'] = strategy_name

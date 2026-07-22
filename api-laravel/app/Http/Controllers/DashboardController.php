@@ -91,22 +91,34 @@ class DashboardController extends Controller
 
                     if ($activeBinancePositions->isNotEmpty()) {
                         $mappedPositions = $activeBinancePositions->map(function ($binancePos) {
-                            // 1. Fetch the LATEST local database record for this specific symbol
+                            // Fetch the latest record where stop_loss OR stop_loss_price is NOT NULL
                             $localRecord = \Illuminate\Support\Facades\DB::table('positions')
                                 ->where('symbol', $binancePos['symbol'])
+                                ->where(function ($query) {
+                                    $query->whereNotNull('stop_loss')
+                                          ->orWhereNotNull('stop_loss_price');
+                                })
                                 ->orderBy('id', 'desc')
                                 ->first();
 
-                            // 2. Map the data, replacing 'N/A' with the actual DB values if they exist
+                            // Determine the exact stop loss value
+                            $actualStopLoss = 'N/A';
+                            if ($localRecord) {
+                                $actualStopLoss = $localRecord->stop_loss ?: ($localRecord->stop_loss_price ?: 'N/A');
+                            }
+
+                            $allocatedUsdt = abs((float)$binancePos['positionAmt']) * (float)$binancePos['entryPrice'];
+
                             return [
                                 'symbol' => $binancePos['symbol'],
                                 'direction' => $binancePos['positionAmt'] > 0 ? 'LONG' : 'SHORT',
                                 'entry_price' => number_format((float)$binancePos['entryPrice'], 2, '.', ''),
                                 'current_price' => number_format((float)$binancePos['markPrice'], 2, '.', ''),
                                 'unrealized_pnl' => number_format((float)$binancePos['unRealizedProfit'], 2, '.', ''),
+                                'allocated_usdt' => number_format($allocatedUsdt, 2, '.', ''),
                                 'entry_reason' => $localRecord && $localRecord->entry_reason ? $localRecord->entry_reason : 'Live from Binance',
-                                'stop_loss' => $localRecord && $localRecord->stop_loss && (float)$localRecord->stop_loss > 0 ? number_format((float)$localRecord->stop_loss, 2, '.', '') : 'N/A',
-                                'strategy' => $localRecord && $localRecord->strategy ? $localRecord->strategy : 'N/A',
+                                'stop_loss' => $actualStopLoss,
+                                'strategy' => $localRecord->strategy ?? 'N/A',
                             ];
                         })->values();
                     }
