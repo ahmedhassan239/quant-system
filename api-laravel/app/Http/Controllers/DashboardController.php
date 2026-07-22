@@ -90,48 +90,23 @@ class DashboardController extends Controller
                     });
 
                     if ($activeBinancePositions->isNotEmpty()) {
-                        $symbols = $activeBinancePositions->pluck('symbol')->toArray();
-                        
-                        // Get local DB info for these symbols
-                        $dbPositions = Position::whereIn('symbol', $symbols)
-                            ->whereIn('id', function($query) use ($symbols) {
-                                $query->selectRaw('MAX(id)')
-                                      ->from('positions')
-                                      ->whereIn('symbol', $symbols)
-                                      ->groupBy('symbol');
-                            })
-                            ->get()
-                            ->keyBy('symbol');
+                        $mappedPositions = $activeBinancePositions->map(function ($binancePos) {
+                            // 1. Fetch the LATEST local database record for this specific symbol
+                            $localRecord = \Illuminate\Support\Facades\DB::table('positions')
+                                ->where('symbol', $binancePos['symbol'])
+                                ->orderBy('id', 'desc')
+                                ->first();
 
-                        $mappedPositions = $activeBinancePositions->map(function ($pos) use ($dbPositions) {
-                            $symbol = $pos['symbol'];
-                            $positionAmt = (float) $pos['positionAmt'];
-                            $direction = $positionAmt > 0 ? 'LONG' : 'SHORT';
-                            $entryPrice = (float) $pos['entryPrice'];
-                            $currentPrice = (float) $pos['markPrice'];
-                            $unrealizedPnl = (float) $pos['unRealizedProfit'];
-
-                            $dbPos = $dbPositions->get($symbol);
-                            
-                            $stopLoss = 'N/A';
-                            $strategy = 'N/A';
-                            $entryReason = 'Live from Binance';
-                            
-                            if ($dbPos) {
-                                $stopLoss = ($dbPos->stop_loss && (float)$dbPos->stop_loss > 0) ? number_format((float)$dbPos->stop_loss, 2, '.', '') : 'N/A';
-                                $strategy = $dbPos->strategy ?: 'N/A';
-                                $entryReason = $dbPos->entry_reason ?: 'Live from Binance';
-                            }
-
+                            // 2. Map the data, replacing 'N/A' with the actual DB values if they exist
                             return [
-                                'symbol' => $symbol,
-                                'direction' => $direction,
-                                'entry_price' => number_format($entryPrice, 2, '.', ''),
-                                'current_price' => number_format($currentPrice, 2, '.', ''),
-                                'unrealized_pnl' => number_format($unrealizedPnl, 2, '.', ''),
-                                'entry_reason' => $entryReason,
-                                'stop_loss' => $stopLoss,
-                                'strategy' => $strategy
+                                'symbol' => $binancePos['symbol'],
+                                'direction' => $binancePos['positionAmt'] > 0 ? 'LONG' : 'SHORT',
+                                'entry_price' => number_format((float)$binancePos['entryPrice'], 2, '.', ''),
+                                'current_price' => number_format((float)$binancePos['markPrice'], 2, '.', ''),
+                                'unrealized_pnl' => number_format((float)$binancePos['unRealizedProfit'], 2, '.', ''),
+                                'entry_reason' => $localRecord && $localRecord->entry_reason ? $localRecord->entry_reason : 'Live from Binance',
+                                'stop_loss' => $localRecord && $localRecord->stop_loss && (float)$localRecord->stop_loss > 0 ? number_format((float)$localRecord->stop_loss, 2, '.', '') : 'N/A',
+                                'strategy' => $localRecord && $localRecord->strategy ? $localRecord->strategy : 'N/A',
                             ];
                         })->values();
                     }
