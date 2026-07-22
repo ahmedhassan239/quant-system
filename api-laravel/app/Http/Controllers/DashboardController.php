@@ -168,9 +168,13 @@ class DashboardController extends Controller
                 'symbol' => $symbol,
                 'side' => $side,
                 'type' => 'MARKET',
-                'closePosition' => 'true',
                 'timestamp' => $timestamp
             ];
+
+            // Explicitly remove quantity and reduceOnly to prevent -1111 precision errors
+            unset($params['quantity']);
+            unset($params['reduceOnly']);
+            $params['closePosition'] = 'true';
             
             // 3. Build exact query
             $queryString = http_build_query($params, '', '&');
@@ -180,6 +184,9 @@ class DashboardController extends Controller
             
             // 5. Append signature to URL
             $url = "https://testnet.binancefuture.com/fapi/v1/order?{$queryString}&signature={$signature}";
+
+            // 6. Log the final URL for audit
+            \Log::info("Binance Close URL: " . $url);
             
             // 6. Execute raw cURL
             $ch = curl_init();
