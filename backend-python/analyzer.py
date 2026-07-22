@@ -1499,6 +1499,54 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         else:
             print(f"\n[{symbol}] Decision '{db_decision}' saved to database successfully.", flush=True)
 
+        # --------------------------------------------------------------------------------
+        # 🚀 EXECUTION ENGINE: BINANCE API PLACEMENT
+        # --------------------------------------------------------------------------------
+        if futures_client and db_decision in ('LONG', 'SHORT'):
+            import logging
+            logger = logging.getLogger("FuturesExecutor")
+            
+            # 1. Ensure allocated margin is clearly available. 
+            # Using $100 to verify the API call fires, as requested. 
+            # (Replace with: `allocated_usdt = portfolio['usdt_balance'] * allocation_pct` once verified)
+            allocated_usdt = 100.0 
+            direction = db_decision
+            
+            try:
+                # 2. Dynamically fetch the symbol's stepSize/precision
+                info = futures_client.futures_exchange_info()
+                step_size = 0.001  # Safe fallback
+                for s in info['symbols']:
+                    if s['symbol'] == symbol:
+                        for f in s['filters']:
+                            if f['filterType'] == 'LOT_SIZE':
+                                step_size = float(f['stepSize'])
+                                break
+                        break
+                
+                precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
+                
+                # 3. Calculate correct quantity dynamically
+                qty = round(allocated_usdt / current_price, precision)
+                
+                # 4. Execute the market order
+                side = 'BUY' if direction == 'LONG' else 'SELL'
+                order = futures_client.futures_create_order(
+                    symbol=symbol,
+                    side=side,
+                    type='MARKET',
+                    quantity=qty
+                )
+                
+                # 5. Add Explicit Log
+                logger.info(f"✅ EXECUTED ON BINANCE: {direction} | Symbol: {symbol} | Qty: {qty} | Allocated: ${allocated_usdt}")
+                
+            except Exception as e:
+                # 6. logger.error the exact exception
+                logger.error(f"❌ BINANCE REJECTED ORDER: {symbol} {direction} | Error: {str(e)}")
+        # --------------------------------------------------------------------------------
+
+
     except Exception as e:
         session.rollback()
         print(f"Error during analysis of {symbol}: {e}", flush=True)
