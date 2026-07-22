@@ -986,14 +986,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             portfolio['highest_price_since_entry'] = float(current_price)
                             portfolio['lowest_price_since_entry'] = None
 
-                        order = None
-                        if futures_client:
-                            order = open_position(futures_client, symbol, 'LONG', spend)
-                            if order:
-                                print(f"✅ [{symbol}] Futures OPEN LONG executed | OrderID: {order['orderId']} | Allocated: ${spend:.2f} ({allocation_pct*100}%)", flush=True)
-                            else:
-                                print(f"⚠️ [{symbol}] Futures OPEN LONG order failed — aborting database save.", flush=True)
-                                return
+                        # [REMOVED] Order execution was previously here before DB save.
+
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
@@ -1047,6 +1041,47 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             session.rollback()
                             print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
                             traceback.print_exc()
+
+                        # --- EXECUTION ENGINE: API ORDER PLACEMENT ---
+                        if futures_client:
+                            import logging
+                            logger = logging.getLogger("FuturesExecutor")
+                            
+                            allocated_usdt = spend
+                            entry_price = float(current_price)
+                            qty = allocated_usdt / entry_price
+                            direction = 'LONG'
+                            
+                            try:
+                                # Strict Precision Formatting based on Binance stepSize
+                                info = futures_client.futures_exchange_info()
+                                step_size = 0.001 # safe fallback
+                                for s in info['symbols']:
+                                    if s['symbol'] == symbol:
+                                        for f in s['filters']:
+                                            if f['filterType'] == 'LOT_SIZE':
+                                                step_size = float(f['stepSize'])
+                                                break
+                                        break
+                                        
+                                precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
+                                qty = round(qty - (qty % step_size), precision)
+                                
+                                # Explicit Logging
+                                logger.info(f"Placing {direction} order for {symbol} | Qty: {qty} | Allocated: ${allocated_usdt}")
+                                
+                                order = futures_client.futures_create_order(
+                                    symbol=symbol,
+                                    side='BUY',
+                                    type='MARKET',
+                                    quantity=qty
+                                )
+                                print(f"✅ [{symbol}] Futures OPEN {direction} executed | OrderID: {order['orderId']}", flush=True)
+                                
+                            except Exception as e:
+                                logger.error(f"❌ Execution Error for {symbol} {direction}: {str(e)}")
+                                traceback.print_exc()
+                        # -----------------------------------------------
 
                         # Telegram alert
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
@@ -1139,14 +1174,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['lowest_price_since_entry'] = float(current_price)
                         portfolio['highest_price_since_entry'] = None
 
-                        order = None
-                        if futures_client:
-                            order = open_position(futures_client, symbol, 'SHORT', spend)
-                            if order:
-                                print(f"✅ [{symbol}] Futures OPEN SHORT executed | OrderID: {order['orderId']} | Allocated: ${spend:.2f} ({allocation_pct*100}%)", flush=True)
-                            else:
-                                print(f"⚠️ [{symbol}] Futures OPEN SHORT order failed — aborting database save.", flush=True)
-                                return
+                        # [REMOVED] Order execution was previously here before DB save.
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
@@ -1200,6 +1228,47 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             session.rollback()
                             print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
                             traceback.print_exc()
+
+                        # --- EXECUTION ENGINE: API ORDER PLACEMENT ---
+                        if futures_client:
+                            import logging
+                            logger = logging.getLogger("FuturesExecutor")
+                            
+                            allocated_usdt = spend
+                            entry_price = float(current_price)
+                            qty = allocated_usdt / entry_price
+                            direction = 'SHORT'
+                            
+                            try:
+                                # Strict Precision Formatting based on Binance stepSize
+                                info = futures_client.futures_exchange_info()
+                                step_size = 0.001 # safe fallback
+                                for s in info['symbols']:
+                                    if s['symbol'] == symbol:
+                                        for f in s['filters']:
+                                            if f['filterType'] == 'LOT_SIZE':
+                                                step_size = float(f['stepSize'])
+                                                break
+                                        break
+                                        
+                                precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
+                                qty = round(qty - (qty % step_size), precision)
+                                
+                                # Explicit Logging
+                                logger.info(f"Placing {direction} order for {symbol} | Qty: {qty} | Allocated: ${allocated_usdt}")
+                                
+                                order = futures_client.futures_create_order(
+                                    symbol=symbol,
+                                    side='SELL',
+                                    type='MARKET',
+                                    quantity=qty
+                                )
+                                print(f"✅ [{symbol}] Futures OPEN {direction} executed | OrderID: {order['orderId']}", flush=True)
+                                
+                            except Exception as e:
+                                logger.error(f"❌ Execution Error for {symbol} {direction}: {str(e)}")
+                                traceback.print_exc()
+                        # -----------------------------------------------
 
                         # Telegram alert
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
