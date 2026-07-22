@@ -67,6 +67,7 @@ def scanner_job():
         logger = logging.getLogger("ExecutionEngine")
         
         current_open_count = count_all_open_positions(futures_client)
+        trades_opened_this_cycle = 0
         
         for sym in symbols:
             if current_open_count >= MAX_GLOBAL_POSITIONS:
@@ -74,9 +75,15 @@ def scanner_job():
                 print(f"🛑 Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping {sym} and remaining symbols.", flush=True)
                 continue  # Skip attempting to open any new positions
                 
+            if trades_opened_this_cycle >= 3:
+                logger.warning("Max trades per cycle (3) reached. Cooling down until next 5m tick.")
+                print("🛑 Max trades per cycle (3) reached. Cooling down until next 5m tick.", flush=True)
+                break  # Stop processing more symbols this cycle
+                
             newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
             if newly_executed:
                 current_open_count += 1
+                trades_opened_this_cycle += 1
 
     print("\nJob completed. Sleeping until next interval...", flush=True)
     print("="*60 + "\n", flush=True)

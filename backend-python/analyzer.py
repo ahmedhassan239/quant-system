@@ -869,7 +869,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         log_to_db(session, symbol, "ENTRY", msg)
 
                 # Strategy C: Testnet — Pure Trend Alignment (force trades)
-                elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma:
+                elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma and current_rsi < 65 and current_zscore < 1.5:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
@@ -907,7 +907,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         log_to_db(session, symbol, "ENTRY", msg)
 
                 # Strategy C: Testnet — Pure Trend Alignment (force trades)
-                elif TESTNET_FORCE_TRADES and current_sma and current_price < current_sma:
+                elif TESTNET_FORCE_TRADES and current_sma and current_price < current_sma and current_rsi > 35 and current_zscore > -1.5:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
