@@ -1,6 +1,6 @@
 <template>
   <div class="min-h-screen bg-gray-900 text-white p-8 font-sans">
-    <div class="max-w-7xl mx-auto space-y-8">
+    <div class="w-full px-4 mx-auto space-y-8">
       
       <!-- Header -->
       <header class="flex flex-col md:flex-row justify-between items-start md:items-center pb-6 border-b border-gray-700 gap-4">
@@ -101,7 +101,7 @@
                 </td>
                 <td class="py-4 px-5 text-gray-300 font-mono">${{ pos.entry_price }}</td>
                 <td class="py-4 px-5 text-gray-300 font-mono">${{ pos.current_price }}</td>
-                <td class="py-4 px-5 text-gray-300 font-mono">{{ pos.stop_loss !== 'N/A' ? '$' + pos.stop_loss : 'N/A' }}</td>
+                <td class="py-4 px-5 text-gray-300 font-mono">{{ pos.stop_loss !== 'N/A' ? '$' + Number(pos.stop_loss).toFixed(4) : 'N/A' }}</td>
                 <td class="py-4 px-5 text-gray-300 font-mono">${{ pos.allocated_usdt || '0.00' }}</td>
                 <td class="py-4 px-5 text-right font-bold font-mono" :class="getPnlColor(pos.unrealized_pnl)">
                   ${{ pos.unrealized_pnl }}

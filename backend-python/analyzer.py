@@ -703,22 +703,15 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['highest_price_since_entry'] = cp
                     highest_price = cp
 
-                # Activate trailing stop (move SL to breakeven + trail)
-                if not trailing_active and unrealized_pct >= TRAILING_ACTIVATE_PCT:
-                    portfolio['trailing_active'] = True
-                    portfolio['stop_loss_price'] = max(stop_loss, ep) # Move to breakeven
-                    stop_loss = portfolio['stop_loss_price']
-                    trailing_active = True
-                    msg = f"✅ [{symbol}] LONG Trailing Stop ACTIVATED! SL moved to Breakeven ${stop_loss:.2f}"
+                # Trailing Stop Loss
+                TRAILING_PERCENT = 0.005
+                dynamic_sl = cp * (1 - TRAILING_PERCENT)
+                if stop_loss > 0 and dynamic_sl > stop_loss:
+                    portfolio['stop_loss_price'] = dynamic_sl
+                    stop_loss = dynamic_sl
+                    msg = f"✅ [{symbol}] Trailing SL updated for LONG to ${stop_loss:.4f}"
                     print(msg, flush=True)
                     log_to_db(session, symbol, "INFO", msg)
-
-                if trailing_active and highest_price:
-                    hp = float(highest_price)
-                    trail_sl = hp * (1 - TRAILING_PULLBACK_PCT)
-                    if trail_sl > stop_loss:
-                        portfolio['stop_loss_price'] = trail_sl
-                        stop_loss = trail_sl
                         
                 # Check Stop Loss hit
                 if stop_loss > 0 and cp <= stop_loss:
@@ -726,7 +719,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     print(msg, flush=True)
                     log_to_db(session, symbol, "EXIT", msg)
                     portfolio = _close_position_handler(
-                        portfolio, current_price, symbol, session, 'STOP_LOSS' if not trailing_active else 'TRAILING_STOP',
+                        portfolio, current_price, symbol, session, 'TRAILING_STOP',
                         futures_client, bullish_ob, bearish_ob, current_rsi,
                         current_zscore, macro_info)
                     risk_exit_triggered = True
@@ -739,22 +732,15 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['lowest_price_since_entry'] = cp
                     lowest_price = cp
 
-                # Activate trailing stop
-                if not trailing_active and unrealized_pct >= TRAILING_ACTIVATE_PCT:
-                    portfolio['trailing_active'] = True
-                    portfolio['stop_loss_price'] = min(stop_loss, ep) if stop_loss > 0 else ep # Move to breakeven
-                    stop_loss = portfolio['stop_loss_price']
-                    trailing_active = True
-                    msg = f"✅ [{symbol}] SHORT Trailing Stop ACTIVATED! SL moved to Breakeven ${stop_loss:.2f}"
+                # Trailing Stop Loss
+                TRAILING_PERCENT = 0.005
+                dynamic_sl = cp * (1 + TRAILING_PERCENT)
+                if stop_loss > 0 and dynamic_sl < stop_loss:
+                    portfolio['stop_loss_price'] = dynamic_sl
+                    stop_loss = dynamic_sl
+                    msg = f"✅ [{symbol}] Trailing SL updated for SHORT to ${stop_loss:.4f}"
                     print(msg, flush=True)
                     log_to_db(session, symbol, "INFO", msg)
-
-                if trailing_active and lowest_price:
-                    lp = float(lowest_price)
-                    trail_sl = lp * (1 + TRAILING_PULLBACK_PCT)
-                    if stop_loss == 0 or trail_sl < stop_loss:
-                        portfolio['stop_loss_price'] = trail_sl
-                        stop_loss = trail_sl
                         
                 # Check Stop Loss hit
                 if stop_loss > 0 and cp >= stop_loss:
@@ -762,7 +748,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     print(msg, flush=True)
                     log_to_db(session, symbol, "EXIT", msg)
                     portfolio = _close_position_handler(
-                        portfolio, current_price, symbol, session, 'STOP_LOSS' if not trailing_active else 'TRAILING_STOP',
+                        portfolio, current_price, symbol, session, 'TRAILING_STOP',
                         futures_client, bullish_ob, bearish_ob, current_rsi,
                         current_zscore, macro_info)
                     risk_exit_triggered = True
