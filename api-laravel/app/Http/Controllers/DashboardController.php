@@ -159,36 +159,95 @@ class DashboardController extends Controller
         }
         
         try {
-            // 1. Determine side from DB position direction
-            $side = $position->position_direction === 'LONG' ? 'SELL' : 'BUY';
+            // 1. Fetch exact positionAmt from Binance using raw cURL
+            $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
+            $riskParams = [
+                'symbol' => $symbol,
+                'timestamp' => $timestamp
+            ];
+            $riskQueryString = http_build_query($riskParams, '', '&');
+            $riskSignature = hash_hmac('sha256', $riskQueryString, $apiSecret);
+            $riskUrl = "https://testnet.binancefuture.com/fapi/v2/positionRisk?{$riskQueryString}&signature={$riskSignature}";
 
-            // 2. Prepare parameters using Binance's closePosition flag (bypasses quantity/stepSize entirely)
+            $chRisk = curl_init();
+            curl_setopt($chRisk, CURLOPT_URL, $riskUrl);
+            curl_setopt($chRisk, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($chRisk, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . $apiKey]);
+            $riskResult = curl_exec($chRisk);
+            curl_close($chRisk);
+
+            $positionAmt = 0;
+            $riskData = json_decode($riskResult, true);
+            if (is_array($riskData) && count($riskData) > 0) {
+                foreach ($riskData as $risk) {
+                    if (isset($risk['positionAmt']) && (float)$risk['positionAmt'] != 0) {
+                        $positionAmt = (float)$risk['positionAmt'];
+                        break;
+                    }
+                }
+            }
+
+            if ($positionAmt == 0) {
+                // Fallback to DB quantity
+                $positionAmt = $position->position_direction === 'LONG'
+                    ? (float)$position->asset_balance
+                    : -(float)$position->asset_balance;
+            }
+
+            // 2. Determine side
+            $side = $positionAmt > 0 ? 'SELL' : 'BUY';
+            $qtyFloat = abs($positionAmt);
+
+            // 3. Fetch quantityPrecision from Binance exchangeInfo (public endpoint, no signature needed)
+            $chInfo = curl_init();
+            curl_setopt($chInfo, CURLOPT_URL, "https://testnet.binancefuture.com/fapi/v1/exchangeInfo");
+            curl_setopt($chInfo, CURLOPT_RETURNTRANSFER, true);
+            $infoResult = curl_exec($chInfo);
+            curl_close($chInfo);
+
+            $quantityPrecision = 0; // safe fallback (whole numbers)
+            $exchangeInfo = json_decode($infoResult, true);
+            if (isset($exchangeInfo['symbols'])) {
+                foreach ($exchangeInfo['symbols'] as $sym) {
+                    if ($sym['symbol'] === $symbol) {
+                        $quantityPrecision = $sym['quantityPrecision'];
+                        break;
+                    }
+                }
+            }
+
+            // 4. Truncate quantity to exact allowed precision (floor, never round up)
+            $factor = pow(10, $quantityPrecision);
+            $truncatedQty = floor($qtyFloat * $factor) / $factor;
+            $exactQuantity = number_format($truncatedQty, $quantityPrecision, '.', '');
+
+            // 5. Prepare parameters strictly as strings
             $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
             $params = [
                 'symbol' => $symbol,
                 'side' => $side,
                 'type' => 'MARKET',
+                'quantity' => $exactQuantity,
+                'reduceOnly' => 'true',
                 'timestamp' => $timestamp
             ];
 
-            // Explicitly remove quantity and reduceOnly to prevent -1111 precision errors
-            unset($params['quantity']);
-            unset($params['reduceOnly']);
-            $params['closePosition'] = 'true';
+            // Safety: ensure closePosition is never present
+            unset($params['closePosition']);
             
-            // 3. Build exact query
+            // 6. Build exact query
             $queryString = http_build_query($params, '', '&');
             
-            // 4. Hash signature
+            // 7. Hash signature
             $signature = hash_hmac('sha256', $queryString, $apiSecret);
             
-            // 5. Append signature to URL
+            // 8. Append signature to URL
             $url = "https://testnet.binancefuture.com/fapi/v1/order?{$queryString}&signature={$signature}";
 
-            // 6. Log the final URL for audit
+            // 9. Log the final URL for audit
             \Log::info("Binance Close URL: " . $url);
             
-            // 6. Execute raw cURL
+            // 10. Execute raw cURL
             $ch = curl_init();
             curl_setopt($ch, CURLOPT_URL, $url);
             curl_setopt($ch, CURLOPT_POST, true);
