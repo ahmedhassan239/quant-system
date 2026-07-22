@@ -159,75 +159,34 @@ class DashboardController extends Controller
         }
         
         try {
-            // 1. Fetch exact positionAmt string from Binance using raw cURL
-            $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
-            $riskParams = [
-                'symbol' => $symbol,
-                'timestamp' => $timestamp
-            ];
-            $riskQueryString = http_build_query($riskParams, '', '&');
-            $riskSignature = hash_hmac('sha256', $riskQueryString, $apiSecret);
-            $riskUrl = "https://testnet.binancefuture.com/fapi/v2/positionRisk?{$riskQueryString}&signature={$riskSignature}";
+            // 1. Determine side from DB position direction
+            $side = $position->position_direction === 'LONG' ? 'SELL' : 'BUY';
 
-            $chRisk = curl_init();
-            curl_setopt($chRisk, CURLOPT_URL, $riskUrl);
-            curl_setopt($chRisk, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($chRisk, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . $apiKey]);
-            $riskResult = curl_exec($chRisk);
-            curl_close($chRisk);
-
-            $rawPositionAmt = '0';
-            $riskData = json_decode($riskResult, true);
-            if (is_array($riskData) && count($riskData) > 0) {
-                foreach ($riskData as $risk) {
-                    if (isset($risk['positionAmt']) && (float)$risk['positionAmt'] != 0) {
-                        $rawPositionAmt = (string)$risk['positionAmt'];
-                        break;
-                    }
-                }
-            }
-
-            if ((float)$rawPositionAmt == 0) {
-                // If position is 0 on Binance, fallback to DB quantity
-                $rawPositionAmt = (string)$position->asset_balance;
-                if ($position->position_direction === 'SHORT' && !str_starts_with($rawPositionAmt, '-')) {
-                    $rawPositionAmt = '-' . $rawPositionAmt;
-                }
-            }
-
-            // 2. Determine side and format quantity (strip trailing zeros, prevent scientific notation)
-            $isShort = str_starts_with((string)$rawPositionAmt, '-');
-            $side = $isShort ? 'BUY' : 'SELL';
-            $qtyFloat = abs((float)$rawPositionAmt);
-            // Format to 8 decimal places (prevents scientific notation), strip trailing zeros, and strip trailing dot for whole numbers
-            $exactQuantity = rtrim(rtrim(sprintf('%.8F', $qtyFloat), '0'), '.');
-
-            // 3. Prepare parameters strictly as strings
+            // 2. Prepare parameters using Binance's closePosition flag (bypasses quantity/stepSize entirely)
             $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
             $params = [
                 'symbol' => $symbol,
                 'side' => $side,
                 'type' => 'MARKET',
-                'quantity' => $exactQuantity,
-                'reduceOnly' => 'true',
+                'closePosition' => 'true',
                 'timestamp' => $timestamp
             ];
             
-            // 4. Build exact query
+            // 3. Build exact query
             $queryString = http_build_query($params, '', '&');
             
-            // 5. Hash signature
-            $signature = hash_hmac('sha256', $queryString, env('BINANCE_API_SECRET'));
+            // 4. Hash signature
+            $signature = hash_hmac('sha256', $queryString, $apiSecret);
             
-            // 6. Append signature to URL
+            // 5. Append signature to URL
             $url = "https://testnet.binancefuture.com/fapi/v1/order?{$queryString}&signature={$signature}";
             
-            // 7. Execute raw cURL
+            // 6. Execute raw cURL
             $ch = curl_init();
             curl_setopt($ch, CURLOPT_URL, $url);
             curl_setopt($ch, CURLOPT_POST, true);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . env('BINANCE_API_KEY')]);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . $apiKey]);
             $result = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
