@@ -69,35 +69,77 @@ class DashboardController extends Controller
             }
         }
 
-        // 4. Active Positions
-        $positions = Position::where('asset_balance', '>', 0)
-            ->whereIn('id', function($query) {
-                $query->selectRaw('MAX(id)')
-                      ->from('positions')
-                      ->groupBy('symbol');
-            })
-            ->get();
-            
-        // Map to exact JSON structure requested
-        $mappedPositions = $positions->map(function ($pos) {
-            $unrealized = 0;
-            if ($pos->position_direction === 'LONG') {
-                $unrealized = ($pos->current_price - $pos->average_entry_price) * $pos->asset_balance;
-            } else if ($pos->position_direction === 'SHORT') {
-                $unrealized = ($pos->average_entry_price - $pos->current_price) * $pos->asset_balance;
-            }
+        // 4. Active Positions from Binance
+        $mappedPositions = collect();
+        if ($apiKey && $apiSecret) {
+            try {
+                $timestamp = round(microtime(true) * 1000);
+                $queryString = "timestamp=" . $timestamp;
+                $signature = hash_hmac('sha256', $queryString, $apiSecret);
 
-            return [
-                'symbol' => $pos->symbol,
-                'direction' => $pos->position_direction,
-                'entry_price' => number_format((float)$pos->average_entry_price, 2, '.', ''),
-                'current_price' => number_format((float)$pos->current_price, 2, '.', ''),
-                'unrealized_pnl' => number_format((float)$unrealized, 2, '.', ''),
-                'entry_reason' => $pos->entry_reason,
-                'stop_loss' => ($pos->stop_loss && (float)$pos->stop_loss > 0) ? number_format((float)$pos->stop_loss, 2, '.', '') : 'N/A',
-                'strategy' => $pos->strategy ?: 'N/A'
-            ];
-        });
+                $riskResponse = Http::withHeaders([
+                    'X-MBX-APIKEY' => $apiKey
+                ])->get("https://testnet.binancefuture.com/fapi/v2/positionRisk?{$queryString}&signature={$signature}");
+
+                if ($riskResponse->successful()) {
+                    $riskData = $riskResponse->json();
+                    
+                    // Filter out positions with 0 amount
+                    $activeBinancePositions = collect($riskData)->filter(function ($pos) {
+                        return abs((float) $pos['positionAmt']) > 0;
+                    });
+
+                    if ($activeBinancePositions->isNotEmpty()) {
+                        $symbols = $activeBinancePositions->pluck('symbol')->toArray();
+                        
+                        // Get local DB info for these symbols
+                        $dbPositions = Position::whereIn('symbol', $symbols)
+                            ->whereIn('id', function($query) use ($symbols) {
+                                $query->selectRaw('MAX(id)')
+                                      ->from('positions')
+                                      ->whereIn('symbol', $symbols)
+                                      ->groupBy('symbol');
+                            })
+                            ->get()
+                            ->keyBy('symbol');
+
+                        $mappedPositions = $activeBinancePositions->map(function ($pos) use ($dbPositions) {
+                            $symbol = $pos['symbol'];
+                            $positionAmt = (float) $pos['positionAmt'];
+                            $direction = $positionAmt > 0 ? 'LONG' : 'SHORT';
+                            $entryPrice = (float) $pos['entryPrice'];
+                            $currentPrice = (float) $pos['markPrice'];
+                            $unrealizedPnl = (float) $pos['unRealizedProfit'];
+
+                            $dbPos = $dbPositions->get($symbol);
+                            
+                            $stopLoss = 'N/A';
+                            $strategy = 'N/A';
+                            $entryReason = 'Live from Binance';
+                            
+                            if ($dbPos) {
+                                $stopLoss = ($dbPos->stop_loss && (float)$dbPos->stop_loss > 0) ? number_format((float)$dbPos->stop_loss, 2, '.', '') : 'N/A';
+                                $strategy = $dbPos->strategy ?: 'N/A';
+                                $entryReason = $dbPos->entry_reason ?: 'Live from Binance';
+                            }
+
+                            return [
+                                'symbol' => $symbol,
+                                'direction' => $direction,
+                                'entry_price' => number_format($entryPrice, 2, '.', ''),
+                                'current_price' => number_format($currentPrice, 2, '.', ''),
+                                'unrealized_pnl' => number_format($unrealizedPnl, 2, '.', ''),
+                                'entry_reason' => $entryReason,
+                                'stop_loss' => $stopLoss,
+                                'strategy' => $strategy
+                            ];
+                        })->values();
+                    }
+                }
+            } catch (\Exception $e) {
+                // If Binance request fails, return empty array for active positions
+            }
+        }
 
         return response()->json([
             'wallet_balance' => number_format($walletBalance, 2, '.', ''),
