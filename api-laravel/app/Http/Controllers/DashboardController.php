@@ -159,6 +159,23 @@ class DashboardController extends Controller
         }
         
         try {
+            // 0. Cancel all open orders for this symbol (prevents -2022 ReduceOnly rejection from SL/TP locks)
+            $cancelParams = [
+                'symbol' => $symbol,
+                'timestamp' => number_format(microtime(true) * 1000, 0, '.', '')
+            ];
+            $cancelQuery = http_build_query($cancelParams, '', '&');
+            $cancelSignature = hash_hmac('sha256', $cancelQuery, $apiSecret);
+            $cancelUrl = "https://testnet.binancefuture.com/fapi/v1/allOpenOrders?{$cancelQuery}&signature={$cancelSignature}";
+
+            $chCancel = curl_init();
+            curl_setopt($chCancel, CURLOPT_URL, $cancelUrl);
+            curl_setopt($chCancel, CURLOPT_CUSTOMREQUEST, "DELETE");
+            curl_setopt($chCancel, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($chCancel, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . $apiKey]);
+            curl_exec($chCancel);
+            curl_close($chCancel);
+
             // 1. Fetch exact positionAmt from Binance using raw cURL
             $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
             $riskParams = [
