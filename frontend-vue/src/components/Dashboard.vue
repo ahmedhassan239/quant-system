@@ -75,15 +75,27 @@
 
       <!-- Active Positions Grid -->
       <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700">
-        <h2 class="text-xl font-bold mb-6 text-gray-100 flex items-center gap-2">
-          Active Positions
-        </h2>
+        <div class="flex justify-between items-center mb-6">
+          <h2 class="text-xl font-bold text-gray-100 flex items-center gap-2">
+            Active Positions
+          </h2>
+          <button 
+            v-if="selectedPositions.length > 0"
+            @click="closeSelectedPositions" 
+            class="bg-red-500 hover:bg-red-600 text-white text-sm font-bold py-2 px-4 rounded-lg shadow transition-colors"
+          >
+            Close Selected ({{ selectedPositions.length }})
+          </button>
+        </div>
         <!-- Desktop Table View -->
         <div class="hidden md:block overflow-x-auto">
           <table class="w-full text-left border-collapse">
             <thead>
               <tr class="text-gray-400 text-sm border-b border-gray-700 bg-gray-900/50">
-                <th class="py-4 px-5 font-semibold uppercase tracking-wide rounded-tl-lg">Symbol</th>
+                <th class="py-4 px-3 font-semibold rounded-tl-lg w-12 text-center">
+                  <input type="checkbox" :checked="isAllSelected" @change="toggleSelectAll" class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-gray-900">
+                </th>
+                <th class="py-4 px-5 font-semibold uppercase tracking-wide">Symbol</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Direction</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Entry Price</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Current Price</th>
@@ -95,6 +107,9 @@
             </thead>
             <tbody>
               <tr v-for="pos in metrics.active_positions" :key="pos.symbol" class="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors">
+                <td class="py-4 px-3 text-center">
+                  <input type="checkbox" v-model="selectedPositions" :value="pos.symbol" class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-gray-900">
+                </td>
                 <td class="py-4 px-5">
                   <div class="font-bold text-lg text-white">{{ pos.symbol }}</div>
                   <div class="text-xs text-gray-400 mt-1 max-w-[200px] sm:max-w-xs truncate cursor-help" :title="pos.entry_reason">
@@ -120,7 +135,7 @@
                 </td>
               </tr>
               <tr v-if="metrics.active_positions.length === 0">
-                <td colspan="8" class="py-12 text-center text-gray-500 italic">No active positions currently running.</td>
+                <td colspan="9" class="py-12 text-center text-gray-500 italic">No active positions currently running.</td>
               </tr>
             </tbody>
           </table>
@@ -209,7 +224,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import LiveTerminal from './LiveTerminal.vue'
 
 const metrics = ref({
@@ -223,6 +238,21 @@ const metrics = ref({
 const macroTrends = ref([])
 const activeSymbols = ref([])
 const newSymbol = ref('')
+
+const selectedPositions = ref([])
+
+const isAllSelected = computed(() => {
+  return metrics.value.active_positions.length > 0 && 
+         selectedPositions.value.length === metrics.value.active_positions.length
+})
+
+const toggleSelectAll = (event) => {
+  if (event.target.checked) {
+    selectedPositions.value = metrics.value.active_positions.map(pos => pos.symbol)
+  } else {
+    selectedPositions.value = []
+  }
+}
 
 const API_BASE = '/api/dashboard'
 
@@ -316,6 +346,31 @@ const closePosition = async (symbol) => {
     console.error('Error closing position', e)
     alert('Network error while closing position')
   }
+}
+
+const closeSelectedPositions = async () => {
+  if (selectedPositions.value.length === 0) return
+  if (!confirm(`Are you sure you want to market close ${selectedPositions.value.length} selected positions?`)) return
+  
+  let successCount = 0;
+  // Create a copy of the array so we can process them safely
+  const symbolsToClose = [...selectedPositions.value];
+  
+  for (const symbol of symbolsToClose) {
+    try {
+      const res = await fetch(`/api/positions/${symbol}/close`, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' }
+      })
+      if (res.ok) successCount++;
+    } catch (e) {
+      console.error(`Error closing ${symbol}`, e)
+    }
+  }
+  
+  alert(`Successfully closed ${successCount} out of ${symbolsToClose.length} positions.`)
+  selectedPositions.value = []
+  await fetchMetrics()
 }
 
 let pollingInterval
