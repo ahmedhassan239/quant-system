@@ -195,10 +195,12 @@ class DashboardController extends Controller
                 }
             }
 
-            // 2. Strict string manipulation to remove negative sign (preserving exact precision without float/abs mutation)
-            $isShort = str_starts_with($rawPositionAmt, '-');
+            // 2. Determine side and format quantity (strip trailing zeros, prevent scientific notation)
+            $isShort = str_starts_with((string)$rawPositionAmt, '-');
             $side = $isShort ? 'BUY' : 'SELL';
-            $exactQuantity = ltrim($rawPositionAmt, '-');
+            $qtyFloat = abs((float)$rawPositionAmt);
+            // Format to 8 decimal places (prevents scientific notation), strip trailing zeros, and strip trailing dot for whole numbers
+            $exactQuantity = rtrim(rtrim(sprintf('%.8F', $qtyFloat), '0'), '.');
 
             // 3. Prepare parameters strictly as strings
             $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
