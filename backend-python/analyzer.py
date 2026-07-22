@@ -356,6 +356,8 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
         highest_price_since_entry=None,
         lowest_price_since_entry=None,
         stop_loss_price=None,
+        stop_loss=None,
+        strategy=portfolio.get('strategy'),
         trailing_active=False,
         pnl_pct=float(pnl_pct_val) if pnl_pct_val is not None else None,
         pnl_usd=float(pnl_usd_val) if pnl_usd_val is not None else None,
@@ -450,6 +452,8 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
         highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
         lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
         stop_loss_price=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
+        stop_loss=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
+        strategy=portfolio.get('strategy'),
         trailing_active=portfolio.get('trailing_active', False),
         pnl_pct=None,
         pnl_usd=db_pnl_usd,
@@ -987,19 +991,25 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         # Generate reason_msg before DB insertion
                         if strategy_type == 'PULLBACK':
+                            strategy_name = 'Strategy A (Pullback)'
                             ob_low = bullish_ob['low'] if bullish_ob else 0
                             ob_high = bullish_ob['high'] if bullish_ob else 0
                             vol_ratio = f"{bullish_ob['vol_ratio']:.1f}x" if bullish_ob and 'vol_ratio' in bullish_ob else "N/A"
                             reason_msg = (f"Strategy A (Pullback) | Macro: {macro_trend} | Z: {current_zscore:+.2f} | "
                                           f"OB: ${float(ob_low):.2f}-${float(ob_high):.2f} (Vol {vol_ratio})")
                         elif strategy_type == 'BREAKOUT':
+                            strategy_name = 'Strategy B (Breakout)'
                             vol_ratio = f"{bullish_breakout['vol_ratio']:.1f}x" if bullish_breakout and 'vol_ratio' in bullish_breakout else "N/A"
                             reason_msg = (f"Strategy B (Breakout) | Macro: {macro_trend} | Vol {vol_ratio} avg | Consolidation High Cleared")
                         elif strategy_type == 'TREND_ALIGN':
+                            strategy_name = 'Strategy C (Trend Align)'
                             reason_msg = (f"Strategy C (Trend Align) | Macro: {macro_trend} | "
                                           f"Price ${current_price:.2f} > SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY")
                         else:
+                            strategy_name = 'Unknown'
                             reason_msg = f"Strategy: Unknown"
+                        
+                        portfolio['strategy'] = strategy_name
 
                         portfolio_record = PortfolioState(
                             timestamp=datetime.now(),
@@ -1015,6 +1025,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             total_cost=float(portfolio['total_cost']),
                             highest_price_since_entry=float(portfolio['highest_price_since_entry']),
                             stop_loss_price=float(new_stop_loss),
+                            stop_loss=float(new_stop_loss),
+                            strategy=strategy_name,
                             trailing_active=False,
                             lowest_price_since_entry=None,
                             pnl_pct=None,
@@ -1112,19 +1124,25 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         # Generate reason_msg before DB insertion
                         if strategy_type == 'PULLBACK':
+                            strategy_name = 'Strategy A (Pullback)'
                             ob_low = bearish_ob['low'] if bearish_ob else 0
                             ob_high = bearish_ob['high'] if bearish_ob else 0
                             vol_ratio = f"{bearish_ob['vol_ratio']:.1f}x" if bearish_ob and 'vol_ratio' in bearish_ob else "N/A"
                             reason_msg = (f"Strategy A (Pullback) | Macro: {macro_trend} | Z: {current_zscore:+.2f} | "
                                           f"OB: ${float(ob_low):.2f}-${float(ob_high):.2f} (Vol {vol_ratio})")
                         elif strategy_type == 'BREAKOUT':
+                            strategy_name = 'Strategy B (Breakout)'
                             vol_ratio = f"{bearish_breakout['vol_ratio']:.1f}x" if bearish_breakout and 'vol_ratio' in bearish_breakout else "N/A"
                             reason_msg = (f"Strategy B (Breakout) | Macro: {macro_trend} | Vol {vol_ratio} avg | Consolidation Low Broken")
                         elif strategy_type == 'TREND_ALIGN':
+                            strategy_name = 'Strategy C (Trend Align)'
                             reason_msg = (f"Strategy C (Trend Align) | Macro: {macro_trend} | "
                                           f"Price ${current_price:.2f} < SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY")
                         else:
+                            strategy_name = 'Unknown'
                             reason_msg = f"Strategy: Unknown"
+                        
+                        portfolio['strategy'] = strategy_name
 
                         portfolio_record = PortfolioState(
                             timestamp=datetime.now(),
@@ -1141,6 +1159,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             highest_price_since_entry=None,
                             lowest_price_since_entry=float(portfolio['lowest_price_since_entry']),
                             stop_loss_price=float(new_stop_loss),
+                            stop_loss=float(new_stop_loss),
+                            strategy=strategy_name,
                             trailing_active=False,
                             pnl_pct=None,
                             pnl_usd=None,
@@ -1300,6 +1320,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
                     lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
                     stop_loss_price=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
+                    stop_loss=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
+                    strategy=portfolio.get('strategy'),
                     trailing_active=portfolio.get('trailing_active', False),
                     pnl_pct=None,
                     pnl_usd=None,

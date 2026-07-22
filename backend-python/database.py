@@ -98,6 +98,8 @@ class PortfolioState(Base):
     highest_price_since_entry = Column(Float, nullable=True)
     lowest_price_since_entry = Column(Float, nullable=True)
     stop_loss_price = Column(Float, nullable=True)
+    stop_loss = Column(Float, nullable=True)
+    strategy = Column(String, nullable=True)
     trailing_active = Column(Boolean, nullable=True, default=False)
     pnl_pct = Column(Float, nullable=True)
     pnl_usd = Column(Float, nullable=True)

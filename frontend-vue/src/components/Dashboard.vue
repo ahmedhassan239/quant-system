@@ -80,6 +80,7 @@
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Direction</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Entry Price</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Current Price</th>
+                <th class="py-4 px-5 font-semibold uppercase tracking-wide">Stop Loss</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide text-right">Unrealized PNL</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide text-right rounded-tr-lg">Action</th>
               </tr>
@@ -89,7 +90,7 @@
                 <td class="py-4 px-5">
                   <div class="font-bold text-lg text-white">{{ pos.symbol }}</div>
                   <div class="text-xs text-gray-400 mt-1 max-w-[200px] sm:max-w-xs truncate cursor-help" :title="pos.entry_reason">
-                    {{ pos.entry_reason || 'Unknown strategy' }}
+                    {{ pos.strategy || 'Manual / Undefined' }}
                   </div>
                 </td>
                 <td class="py-4 px-5">
@@ -99,6 +100,7 @@
                 </td>
                 <td class="py-4 px-5 text-gray-300 font-mono">${{ pos.entry_price }}</td>
                 <td class="py-4 px-5 text-gray-300 font-mono">${{ pos.current_price }}</td>
+                <td class="py-4 px-5 text-gray-300 font-mono">{{ pos.stop_loss !== 'N/A' ? '$' + pos.stop_loss : 'N/A' }}</td>
                 <td class="py-4 px-5 text-right font-bold font-mono" :class="getPnlColor(pos.unrealized_pnl)">
                   ${{ pos.unrealized_pnl }}
                 </td>
@@ -109,7 +111,7 @@
                 </td>
               </tr>
               <tr v-if="metrics.active_positions.length === 0">
-                <td colspan="6" class="py-12 text-center text-gray-500 italic">No active positions currently running.</td>
+                <td colspan="7" class="py-12 text-center text-gray-500 italic">No active positions currently running.</td>
               </tr>
             </tbody>
           </table>
