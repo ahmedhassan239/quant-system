@@ -159,28 +159,30 @@ class DashboardController extends Controller
         }
         
         try {
-            // 1. Fetch exact positionAmt from Binance
-            $timestamp = round(microtime(true) * 1000);
+            // 1. Fetch exact positionAmt from Binance using raw cURL
+            $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
             $riskParams = [
                 'symbol' => $symbol,
                 'timestamp' => $timestamp
             ];
-            $riskQueryString = http_build_query($riskParams, '', '&', PHP_QUERY_RFC3986);
+            $riskQueryString = http_build_query($riskParams, '', '&');
             $riskSignature = hash_hmac('sha256', $riskQueryString, $apiSecret);
+            $riskUrl = "https://testnet.binancefuture.com/fapi/v2/positionRisk?{$riskQueryString}&signature={$riskSignature}";
 
-            $riskResponse = Http::withHeaders([
-                'X-MBX-APIKEY' => $apiKey
-            ])->get("https://testnet.binancefuture.com/fapi/v2/positionRisk?{$riskQueryString}&signature={$riskSignature}");
+            $chRisk = curl_init();
+            curl_setopt($chRisk, CURLOPT_URL, $riskUrl);
+            curl_setopt($chRisk, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($chRisk, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . $apiKey]);
+            $riskResult = curl_exec($chRisk);
+            curl_close($chRisk);
 
             $positionAmt = 0;
-            if ($riskResponse->successful()) {
-                $riskData = $riskResponse->json();
-                if (is_array($riskData) && count($riskData) > 0) {
-                    foreach ($riskData as $risk) {
-                        if (isset($risk['positionAmt']) && abs((float)$risk['positionAmt']) > 0) {
-                            $positionAmt = (float)$risk['positionAmt'];
-                            break;
-                        }
+            $riskData = json_decode($riskResult, true);
+            if (is_array($riskData) && count($riskData) > 0) {
+                foreach ($riskData as $risk) {
+                    if (isset($risk['positionAmt']) && abs((float)$risk['positionAmt']) > 0) {
+                        $positionAmt = (float)$risk['positionAmt'];
+                        break;
                     }
                 }
             }
@@ -190,44 +192,54 @@ class DashboardController extends Controller
                 $positionAmt = $position->position_direction === 'LONG' ? $position->asset_balance : -$position->asset_balance;
             }
 
-            // 2. Prepare parameters array
+            // 2. Prepare parameters strictly as strings
             $side = $positionAmt > 0 ? 'SELL' : 'BUY';
             $quantity = abs($positionAmt);
             
+            $timestamp = number_format(microtime(true) * 1000, 0, '.', '');
             $params = [
                 'symbol' => $symbol,
                 'side' => $side,
                 'type' => 'MARKET',
-                'quantity' => $quantity,
+                'quantity' => (string)$quantity,
                 'reduceOnly' => 'true',
-                'timestamp' => round(microtime(true) * 1000)
+                'timestamp' => $timestamp
             ];
             
-            // 3. Build the query string using strict RFC3986 encoding
-            $queryString = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+            // 3. Build exact query
+            $queryString = http_build_query($params, '', '&');
             
-            // 4. Hash the signature
-            $signature = hash_hmac('sha256', $queryString, $apiSecret);
+            // 4. Hash signature
+            $signature = hash_hmac('sha256', $queryString, env('BINANCE_API_SECRET'));
             
-            // 5. Make the POST request
-            $response = Http::withHeaders([
-                'X-MBX-APIKEY' => $apiKey
-            ])->post("https://testnet.binancefuture.com/fapi/v1/order?{$queryString}&signature={$signature}");
+            // 5. Append signature to URL
+            $url = "https://testnet.binancefuture.com/fapi/v1/order?{$queryString}&signature={$signature}";
             
-            if ($response->successful()) {
+            // 6. Execute raw cURL
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . env('BINANCE_API_KEY')]);
+            $result = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            $responseData = json_decode($result, true);
+
+            if ($httpCode >= 200 && $httpCode < 300) {
                 $position->decision = 'MANUAL_CLOSE';
                 $position->asset_balance = 0;
                 $position->save();
                 
-                return response()->json(['message' => 'Position closed successfully', 'data' => $response->json()]);
+                return response()->json(['message' => 'Position closed successfully', 'data' => $responseData]);
             } else {
-                $errorData = $response->json();
-                $binanceMessage = $errorData['msg'] ?? 'Unknown Binance Error';
+                $binanceMessage = $responseData['msg'] ?? 'Unknown Binance Error';
                 
                 return response()->json([
                     'message' => $binanceMessage,
-                    'error' => $errorData
-                ], $response->status());
+                    'error' => $responseData
+                ], $httpCode ?: 400);
             }
         } catch (\Exception $e) {
             return response()->json(['message' => 'Error communicating with Binance API: ' . $e->getMessage()], 500);
