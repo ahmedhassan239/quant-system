@@ -14,7 +14,7 @@
       </header>
 
       <!-- Stats Overview Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-6">
         
         <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-emerald-500/50 transition-colors relative overflow-hidden group">
           <div class="absolute inset-0 bg-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
@@ -25,9 +25,15 @@
         </div>
 
         <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-gray-600 transition-colors">
-          <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase">Total PNL</div>
-          <div :class="getPnlColor(metrics.total_pnl)" class="text-4xl font-bold">
-            ${{ metrics.total_pnl }}
+          <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase">Active PNL (Unrealized)</div>
+          <div :class="getPnlColor(metrics.active_unrealized_pnl)" class="text-4xl font-bold">
+            ${{ metrics.active_unrealized_pnl }}
+          </div>
+        </div>
+        <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-gray-600 transition-colors">
+          <div class="text-gray-400 text-sm font-medium mb-2 tracking-wide uppercase">Total Realized PNL</div>
+          <div :class="getPnlColor(metrics.realized_pnl)" class="text-4xl font-bold">
+            ${{ metrics.realized_pnl }}
           </div>
         </div>
         <div class="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 hover:border-gray-600 transition-colors">
@@ -167,7 +173,8 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import LiveTerminal from './LiveTerminal.vue'
 
 const metrics = ref({
-  total_pnl: '0.00',
+  active_unrealized_pnl: '0.00',
+  realized_pnl: '0.00',
   win_rate: 0,
   wallet_balance: '0.00',
   total_margin_balance: '0.00',
@@ -195,7 +202,8 @@ const fetchMetrics = () => {
     .then(data => {
       // Explicitly update reactive variables so the DOM re-renders immediately
       metrics.value.wallet_balance = data.wallet_balance
-      metrics.value.total_pnl = data.total_pnl
+      metrics.value.active_unrealized_pnl = data.active_unrealized_pnl
+      metrics.value.realized_pnl = data.realized_pnl
       metrics.value.total_margin_balance = data.total_margin_balance || '0.00'
       metrics.value.win_rate = data.win_rate
       metrics.value.active_positions = data.active_positions

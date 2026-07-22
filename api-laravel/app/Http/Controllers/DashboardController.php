@@ -28,10 +28,10 @@ class DashboardController extends Controller
         $winningTrades = Position::whereIn('decision', ['CLOSE_LONG', 'CLOSE_SHORT'])
                                  ->where('pnl_usd', '>', 0)
                                  ->count();
-        $totalTrades = Position::whereIn('decision', ['CLOSE_LONG', 'CLOSE_SHORT'])
+        $actualTotalTrades = Position::whereIn('decision', ['CLOSE_LONG', 'CLOSE_SHORT'])
                                ->whereNotNull('pnl_usd')
-                               ->count() ?: 1;
-        $winRate = round(($winningTrades / $totalTrades) * 100, 2);
+                               ->count();
+        $winRate = $actualTotalTrades > 0 ? round(($winningTrades / $actualTotalTrades) * 100, 2) : 0;
 
         // 3. Wallet Balance from Binance Testnet
         $apiKey = env('BINANCE_API_KEY');
@@ -130,7 +130,8 @@ class DashboardController extends Controller
 
         return response()->json([
             'wallet_balance' => number_format($walletBalance, 2, '.', ''),
-            'total_pnl' => number_format($totalUnrealizedProfit, 2, '.', ''),
+            'active_unrealized_pnl' => number_format($totalUnrealizedProfit, 2, '.', ''),
+            'realized_pnl' => number_format($totalPnl, 2, '.', ''),
             'total_margin_balance' => number_format($totalMarginBalance, 2, '.', ''),
             'win_rate' => $winRate,
             'active_positions' => $mappedPositions
