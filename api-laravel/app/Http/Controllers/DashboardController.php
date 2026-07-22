@@ -94,8 +94,8 @@ class DashboardController extends Controller
                 'current_price' => number_format((float)$pos->current_price, 2, '.', ''),
                 'unrealized_pnl' => number_format((float)$unrealized, 2, '.', ''),
                 'entry_reason' => $pos->entry_reason,
-                'stop_loss' => $pos->stop_loss ? number_format((float)$pos->stop_loss, 2, '.', '') : 'N/A',
-                'strategy' => $pos->strategy
+                'stop_loss' => ($pos->stop_loss && (float)$pos->stop_loss > 0) ? number_format((float)$pos->stop_loss, 2, '.', '') : 'N/A',
+                'strategy' => $pos->strategy ?: 'N/A'
             ];
         });
 
