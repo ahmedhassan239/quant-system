@@ -114,6 +114,21 @@ class BotLog(Base):
     message = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class TradeHistory(Base):
+    __tablename__ = "trade_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    direction = Column(String, nullable=False)            # LONG or SHORT
+    entry_price = Column(Float, nullable=False)
+    exit_price = Column(Float, nullable=False)
+    quantity = Column(Float, nullable=False)
+    pnl_usd = Column(Float, nullable=False)
+    pnl_pct = Column(Float, nullable=False)
+    outcome = Column(String, nullable=False)              # WIN or LOSS
+    exit_reason = Column(String, nullable=False)          # STOP_LOSS, TRAILING_STOP, MANUAL, SIGNAL
+    closed_at = Column(DateTime, default=datetime.utcnow)
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  SHARED MTF MODEL (in quant_shared_db database)

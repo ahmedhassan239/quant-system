@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from database import (SessionLocal, MarketData, TradingSignal, PortfolioState, BotLog,
-                      engine, init_db, init_shared_db, count_active_positions,
+                      TradeHistory, engine, init_db, init_shared_db, count_active_positions,
                       save_macro_state, get_macro_trend,
                       SLOT_BUDGET, MAX_CONCURRENT_POSITIONS, TOTAL_CAPITAL)
 from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
@@ -352,35 +352,29 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
 
     total_value = float(portfolio['usdt_balance'])
 
-    # Save portfolio snapshot to database
-    portfolio_record = PortfolioState(
-        timestamp=datetime.now(),
+    # 1. Archive to TradeHistory
+    outcome = 'WIN' if pnl_usd_val and pnl_usd_val > 0 else 'LOSS'
+    history_record = TradeHistory(
         symbol=symbol,
-        decision=close_label,
-        current_price=float(current_price),
-        usdt_balance=float(portfolio['usdt_balance']),
-        asset_balance=float(portfolio['asset_balance']),
-        position_direction=None,
-        average_entry_price=None,
-        dca_level=0,
-        last_exec_price=None,
-        total_cost=0.0,
-        highest_price_since_entry=None,
-        lowest_price_since_entry=None,
-        stop_loss_price=None,
-        stop_loss=None,
-        strategy=portfolio.get('strategy'),
-        trailing_active=False,
-        pnl_pct=float(pnl_pct_val) if pnl_pct_val is not None else None,
-        pnl_usd=float(pnl_usd_val) if pnl_usd_val is not None else None,
-        total_portfolio_value=float(round(total_value, 2))
+        direction=direction,
+        entry_price=float(buy_price) if buy_price else 0.0,
+        exit_price=float(current_price),
+        quantity=float(asset_balance),
+        pnl_usd=float(pnl_usd_val) if pnl_usd_val is not None else 0.0,
+        pnl_pct=float(pnl_pct_val) if pnl_pct_val is not None else 0.0,
+        outcome=outcome,
+        exit_reason=exit_reason,
+        closed_at=datetime.utcnow()
     )
+
     try:
-        session.add(portfolio_record)
+        session.add(history_record)
+        # 2. Delete the active position from PortfolioState
+        session.query(PortfolioState).filter(PortfolioState.symbol == symbol).delete(synchronize_session=False)
         session.commit()
     except Exception as e:
         session.rollback()
-        print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
+        print(f"Warning: Failed to archive trade and delete active position: {e}", flush=True)
         traceback.print_exc()
 
     # Build Telegram alert
@@ -849,17 +843,16 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             active_count = count_active_positions(session)
 
             # ── LONG Confluence ──
-            # ⚠️ TESTING BYPASS: macro_trend gate disabled — accept LONGs regardless of trend
-            if not in_position:  # [PROD: if macro_trend == 'UPTREND' and not in_position:]
+            if macro_trend == 'UPTREND' and not in_position:
                 # Strategy A: Aggressive Pullback
-                if (bullish_ob and current_price <= bullish_ob['high'] and current_zscore < ZSCORE_LONG_THRESHOLD):
+                if (bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.0):
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
                         decision = 'LONG'
                         strategy_type = 'PULLBACK'
                         new_stop_loss = bullish_ob['low'] * 0.999 # Strictly below OB
-                        msg = f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro=UPTREND + Bullish OB + Z={current_zscore:+.2f}"
+                        msg = f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro={macro_trend} + Bullish OB + Z={current_zscore:+.2f}"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
                 
@@ -871,7 +864,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'LONG'
                         strategy_type = 'BREAKOUT'
                         new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999 # Below breakout candle
-                        msg = f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro=UPTREND + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x)"
+                        msg = f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x)"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
 
@@ -883,22 +876,21 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'LONG'
                         strategy_type = 'TREND_ALIGN'
                         new_stop_loss = current_sma * 0.995  # SL just below the SMA
-                        msg = f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro=UPTREND + Price > SMA-50"
+                        msg = f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro={macro_trend} + Price > SMA-50"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
 
             # ── SHORT Confluence ──
-            # ⚠️ TESTING BYPASS: macro_trend gate disabled — accept SHORTs regardless of trend
-            if decision == 'WAIT' and not in_position:  # [PROD: if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position:]
+            if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position:
                 # Strategy A: Aggressive Pullback
-                if (bearish_ob and current_price >= bearish_ob['low'] and current_zscore > ZSCORE_SHORT_THRESHOLD):
+                if (bearish_ob and current_price <= bearish_ob['high'] and current_zscore > 1.0):
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
                         decision = 'SHORT'
                         strategy_type = 'PULLBACK'
                         new_stop_loss = bearish_ob['high'] * 1.001 # Strictly above OB
-                        msg = f"✨ [{symbol}] SHORT Strategy A (PULLBACK): Macro=DOWNTREND + Bearish OB + Z={current_zscore:+.2f}"
+                        msg = f"✨ [{symbol}] SHORT Strategy A (PULLBACK): Macro={macro_trend} + Bearish OB + Z={current_zscore:+.2f}"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
                 
@@ -910,7 +902,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'SHORT'
                         strategy_type = 'BREAKOUT'
                         new_stop_loss = bearish_breakout['breakout_candle_high'] * 1.001 # Above breakout candle
-                        msg = f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro=DOWNTREND + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x)"
+                        msg = f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x)"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
 
@@ -922,7 +914,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         decision = 'SHORT'
                         strategy_type = 'TREND_ALIGN'
                         new_stop_loss = current_sma * 1.005  # SL just above the SMA
-                        msg = f"🧪 [{symbol}] SHORT Strategy C (TREND_ALIGN): Macro=DOWNTREND + Price < SMA-50"
+                        msg = f"🧪 [{symbol}] SHORT Strategy C (TREND_ALIGN): Macro={macro_trend} + Price < SMA-50"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
 
