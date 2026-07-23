@@ -259,7 +259,6 @@ def fetch_all_positions(client: Client) -> dict[str, dict]:
 
     Returns:
         dict[str, dict]: A mapping of symbol -> position dict.
-        Raises BinanceAPIException or requests.exceptions.HTTPError if API request fails.
     """
     if not client:
         return {}
@@ -279,15 +278,9 @@ def fetch_all_positions(client: Client) -> dict[str, dict]:
                     'unrealized_pnl': float(pos.get('unRealizedProfit', 0)) if amt != 0 else 0.0,
                 }
         return pos_dict
-    except (BinanceAPIException, requests.exceptions.HTTPError) as e:
-        if is_rate_limit_error(e):
-            logger.error(f"⚠️ API Rate Limit hit in fetch_all_positions: {e}")
-        else:
-            logger.error(f"Failed to fetch global position information: {e}")
-        raise
     except Exception as e:
-        logger.error(f"Unexpected error fetching global position information: {e}")
-        raise
+        logger.error(f"Failed to fetch global position information: {e}")
+        return {}
 
 
 def get_position_info(client: Client, symbol: str, cached_positions: dict = None) -> dict:
@@ -297,9 +290,6 @@ def get_position_info(client: Client, symbol: str, cached_positions: dict = None
 
     Returns:
         dict with keys: symbol, size, direction, entry_price, unrealized_pnl
-
-    Raises:
-        BinanceAPIException, requests.exceptions.HTTPError if API fails (when not cached).
     """
     if cached_positions is not None:
         if symbol in cached_positions:
@@ -332,12 +322,15 @@ def get_position_info(client: Client, symbol: str, cached_positions: dict = None
             'entry_price': 0.0,
             'unrealized_pnl': 0.0,
         }
-    except (BinanceAPIException, requests.exceptions.HTTPError) as e:
-        logger.error(f"[{symbol}] Failed to fetch position info: {e}")
-        raise
     except Exception as e:
-        logger.error(f"[{symbol}] Unexpected error fetching position info: {e}")
-        raise
+        logger.error(f"[{symbol}] Failed to fetch position info: {e}")
+        return {
+            'symbol': symbol,
+            'size': 0.0,
+            'direction': None,
+            'entry_price': 0.0,
+            'unrealized_pnl': 0.0,
+        }
 
 
 def get_futures_balance(client: Client) -> float:
@@ -356,13 +349,8 @@ def get_futures_balance(client: Client) -> float:
                 return available
         logger.warning("No USDT asset found in Futures account balance")
         return 0.0
-    except BinanceAPIException as e:
-        logger.error(f"Failed to fetch Futures balance: [{e.code}] {e.message}")
-        if is_rate_limit_error(e):
-            raise
-        return 0.0
     except Exception as e:
-        logger.error(f"Unexpected error fetching Futures balance: {e}")
+        logger.error(f"Failed to fetch Futures balance: {e}")
         return 0.0
 
 
@@ -374,32 +362,15 @@ def count_all_open_positions(client: Client, cached_positions: dict = None) -> i
     """
     Count ALL open Futures positions on Binance (any symbol with positionAmt != 0).
     Uses `cached_positions` if provided to avoid extra API calls.
-
-    Returns:
-        int: number of symbols with an active position.
     """
     if cached_positions is not None:
-        count = sum(1 for pos in cached_positions.values() if pos.get('size', 0) > 0)
-        return count
-
+        return sum(1 for pos in cached_positions.values() if pos.get('size', 0) > 0)
     try:
         positions = client.futures_position_information()
-        count = 0
-        for pos in positions:
-            amt = float(pos.get('positionAmt', 0))
-            if amt != 0:
-                count += 1
-        logger.debug(f"Live Binance open positions: {count}")
-        return count
-    except (BinanceAPIException, requests.exceptions.HTTPError) as e:
-        logger.error(f"Failed to count open positions: {e}")
-        if is_rate_limit_error(e):
-            from analyzer import MAX_GLOBAL_POSITIONS
-            return MAX_GLOBAL_POSITIONS
-        return 999  # Fail-safe: assume max so we don't open more
+        return len([p for p in positions if float(p.get('positionAmt', 0)) != 0])
     except Exception as e:
-        logger.error(f"Unexpected error counting open positions: {e}")
-        return 999  # Fail-safe
+        print(f"⚠️ Rate limit hit in count_all_open_positions: {e}")
+        return 6  # Fallback to MAX_GLOBAL_POSITIONS to prevent new entries safely
 
 
 # ──────────────────────────────────────────────────────────────────────
