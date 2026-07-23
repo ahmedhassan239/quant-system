@@ -106,9 +106,9 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="pos in metrics.active_positions" :key="pos.symbol" class="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors">
+              <tr v-for="pos in metrics.active_positions" :key="pos.id || pos.symbol" class="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors">
                 <td class="py-4 px-3 text-center">
-                  <input type="checkbox" v-model="selectedPositions" :value="pos.symbol" class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-gray-900">
+                  <input type="checkbox" v-model="selectedPositions" :value="pos.id" class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-gray-900">
                 </td>
                 <td class="py-4 px-5">
                   <div class="font-bold text-lg text-white">{{ pos.symbol }}</div>
@@ -146,12 +146,15 @@
           <div v-if="metrics.active_positions.length === 0" class="py-8 text-center text-gray-500 italic">
             No active positions currently running.
           </div>
-          <div v-for="pos in metrics.active_positions" :key="'mob-'+pos.symbol" class="bg-gray-900/50 rounded-xl p-4 border border-gray-700/50 flex flex-col gap-3">
+          <div v-for="pos in metrics.active_positions" :key="'mob-'+(pos.id || pos.symbol)" class="bg-gray-900/50 rounded-xl p-4 border border-gray-700/50 flex flex-col gap-3">
             <div class="flex justify-between items-start">
-              <div>
-                <div class="font-bold text-lg text-white">{{ pos.symbol }}</div>
-                <div class="text-xs text-gray-400 mt-1 max-w-[200px] truncate" :title="pos.entry_reason">
-                  {{ pos.entry_reason || pos.strategy || 'Manual / Undefined' }}
+              <div class="flex items-center gap-3">
+                <input type="checkbox" v-model="selectedPositions" :value="pos.id" class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-gray-900">
+                <div>
+                  <div class="font-bold text-lg text-white">{{ pos.symbol }}</div>
+                  <div class="text-xs text-gray-400 mt-1 max-w-[200px] truncate" :title="pos.entry_reason">
+                    {{ pos.entry_reason || pos.strategy || 'Manual / Undefined' }}
+                  </div>
                 </div>
               </div>
               <span :class="pos.direction === 'LONG' ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'" class="px-3 py-1 rounded-full text-xs font-bold tracking-wider border">
@@ -248,7 +251,9 @@ const isAllSelected = computed(() => {
 
 const toggleSelectAll = (event) => {
   if (event.target.checked) {
-    selectedPositions.value = metrics.value.active_positions.map(pos => pos.symbol)
+    selectedPositions.value = metrics.value.active_positions
+      .map(pos => pos.id)
+      .filter(id => id !== null && id !== undefined)
   } else {
     selectedPositions.value = []
   }
@@ -352,25 +357,29 @@ const closeSelectedPositions = async () => {
   if (selectedPositions.value.length === 0) return
   if (!confirm(`Are you sure you want to market close ${selectedPositions.value.length} selected positions?`)) return
   
-  let successCount = 0;
-  // Create a copy of the array so we can process them safely
-  const symbolsToClose = [...selectedPositions.value];
-  
-  for (const symbol of symbolsToClose) {
-    try {
-      const res = await fetch(`/api/positions/${symbol}/close`, {
-        method: 'POST',
-        headers: { 'Accept': 'application/json' }
-      })
-      if (res.ok) successCount++;
-    } catch (e) {
-      console.error(`Error closing ${symbol}`, e)
+  try {
+    const res = await fetch('/api/positions/bulk-close', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({ ids: selectedPositions.value })
+    })
+    
+    if (res.ok) {
+      const data = await res.json()
+      alert(`Successfully closed ${data.closed_count} out of ${selectedPositions.value.length} positions.`)
+      selectedPositions.value = []
+      await fetchMetrics()
+    } else {
+      const errorData = await res.json()
+      alert(`Failed to close positions: ${errorData.message || 'Unknown error'}`)
     }
+  } catch (e) {
+    console.error('Error closing selected positions', e)
+    alert('Network error while closing positions')
   }
-  
-  alert(`Successfully closed ${successCount} out of ${symbolsToClose.length} positions.`)
-  selectedPositions.value = []
-  await fetchMetrics()
 }
 
 let pollingInterval

@@ -95,15 +95,25 @@ class DashboardController extends Controller
                                 ->orderBy('id', 'desc')
                                 ->first();
 
+                            if (!$localRecord) {
+                                $localRecord = \Illuminate\Support\Facades\DB::table('positions')
+                                    ->where('symbol', $binancePos['symbol'])
+                                    ->orderBy('id', 'desc')
+                                    ->first();
+                            }
+
                             // Determine the exact stop loss value
                             $actualStopLoss = 'N/A';
+                            $posId = null;
                             if ($localRecord) {
                                 $actualStopLoss = $localRecord->stop_loss ?: ($localRecord->stop_loss_price ?: 'N/A');
+                                $posId = $localRecord->id;
                             }
 
                             $allocatedUsdt = abs((float)$binancePos['positionAmt']) * (float)$binancePos['entryPrice'];
 
                             return [
+                                'id' => $posId,
                                 'symbol' => $binancePos['symbol'],
                                 'direction' => $binancePos['positionAmt'] > 0 ? 'LONG' : 'SHORT',
                                 'entry_price' => number_format((float)$binancePos['entryPrice'], 2, '.', ''),

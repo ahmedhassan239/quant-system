@@ -5,6 +5,8 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\PortfolioController;
 
+use App\Http\Controllers\PositionController;
+
 Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
@@ -23,4 +25,7 @@ Route::prefix('portfolio')->group(function () {
     Route::get('/balance', [PortfolioController::class, 'balance']);
 });
 
+Route::post('/positions/bulk-close', [PositionController::class, 'bulkClose']);
+Route::post('/positions/close-bulk', [PositionController::class, 'bulkClose']);
 Route::post('/positions/{symbol}/close', [DashboardController::class, 'closePosition']);
+
