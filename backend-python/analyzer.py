@@ -1178,6 +1178,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['total_cost'] = float(portfolio.get('total_cost', 0)) + effective_usdt
                         portfolio['usdt_balance'] -= spend
                         portfolio['position_direction'] = 'LONG'
+                        portfolio['stop_loss_price'] = float(new_stop_loss)
+                        portfolio['stop_loss'] = float(new_stop_loss)
                         if dca_level == 0:
                             portfolio['highest_price_since_entry'] = float(current_price)
                             portfolio['lowest_price_since_entry'] = None
@@ -1328,6 +1330,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['total_cost'] = effective_usdt
                         portfolio['usdt_balance'] -= spend
                         portfolio['position_direction'] = 'SHORT'
+                        portfolio['stop_loss_price'] = float(new_stop_loss)
+                        portfolio['stop_loss'] = float(new_stop_loss)
                         portfolio['lowest_price_since_entry'] = float(current_price)
                         portfolio['highest_price_since_entry'] = None
 
