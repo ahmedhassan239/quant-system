@@ -106,7 +106,10 @@ class DashboardController extends Controller
                             $actualStopLoss = 'N/A';
                             $posId = null;
                             if ($localRecord) {
-                                $actualStopLoss = $localRecord->stop_loss ?: ($localRecord->stop_loss_price ?: 'N/A');
+                                $rawSl = $localRecord->stop_loss ?: ($localRecord->stop_loss_price ?: null);
+                                if ($rawSl && (float)$rawSl > 0) {
+                                    $actualStopLoss = number_format((float)$rawSl, 4, '.', '');
+                                }
                                 $posId = $localRecord->id;
                             }
 

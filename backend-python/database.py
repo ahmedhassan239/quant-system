@@ -216,6 +216,13 @@ def get_active_symbols(session):
     return [r.symbol for r in rows]
 
 
+def get_open_position_symbols(session):
+    """
+    Return a list of symbol strings that currently have an open position (asset_balance > 0).
+    """
+    return get_active_symbols(session)
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  HELPERS — Shared MTF (MacroState)
 # ══════════════════════════════════════════════════════════════════════

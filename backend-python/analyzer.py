@@ -265,6 +265,10 @@ def load_portfolio(session, symbol):
     ).order_by(PortfolioState.id.desc()).first()
 
     if last_state:
+        sl_val = getattr(last_state, 'stop_loss_price', None)
+        if sl_val is None:
+            sl_val = getattr(last_state, 'stop_loss', None)
+
         return {
             'usdt_balance': last_state.usdt_balance,
             'asset_balance': last_state.asset_balance,
@@ -275,6 +279,10 @@ def load_portfolio(session, symbol):
             'highest_price_since_entry': last_state.highest_price_since_entry,
             'lowest_price_since_entry': getattr(last_state, 'lowest_price_since_entry', None),
             'position_direction': getattr(last_state, 'position_direction', None),
+            'stop_loss_price': float(sl_val) if sl_val is not None else None,
+            'stop_loss': float(sl_val) if sl_val is not None else None,
+            'trailing_active': getattr(last_state, 'trailing_active', False),
+            'strategy': getattr(last_state, 'strategy', None),
         }
     return {
         'usdt_balance': SLOT_BUDGET,
@@ -286,6 +294,10 @@ def load_portfolio(session, symbol):
         'highest_price_since_entry': None,
         'lowest_price_since_entry': None,
         'position_direction': None,
+        'stop_loss_price': None,
+        'stop_loss': None,
+        'trailing_active': False,
+        'strategy': None,
     }
 
 
@@ -747,6 +759,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     if new_sl > stop_loss:
                         old_sl = stop_loss
                         portfolio['stop_loss_price'] = new_sl
+                        portfolio['stop_loss'] = new_sl
                         stop_loss = new_sl
                         locked_pnl = ((new_sl - ep) / ep) * 100
                         msg = (f"📈 TRAILING STOP UPDATED: {symbol} | "
@@ -851,6 +864,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     if stop_loss == 0 or new_sl < stop_loss:
                         old_sl = stop_loss
                         portfolio['stop_loss_price'] = new_sl
+                        portfolio['stop_loss'] = new_sl
                         stop_loss = new_sl
                         locked_pnl = ((ep - new_sl) / ep) * 100
                         msg = (f"📈 TRAILING STOP UPDATED: {symbol} | "
@@ -1504,6 +1518,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                 # ── Always save synced PortfolioState row ──
                 total_value = float(portfolio['usdt_balance']) + (float(portfolio['asset_balance']) * cp)
+                sl_val = portfolio.get('stop_loss_price') if portfolio.get('stop_loss_price') is not None else portfolio.get('stop_loss')
+
                 portfolio_record = PortfolioState(
                     timestamp=datetime.now(),
                     symbol=symbol,
@@ -1518,8 +1534,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     total_cost=float(portfolio['total_cost']),
                     highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
                     lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
-                    stop_loss_price=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
-                    stop_loss=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
+                    stop_loss_price=float(sl_val) if sl_val is not None and float(sl_val) > 0 else None,
+                    stop_loss=float(sl_val) if sl_val is not None and float(sl_val) > 0 else None,
                     strategy=portfolio.get('strategy'),
                     trailing_active=portfolio.get('trailing_active', False),
                     pnl_pct=None,

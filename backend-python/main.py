@@ -8,7 +8,9 @@ from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     ENV_TYPE, SCHEDULE_INTERVAL_MINUTES, BINANCE_FUTURES_BASE_URL,
                     FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE,
                     MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD)
-from database import SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS, init_shared_db, get_active_symbols, save_wallet_balance
+from database import (SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS,
+                      init_shared_db, get_active_symbols, save_wallet_balance,
+                      SessionLocal, get_open_position_symbols)
 from futures_executor import create_futures_client, get_futures_balance, count_all_open_positions
 
 # ── Initialize Futures client once at module level ──
@@ -49,41 +51,77 @@ def scanner_job():
     update_radar()
     print("Radar update complete.", flush=True)
 
-    # 1. Fetch dynamic symbols from shared DB
-    symbols = get_active_symbols()
-    print(f"Trading active symbols: {symbols}", flush=True)
+    # 1. Fetch dynamic symbols from shared DB (Radar volume-ranked list)
+    radar_symbols = get_active_symbols()
 
-    # 2. Fetch latest Futures candle data for all scanned symbols
-    run_fetcher(symbols=symbols)
+    # 2. Fetch currently open position symbols from local DB & live Binance
+    open_pos_symbols = set()
+    db_session = SessionLocal()
+    try:
+        open_pos_symbols.update(get_open_position_symbols(db_session))
+    except Exception as e:
+        print(f"⚠️ Error querying open position symbols from DB: {e}", flush=True)
+    finally:
+        db_session.close()
 
-    # 3. Run the appropriate analyzer based on engine role
+    if futures_client:
+        try:
+            pos_risk = futures_client.futures_position_information()
+            for p in pos_risk:
+                if float(p.get('positionAmt', 0)) != 0:
+                    open_pos_symbols.add(p['symbol'])
+        except Exception as e:
+            print(f"⚠️ Error fetching Binance live positions: {e}", flush=True)
+
+    # Combine open position symbols + Radar symbols (open positions first, no duplicates)
+    all_symbols = list(open_pos_symbols)
+    for s in radar_symbols:
+        if s not in all_symbols:
+            all_symbols.append(s)
+
+    print(f"Trading active symbols (Scanned: {len(radar_symbols)}, Open: {len(open_pos_symbols)}, Total: {len(all_symbols)}): {all_symbols}", flush=True)
+
+    # 3. Fetch latest Futures candle data for all processed symbols
+    run_fetcher(symbols=all_symbols)
+
+    # 4. Run the appropriate analyzer based on engine role
     if ENGINE_ROLE.upper() == "MACRO":
         # ── Macro Trend Engine (1h) — analysis only, no orders ──
-        for sym in symbols:
+        for sym in all_symbols:
             run_macro_analyzer(symbol=sym)
     else:
         # ── Execution Engine (15m) — trades with MTF confluence ──
         import logging
         logger = logging.getLogger("ExecutionEngine")
-        
+
         current_open_count = count_all_open_positions(futures_client)
         trades_opened_this_cycle = 0
-        
-        for sym in symbols:
-            if current_open_count >= MAX_GLOBAL_POSITIONS:
-                logger.warning(f"Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping remaining symbols this cycle.")
-                print(f"🛑 Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping {sym} and remaining symbols.", flush=True)
-                continue  # Skip attempting to open any new positions
-                
-            if trades_opened_this_cycle >= 3:
-                logger.warning("Max trades per cycle (3) reached. Cooling down until next 5m tick.")
-                print("🛑 Max trades per cycle (3) reached. Cooling down until next 5m tick.", flush=True)
-                break  # Stop processing more symbols this cycle
-                
-            newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
-            if newly_executed:
-                current_open_count += 1
-                trades_opened_this_cycle += 1
+
+        for sym in all_symbols:
+            is_open_position = sym in open_pos_symbols
+
+            if is_open_position:
+                # ── RULE 1 & 2: ALWAYS evaluate risk management for open positions ──
+                print(f"🛡️ [{sym}] Open position detected — evaluating risk management (SL/TSL/TP/Stagnant) unconditionally.", flush=True)
+                newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+                if newly_executed:
+                    trades_opened_this_cycle += 1
+            else:
+                # ── RULE 3: Restrict NEW entries when portfolio is full ──
+                if current_open_count >= MAX_GLOBAL_POSITIONS:
+                    logger.warning(f"Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.")
+                    print(f"🛑 Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.", flush=True)
+                    continue
+
+                if trades_opened_this_cycle >= 3:
+                    logger.warning(f"Max trades per cycle (3) reached. Cooling down for {sym}.")
+                    print(f"🛑 Max trades per cycle (3) reached. Skipping new entry for {sym}.", flush=True)
+                    continue
+
+                newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+                if newly_executed:
+                    current_open_count += 1
+                    trades_opened_this_cycle += 1
 
     print("\nJob completed. Sleeping until next interval...", flush=True)
     print("="*60 + "\n", flush=True)
