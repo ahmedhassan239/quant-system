@@ -81,7 +81,7 @@ class DashboardController extends Controller
                      ->on('p.id', '=', 'latest.max_id');
             })
             ->where('p.asset_balance', '>', 0)
-            ->whereIn('p.decision', ['LONG', 'SHORT', 'HOLD'])
+            ->whereNotIn('p.decision', ['CLOSE_LONG', 'CLOSE_SHORT', 'MANUAL_CLOSE', 'SL_CLOSE', 'TP_CLOSE'])
             ->get();
 
         $mappedPositions = $activeLocalPositions->map(function ($localPos) {

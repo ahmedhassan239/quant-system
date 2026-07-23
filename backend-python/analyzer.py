@@ -1581,7 +1581,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 try:
                     session.add(portfolio_record)
                     session.commit()
-                    msg = f"✅ [{symbol}] Position state synced to DB: decision='{db_decision}', direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}"
+                    msg = f"✅ [{symbol}] Position state synced to DB: decision='{db_decision}', direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}, sl=${float(sl_val) if sl_val else 0:.4f}"
                     print(f"  {msg}", flush=True)
                     log_to_db(session, symbol, "INFO", msg)
                 except Exception as e:
