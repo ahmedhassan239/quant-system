@@ -27,7 +27,7 @@ class DashboardController extends Controller
         $actualTotalTrades = \Illuminate\Support\Facades\DB::table('trade_history')->count();
         $winRate = $actualTotalTrades > 0 ? round(($winningTrades / $actualTotalTrades) * 100, 2) : 0;
 
-        // 3. Wallet Balance from Binance Testnet
+        // 3. Wallet Balance from Binance Testnet (with DB fallback)
         $apiKey = env('BINANCE_API_KEY');
         $apiSecret = env('BINANCE_API_SECRET');
         $walletBalance = 0.00;
@@ -57,82 +57,73 @@ class DashboardController extends Controller
                     }
                 }
             } catch (\Exception $e) {
-                $walletBalance = 0.00;
-                $totalUnrealizedProfit = 0.00;
-                $totalMarginBalance = 0.00;
+                // Ignore API failure, fallback below
             }
         }
 
-        // 4. Active Positions from Binance
-        $mappedPositions = collect();
-        if ($apiKey && $apiSecret) {
-            try {
-                $timestamp = round(microtime(true) * 1000);
-                $queryString = "timestamp=" . $timestamp;
-                $signature = hash_hmac('sha256', $queryString, $apiSecret);
+        // Fallback wallet balance from local DB if API call failed or rate-limited
+        $latestPortfolioRecord = \Illuminate\Support\Facades\DB::table('positions')
+            ->whereNotNull('usdt_balance')
+            ->orderBy('id', 'desc')
+            ->first();
+        if ($walletBalance <= 0 && $latestPortfolioRecord) {
+            $walletBalance = (float) $latestPortfolioRecord->usdt_balance;
+        }
 
-                $riskResponse = Http::withHeaders([
-                    'X-MBX-APIKEY' => $apiKey
-                ])->get("https://testnet.binancefuture.com/fapi/v2/positionRisk?{$queryString}&signature={$signature}");
+        // 4. Active Positions directly from LOCAL DATABASE (rate-limit immune, zero flickering)
+        $latestSubquery = \Illuminate\Support\Facades\DB::table('positions')
+            ->select('symbol', \Illuminate\Support\Facades\DB::raw('MAX(id) as max_id'))
+            ->groupBy('symbol');
 
-                if ($riskResponse->successful()) {
-                    $riskData = $riskResponse->json();
-                    
-                    // Filter out positions with 0 amount
-                    $activeBinancePositions = collect($riskData)->filter(function ($pos) {
-                        return abs((float) $pos['positionAmt']) > 0;
-                    });
+        $activeLocalPositions = \Illuminate\Support\Facades\DB::table('positions as p')
+            ->joinSub($latestSubquery, 'latest', function ($join) {
+                $join->on('p.symbol', '=', 'latest.symbol')
+                     ->on('p.id', '=', 'latest.max_id');
+            })
+            ->where('p.asset_balance', '>', 0)
+            ->whereIn('p.decision', ['LONG', 'SHORT', 'HOLD'])
+            ->get();
 
-                    if ($activeBinancePositions->isNotEmpty()) {
-                        $mappedPositions = $activeBinancePositions->map(function ($binancePos) {
-                            // Fetch the latest record where stop_loss OR stop_loss_price is NOT NULL
-                            $localRecord = \Illuminate\Support\Facades\DB::table('positions')
-                                ->where('symbol', $binancePos['symbol'])
-                                ->where(function ($query) {
-                                    $query->whereNotNull('stop_loss')
-                                          ->orWhereNotNull('stop_loss_price');
-                                })
-                                ->orderBy('id', 'desc')
-                                ->first();
+        $mappedPositions = $activeLocalPositions->map(function ($localPos) {
+            $direction = $localPos->position_direction ?: ($localPos->decision === 'SHORT' ? 'SHORT' : 'LONG');
+            $entryPrice = (float)($localPos->average_entry_price ?: $localPos->current_price);
+            $currentPrice = (float)($localPos->current_price ?: $entryPrice);
+            $assetBalance = (float)($localPos->asset_balance ?: 0);
+            $allocatedUsdt = $assetBalance * $entryPrice;
 
-                            if (!$localRecord) {
-                                $localRecord = \Illuminate\Support\Facades\DB::table('positions')
-                                    ->where('symbol', $binancePos['symbol'])
-                                    ->orderBy('id', 'desc')
-                                    ->first();
-                            }
-
-                            // Determine the exact stop loss value
-                            $actualStopLoss = 'N/A';
-                            $posId = null;
-                            if ($localRecord) {
-                                $rawSl = $localRecord->stop_loss ?: ($localRecord->stop_loss_price ?: null);
-                                if ($rawSl && (float)$rawSl > 0) {
-                                    $actualStopLoss = number_format((float)$rawSl, 4, '.', '');
-                                }
-                                $posId = $localRecord->id;
-                            }
-
-                            $allocatedUsdt = abs((float)$binancePos['positionAmt']) * (float)$binancePos['entryPrice'];
-
-                            return [
-                                'id' => $posId,
-                                'symbol' => $binancePos['symbol'],
-                                'direction' => $binancePos['positionAmt'] > 0 ? 'LONG' : 'SHORT',
-                                'entry_price' => number_format((float)$binancePos['entryPrice'], 2, '.', ''),
-                                'current_price' => number_format((float)$binancePos['markPrice'], 2, '.', ''),
-                                'unrealized_pnl' => number_format((float)$binancePos['unRealizedProfit'], 2, '.', ''),
-                                'allocated_usdt' => number_format($allocatedUsdt, 2, '.', ''),
-                                'entry_reason' => $localRecord && $localRecord->entry_reason ? $localRecord->entry_reason : 'Live from Binance',
-                                'stop_loss' => $actualStopLoss,
-                                'strategy' => $localRecord->strategy ?? 'N/A',
-                            ];
-                        })->values();
-                    }
+            $unrealizedPnl = (float)($localPos->pnl_usd ?? 0.0);
+            if ($localPos->pnl_usd === null && $entryPrice > 0 && $assetBalance > 0) {
+                if ($direction === 'LONG') {
+                    $unrealizedPnl = ($currentPrice - $entryPrice) * $assetBalance;
+                } else {
+                    $unrealizedPnl = ($entryPrice - $currentPrice) * $assetBalance;
                 }
-            } catch (\Exception $e) {
-                // If Binance request fails, return empty array for active positions
             }
+
+            $rawSl = $localPos->stop_loss ?: ($localPos->stop_loss_price ?: null);
+            $actualStopLoss = 'N/A';
+            if ($rawSl && (float)$rawSl > 0) {
+                $actualStopLoss = number_format((float)$rawSl, 4, '.', '');
+            }
+
+            return [
+                'id' => $localPos->id,
+                'symbol' => $localPos->symbol,
+                'direction' => $direction,
+                'entry_price' => number_format($entryPrice, 2, '.', ''),
+                'current_price' => number_format($currentPrice, 2, '.', ''),
+                'unrealized_pnl' => number_format($unrealizedPnl, 2, '.', ''),
+                'allocated_usdt' => number_format($allocatedUsdt, 2, '.', ''),
+                'entry_reason' => $localPos->entry_reason ?: 'Automated Strategy',
+                'stop_loss' => $actualStopLoss,
+                'strategy' => $localPos->strategy ?? 'N/A',
+            ];
+        })->values();
+
+        if ($mappedPositions->isNotEmpty()) {
+            $totalUnrealizedProfit = $mappedPositions->sum(function ($pos) {
+                return (float)$pos['unrealized_pnl'];
+            });
         }
 
         return response()->json([
