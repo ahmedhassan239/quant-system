@@ -75,7 +75,7 @@ MACRO_DB_NAME = os.environ.get("MACRO_DB_NAME", "quant_shared_db")
 # ──────────────────────────────────────────────────────────────────────
 # ⚠️ Force trades on pure trend alignment (bypasses OB + Z-Score gates).
 #    Set to False for production!
-TESTNET_FORCE_TRADES = True
+TESTNET_FORCE_TRADES = False
 
 # ──────────────────────────────────────────────────────────────────────
 #  STATISTICAL ANALYSIS CONSTANTS

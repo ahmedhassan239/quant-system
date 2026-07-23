@@ -1012,8 +1012,16 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     else:  # SHORT
                         new_stop_loss = current_price * (1.0 + STOP_LOSS_PCT)
 
+                is_invalid = False
                 if new_stop_loss <= 0.0 or pd.isna(new_stop_loss):
-                    msg = f"🛑 [SKIP] {symbol}: Unable to calculate valid Stop-Loss price for {decision}."
+                    is_invalid = True
+                elif decision == 'LONG' and new_stop_loss >= current_price:
+                    is_invalid = True
+                elif decision == 'SHORT' and new_stop_loss <= current_price:
+                    is_invalid = True
+
+                if is_invalid:
+                    msg = f"🛑 [SKIP] {symbol}: Unable to calculate valid Stop-Loss price for {decision} (SL: ${new_stop_loss}, Price: ${current_price})."
                     print(msg, flush=True)
                     log_to_db(session, symbol, "SKIP", msg)
                     decision = 'WAIT'
@@ -1672,9 +1680,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"⚠️ [SKIP EXECUTION] Allocated amount too small: "
                             f"${allocated_usdt:.2f} for {symbol} {direction}."
                         )
-                    elif new_stop_loss <= 0.0 or pd.isna(new_stop_loss):
+                    elif new_stop_loss <= 0.0 or pd.isna(new_stop_loss) or (direction == 'LONG' and new_stop_loss >= current_price) or (direction == 'SHORT' and new_stop_loss <= current_price):
                         _exec_logger.error(
-                            f"🛑 [SKIP EXECUTION] {symbol} {direction}: Invalid or missing Stop-Loss price (${new_stop_loss}). "
+                            f"🛑 [SKIP EXECUTION] {symbol} {direction}: Invalid or missing Stop-Loss price (${new_stop_loss} vs Price ${current_price}). "
                             f"Binance order placement blocked."
                         )
                     else:
