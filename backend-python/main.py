@@ -67,12 +67,21 @@ def scanner_job():
 
         if futures_client:
             try:
-                pos_risk = futures_client.futures_position_information()
-                for p in pos_risk:
-                    if float(p.get('positionAmt', 0)) != 0:
-                        open_pos_symbols.add(p['symbol'])
+                from analyzer import sync_and_purge_all_positions
+                sync_session = SessionLocal()
+                try:
+                    sync_and_purge_all_positions(futures_client, sync_session)
+                finally:
+                    sync_session.close()
+
+                # Re-query open position symbols after sync/purge
+                db_session = SessionLocal()
+                try:
+                    open_pos_symbols = set(get_open_position_symbols(db_session))
+                finally:
+                    db_session.close()
             except Exception as e:
-                print(f"⚠️ Error fetching Binance live positions: {e}", flush=True)
+                print(f"⚠️ Error syncing Binance live positions: {e}", flush=True)
 
         # Combine open position symbols + Radar symbols (open positions first, no duplicates)
         all_symbols = list(open_pos_symbols)

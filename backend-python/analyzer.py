@@ -301,6 +301,79 @@ def load_portfolio(session, symbol):
     }
 
 
+def sync_and_purge_all_positions(futures_client, session):
+    """
+    Sync live Binance positions with DB and purge ghost positions.
+    Ensures real live positions (ETH, XRP, BNB, BROCCOLI, BANK, ON, etc.)
+    always have active PortfolioState DB records with asset_balance > 0
+    and decision in ('LONG', 'SHORT').
+    """
+    if not futures_client:
+        return
+
+    try:
+        from futures_executor import fetch_all_positions
+        from database import get_open_position_symbols
+        live_positions = fetch_all_positions(futures_client)
+        if not live_positions:
+            return
+
+        open_db_symbols = get_open_position_symbols(session)
+
+        # 1. Sync live Binance positions into DB
+        for sym, pos in live_positions.items():
+            size = pos.get('size', 0.0)
+            if size > 0:
+                direction = pos['direction']
+                entry_price = pos['entry_price']
+                u_pnl = pos['unrealized_pnl']
+
+                latest_rec = session.query(PortfolioState).filter(
+                    PortfolioState.symbol == sym
+                ).order_by(PortfolioState.id.desc()).first()
+
+                sl_val = 0.0
+                if latest_rec:
+                    sl_val = getattr(latest_rec, 'stop_loss', None) or getattr(latest_rec, 'stop_loss_price', None) or 0.0
+
+                if not latest_rec or latest_rec.asset_balance <= 0 or latest_rec.decision not in ('LONG', 'SHORT'):
+                    new_rec = PortfolioState(
+                        timestamp=datetime.now(),
+                        symbol=sym,
+                        decision=direction,
+                        current_price=entry_price,
+                        usdt_balance=1000.0,
+                        asset_balance=size,
+                        position_direction=direction,
+                        average_entry_price=entry_price,
+                        dca_level=0,
+                        total_cost=size * entry_price,
+                        stop_loss_price=float(sl_val) if sl_val > 0 else 0.0,
+                        stop_loss=float(sl_val) if sl_val > 0 else 0.0,
+                        pnl_usd=u_pnl,
+                        total_portfolio_value=1000.0
+                    )
+                    session.add(new_rec)
+                    print(f"🔄 [SYNC] Live Binance position for {sym} ({direction}, Qty={size}) synced to DB", flush=True)
+
+        # 2. Purge ghost positions (symbols with DB asset_balance > 0 but size == 0 on Binance)
+        for sym in open_db_symbols:
+            live_info = live_positions.get(sym)
+            if live_info and live_info.get('size', 0.0) == 0.0:
+                print(f"🧹 [PURGE] Clearing ghost position in DB for {sym} (Binance size = 0)", flush=True)
+                latest_rec = session.query(PortfolioState).filter(
+                    PortfolioState.symbol == sym
+                ).order_by(PortfolioState.id.desc()).first()
+                if latest_rec:
+                    latest_rec.asset_balance = 0.0
+                    latest_rec.decision = 'MANUAL_CLOSE'
+
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"⚠️ Error in sync_and_purge_all_positions: {e}", flush=True)
+
+
 def _close_position_handler(portfolio, current_price, symbol, session, exit_reason,
                             futures_client=None, bullish_ob=None, bearish_ob=None,
                             current_rsi=None, current_zscore=None, macro_info=None):
@@ -455,11 +528,16 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
                 db_position_direction = pos_info['direction']
                 db_entry_price = pos_info['entry_price']
                 db_pnl_usd = pos_info['unrealized_pnl']
+                portfolio['asset_balance'] = pos_info['size']
+                portfolio['position_direction'] = pos_info['direction']
         except (BinanceAPIException, requests.exceptions.HTTPError, Exception) as exc:
             if is_rate_limit_error(exc):
                 print(f"⚠️ API Rate Limit hit in _save_tracking_update for {symbol}. Preserving DB state.", flush=True)
             else:
                 print(f"⚠️ API error in _save_tracking_update for {symbol} ({exc}). Preserving DB state.", flush=True)
+
+    if portfolio.get('asset_balance', 0) > 0 and db_decision not in ('LONG', 'SHORT'):
+        db_decision = db_position_direction or 'LONG'
 
     sl_val = portfolio.get('stop_loss_price') if portfolio.get('stop_loss_price') is not None else portfolio.get('stop_loss')
     if sl_val is None or (isinstance(sl_val, (int, float)) and sl_val <= 0):
@@ -483,8 +561,8 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
         total_cost=float(portfolio['total_cost']),
         highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
         lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
-        stop_loss_price=float(sl_val) if sl_val is not None and float(sl_val) > 0 else None,
-        stop_loss=float(sl_val) if sl_val is not None and float(sl_val) > 0 else None,
+        stop_loss_price=float(sl_val) if sl_val is not None and float(sl_val) > 0 else 0.0,
+        stop_loss=float(sl_val) if sl_val is not None and float(sl_val) > 0 else 0.0,
         strategy=portfolio.get('strategy'),
         trailing_active=portfolio.get('trailing_active', False),
         pnl_pct=None,
