@@ -325,24 +325,63 @@ def save_wallet_balance(balance: float):
 # ══════════════════════════════════════════════════════════════════════
 
 def init_db():
-    """Create tables if they don't exist, drop/recreate positions for clean schema."""
+    """Create tables if they don't exist, and perform safe migrations for new columns."""
     Base.metadata.create_all(bind=engine)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS usdt_balance DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss_price DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS strategy VARCHAR;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS trailing_active BOOLEAN DEFAULT FALSE;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_reason VARCHAR;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_usd DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_pct DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_portfolio_value DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS lowest_price_since_entry DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS highest_price_since_entry DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_cost DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS last_exec_price DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS dca_level INTEGER DEFAULT 0;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS average_entry_price DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS position_direction VARCHAR;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS current_price DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS asset_balance DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS decision VARCHAR;"))
+            conn.commit()
+    except Exception as e:
+        print(f"⚠️ Safe migration warning in init_db: {e}", flush=True)
 
 def init_shared_db():
     """Create the MacroState / ActiveSymbol tables in the shared database.
 
     Also runs a safe migration to add the `rank` column to active_symbols
-    if the table already exists from a previous deployment without that column.
+    and all missing columns to `positions` if the table already exists.
     """
     SharedBase.metadata.create_all(bind=shared_engine)
 
-    # Safe migration: add `rank` to active_symbols if it is missing.
-    # `ALTER TABLE … ADD COLUMN IF NOT EXISTS` is idempotent in PostgreSQL 9.6+.
     try:
         with shared_engine.connect() as conn:
-            conn.execute(text(
-                "ALTER TABLE active_symbols ADD COLUMN IF NOT EXISTS rank INTEGER NOT NULL DEFAULT 0;"
-            ))
+            conn.execute(text("ALTER TABLE active_symbols ADD COLUMN IF NOT EXISTS rank INTEGER NOT NULL DEFAULT 0;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS usdt_balance DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss_price DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS strategy VARCHAR;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS trailing_active BOOLEAN DEFAULT FALSE;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_reason VARCHAR;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_usd DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_pct DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_portfolio_value DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS lowest_price_since_entry DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS highest_price_since_entry DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_cost DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS last_exec_price DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS dca_level INTEGER DEFAULT 0;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS average_entry_price DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS position_direction VARCHAR;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS current_price DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS asset_balance DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS decision VARCHAR;"))
             conn.commit()
     except Exception:
         # Table may not exist yet (first-time init) — create_all above handles it.

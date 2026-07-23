@@ -180,8 +180,11 @@ def main():
         threading.Thread(target=wallet_balance_worker, daemon=True).start()
 
     # Run scanner_job immediately on startup (both engines)
-    job()            # Print header banner
-    scanner_job()    # Fetch data + analyze
+    try:
+        job()            # Print header banner
+        scanner_job()    # Fetch data + analyze
+    except Exception as e:
+        print(f"⚠️ Initial startup scanner_job error: {e}", flush=True)
 
     # Schedule recurring runs based on engine role
     if ENGINE_ROLE.upper() == "MACRO":
@@ -196,29 +199,41 @@ def main():
     if ENV_TYPE.upper() == "TESTNET":
         env_warning = "\n⚠️ This is the TESTNET bot — Futures Testnet, not live trading."
 
-    if ENGINE_ROLE.upper() == "MACRO":
-        send_telegram_alert(
-            f"{ALERT_EMOJI} *{ALERT_PREFIX} Super Bot — 🔭 Macro Trend Engine Started*\n\n"
-            f"Computing 1h macro trends (SMA-{MACRO_SMA_PERIOD}, Z-Score, SDC).\n"
-            f"Writing UPTREND/DOWNTREND to shared DB for the Execution Engine.\n"
-            f"Schedule: every {SCHEDULE_INTERVAL_MINUTES} min | *{TIMEFRAME} timeframe*"
-            f"{env_warning}"
-        )
-    else:
-        send_telegram_alert(
-            f"{ALERT_EMOJI} *{ALERT_PREFIX} Super Bot — ⚡ Execution Engine Started*\n\n"
-            f"Trading with Dual-Strategy MTF Confluence (reads 1h macro trend from shared DB).\n"
-            f"Strategy A (Pullback): Extreme Z-Score + Order Blocks\n"
-            f"Strategy B (Breakout): Volume Anomalies + Consolidation Zones\n"
-            f"Max {MAX_CONCURRENT_POSITIONS} positions | ${SLOT_BUDGET:,.0f}/slot | *{TIMEFRAME}*.\n"
-            f"Leverage: {FUTURES_LEVERAGE}x | Margin: {FUTURES_MARGIN_TYPE}\n"
-            f"Capital: ${TOTAL_CAPITAL:,.0f} | Slot: ${SLOT_BUDGET:,.0f}"
-            f"{env_warning}"
-        )
+    try:
+        if ENGINE_ROLE.upper() == "MACRO":
+            send_telegram_alert(
+                f"{ALERT_EMOJI} *{ALERT_PREFIX} Super Bot — 🔭 Macro Trend Engine Started*\n\n"
+                f"Computing 1h macro trends (SMA-{MACRO_SMA_PERIOD}, Z-Score, SDC).\n"
+                f"Writing UPTREND/DOWNTREND to shared DB for the Execution Engine.\n"
+                f"Schedule: every {SCHEDULE_INTERVAL_MINUTES} min | *{TIMEFRAME} timeframe*"
+                f"{env_warning}"
+            )
+        else:
+            send_telegram_alert(
+                f"{ALERT_EMOJI} *{ALERT_PREFIX} Super Bot — ⚡ Execution Engine Started*\n\n"
+                f"Trading with Dual-Strategy MTF Confluence (reads 1h macro trend from shared DB).\n"
+                f"Strategy A (Pullback): Extreme Z-Score + Order Blocks\n"
+                f"Strategy B (Breakout): Volume Anomalies + Consolidation Zones\n"
+                f"Max {MAX_CONCURRENT_POSITIONS} positions | ${SLOT_BUDGET:,.0f}/slot | *{TIMEFRAME}*.\n"
+                f"Leverage: {FUTURES_LEVERAGE}x | Margin: {FUTURES_MARGIN_TYPE}\n"
+                f"Capital: ${TOTAL_CAPITAL:,.0f} | Slot: ${SLOT_BUDGET:,.0f}"
+                f"{env_warning}"
+            )
+    except Exception as e:
+        print(f"⚠️ Telegram startup alert failed: {e}", flush=True)
 
-    # Keep the container/script running indefinitely
+    # Keep the container/script running indefinitely — NEVER crash
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            from futures_executor import is_rate_limit_error
+            if is_rate_limit_error(e):
+                print(f"🚨 API Rate Limit / IP Ban detected in main loop: {e}. Sleeping 60 seconds...", flush=True)
+                time.sleep(60)
+            else:
+                print(f"⚠️ Error in main execution loop: {e}", flush=True)
+                time.sleep(5)
         time.sleep(1)
 
 if __name__ == "__main__":

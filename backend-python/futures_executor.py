@@ -61,19 +61,20 @@ if not logger.handlers:
 def create_futures_client() -> Client:
     """
     Create a python-binance Client configured for Binance Futures Testnet.
-
-    Reads API key/secret from config.py (which reads from env vars).
-    Sets testnet=True so the client targets testnet.binancefuture.com.
     """
-    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
+    import os
+    api_key = BINANCE_API_KEY or os.environ.get("BINANCE_API_KEY") or os.environ.get("TESTNET_5M_API_KEY") or os.environ.get("TESTNET_15M_API_KEY")
+    api_secret = BINANCE_API_SECRET or os.environ.get("BINANCE_API_SECRET") or os.environ.get("TESTNET_5M_SECRET_KEY") or os.environ.get("TESTNET_15M_SECRET_KEY")
+
+    if not api_key or not api_secret:
         raise RuntimeError(
             "BINANCE_API_KEY and BINANCE_API_SECRET must be set in the "
-            "environment.  Generate keys at https://testnet.binancefuture.com"
+            "environment. Generate keys at https://testnet.binancefuture.com"
         )
 
     client = Client(
-        api_key=BINANCE_API_KEY,
-        api_secret=BINANCE_API_SECRET,
+        api_key=api_key,
+        api_secret=api_secret,
         testnet=True,
     )
     logger.info("✅ Futures Testnet client created (testnet=True)")
@@ -182,8 +183,10 @@ def open_position(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        logger.error(f"[{symbol}] ❌ Failed to open {direction}: "
-                     f"[{e.code}] {e.message}")
+        if getattr(e, 'code', None) == -4131 or '-4131' in str(e):
+            logger.warning(f"[{symbol}] ⚠️ Order rejected by Binance PERCENT_PRICE filter (-4131): price deviates beyond allowed threshold.")
+        else:
+            logger.error(f"[{symbol}] ❌ Failed to open {direction}: [{e.code}] {e.message}")
         return None
     except Exception as e:
         logger.error(f"[{symbol}] ❌ Unexpected error opening {direction}: {e}")
@@ -241,8 +244,10 @@ def close_position(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        logger.error(f"[{symbol}] ❌ Failed to close {direction}: "
-                     f"[{e.code}] {e.message}")
+        if getattr(e, 'code', None) == -4131 or '-4131' in str(e):
+            logger.warning(f"[{symbol}] ⚠️ Close order rejected by Binance PERCENT_PRICE filter (-4131): price deviates beyond allowed threshold.")
+        else:
+            logger.error(f"[{symbol}] ❌ Failed to close {direction}: [{e.code}] {e.message}")
         return None
     except Exception as e:
         logger.error(f"[{symbol}] ❌ Unexpected error closing {direction}: {e}")

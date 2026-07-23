@@ -36,8 +36,8 @@ BINANCE_FUTURES_BASE_URL = os.environ.get(
 )
 
 # API credentials (read by futures_executor.py for python-binance client)
-BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "")
-BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
+BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY") or os.environ.get("TESTNET_5M_API_KEY") or os.environ.get("TESTNET_15M_API_KEY") or ""
+BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET") or os.environ.get("TESTNET_5M_SECRET_KEY") or os.environ.get("TESTNET_15M_SECRET_KEY") or ""
 
 # ──────────────────────────────────────────────────────────────────────
 #  FUTURES POSITION DEFAULTS

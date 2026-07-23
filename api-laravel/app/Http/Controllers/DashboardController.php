@@ -19,13 +19,18 @@ class DashboardController extends Controller
 
     public function getDashboardMetrics()
     {
-        // 1. Total PNL from CLOSED trades
-        $totalPnl = \Illuminate\Support\Facades\DB::table('trade_history')->sum('pnl_usd'); 
-        
-        // 2. Win Rate from CLOSED trades
-        $winningTrades = \Illuminate\Support\Facades\DB::table('trade_history')->where('outcome', 'WIN')->count();
-        $actualTotalTrades = \Illuminate\Support\Facades\DB::table('trade_history')->count();
-        $winRate = $actualTotalTrades > 0 ? round(($winningTrades / $actualTotalTrades) * 100, 2) : 0;
+        // 1 & 2. Total PNL & Win Rate from CLOSED trades (safe check)
+        $totalPnl = 0.00;
+        $winningTrades = 0;
+        $actualTotalTrades = 0;
+        $winRate = 0;
+
+        if (\Illuminate\Support\Facades\Schema::hasTable('trade_history')) {
+            $totalPnl = (float)\Illuminate\Support\Facades\DB::table('trade_history')->sum('pnl_usd'); 
+            $winningTrades = \Illuminate\Support\Facades\DB::table('trade_history')->where('outcome', 'WIN')->count();
+            $actualTotalTrades = \Illuminate\Support\Facades\DB::table('trade_history')->count();
+            $winRate = $actualTotalTrades > 0 ? round(($winningTrades / $actualTotalTrades) * 100, 2) : 0;
+        }
 
         // 3. Wallet Balance from Binance Testnet (with DB fallback)
         $apiKey = env('BINANCE_API_KEY');
