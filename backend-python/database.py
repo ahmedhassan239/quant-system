@@ -149,6 +149,9 @@ class MacroState(SharedBase):
     macro_trend = Column(String, nullable=False)          # 'UPTREND' or 'DOWNTREND'
     sma_50 = Column(Float, nullable=False)                # Current SMA-50 value
     z_score = Column(Float, nullable=False)               # Current Z-Score
+    rsi = Column(Float, nullable=True)
+    z_score_15m = Column(Float, nullable=True)
+    z_score_1h = Column(Float, nullable=True)
     std_dev = Column(Float, nullable=True)                # Current 50-period σ
     sdc_upper = Column(Float, nullable=True)              # SMA + 2σ
     sdc_lower = Column(Float, nullable=True)              # SMA - 2σ
@@ -291,11 +294,36 @@ def get_macro_trend(symbol):
                 'sdc_lower': state.sdc_lower,
                 'current_price': state.current_price,
                 'updated_at': state.updated_at,
+                'rsi': getattr(state, 'rsi', None),
+                'z_score_15m': getattr(state, 'z_score_15m', None),
+                'z_score_1h': getattr(state, 'z_score_1h', None),
             }
         return None
     except Exception as e:
         print(f"⚠️ [{symbol}] Failed to read MacroState: {e}", flush=True)
         return None
+    finally:
+        session.close()
+
+def update_symbol_execution_data(symbol, current_price, rsi, z_score_15m, z_score_1h, macro_trend):
+    """
+    Unconditionally updates the symbol's LATEST calculated data at the end of the
+    evaluation cycle. This ensures the dashboard stays in sync with the Python engine.
+    """
+    session = SharedSessionLocal()
+    try:
+        record = session.query(MacroState).filter(MacroState.symbol == symbol).first()
+        if record:
+            record.current_price = float(current_price) if current_price is not None else record.current_price
+            record.rsi = float(rsi) if rsi is not None else None
+            record.z_score_15m = float(z_score_15m) if z_score_15m is not None else None
+            record.z_score_1h = float(z_score_1h) if z_score_1h is not None else None
+            record.macro_trend = macro_trend
+            record.updated_at = datetime.utcnow()
+            session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"⚠️ [{symbol}] Failed to update execution data in MacroState: {e}", flush=True)
     finally:
         session.close()
 
@@ -363,6 +391,9 @@ def init_shared_db():
     try:
         with shared_engine.connect() as conn:
             conn.execute(text("ALTER TABLE active_symbols ADD COLUMN IF NOT EXISTS rank INTEGER NOT NULL DEFAULT 0;"))
+            conn.execute(text("ALTER TABLE macro_state ADD COLUMN IF NOT EXISTS rsi DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE macro_state ADD COLUMN IF NOT EXISTS z_score_15m DOUBLE PRECISION;"))
+            conn.execute(text("ALTER TABLE macro_state ADD COLUMN IF NOT EXISTS z_score_1h DOUBLE PRECISION;"))
             conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS usdt_balance DOUBLE PRECISION;"))
             conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;"))
             conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss_price DOUBLE PRECISION;"))

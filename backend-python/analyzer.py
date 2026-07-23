@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from database import (SessionLocal, MarketData, TradingSignal, PortfolioState, BotLog,
                       TradeHistory, engine, init_db, init_shared_db, count_active_positions,
-                      save_macro_state, get_macro_trend,
+                      save_macro_state, get_macro_trend, update_symbol_execution_data,
                       SLOT_BUDGET, MAX_CONCURRENT_POSITIONS, TOTAL_CAPITAL)
 from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     MACRO_SMA_PERIOD, MACRO_SDC_MULTIPLIER,
@@ -1878,6 +1878,17 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             traceback.print_exc()
         # ════════════════════════════════════════════════════════════════════
 
+        # ── 8. CRITICAL FIX: Unconditionally update dashboard state ──
+        # Guarantees the Laravel API serves real-time accurate macro trends
+        # and indicator values (RSI, Z-Score) regardless of the trading decision.
+        update_symbol_execution_data(
+            symbol=symbol,
+            current_price=current_price,
+            rsi=current_rsi,
+            z_score_15m=current_zscore,
+            z_score_1h=macro_zscore,
+            macro_trend=macro_trend
+        )
 
     except Exception as e:
         session.rollback()
