@@ -23,6 +23,7 @@ BINANCE_TICKER_URL       = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/24hr"
 BINANCE_EXCHANGE_INFO_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/exchangeInfo"
 
 TOP_N = 15
+MIN_QUOTE_VOLUME = 10_000_000.0  # Minimum 24h quote volume ($10M USDT)
 
 # Stablecoin / fiat-pegged quote pairs to exclude.
 # These end with USDT but do not represent tradeable crypto assets.
@@ -86,8 +87,9 @@ def fetch_top_symbols():
       2. Fetch all 24h tickers from /fapi/v1/ticker/24hr.
       3. Accept only symbols present in the active perpetuals set.
       4. Reject stablecoin / fiat-pegged pairs via STABLECOIN_BLACKLIST.
-      5. Sort the entire valid universe by 24h quoteVolume descending.
-      6. Return the Top N most liquid pairs.
+      5. Enforce minimum 24h quote volume of $10M USDT.
+      6. Sort the entire valid universe by 24h quoteVolume descending.
+      7. Return the Top N most liquid pairs.
 
     Returns:
         list[dict]: Volume-ranked list of the top N candidate dicts,
@@ -120,6 +122,10 @@ def fetch_top_symbols():
 
         quote_volume    = float(t.get('quoteVolume', 0))
         price_change_pct = float(t.get('priceChangePercent', 0))
+
+        # Enforce hard minimum 24h Quote Volume of $10M USDT
+        if quote_volume < MIN_QUOTE_VOLUME:
+            continue
 
         candidates.append({
             'symbol':          symbol,

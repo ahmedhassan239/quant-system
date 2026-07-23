@@ -624,16 +624,22 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
     session = SessionLocal()
     try:
-        # ── 0. Fetch macro trend from shared DB ──
+        # ── 0. Fetch macro trend from shared DB (Strict Requirement — No Bypass) ──
         macro_info = get_macro_trend(symbol)
-        # ⚠️ TESTING BYPASS: Allow trades even without macro trend data
-        if macro_info is None:
-            print(f"⚠️ [{symbol}] No macro trend — bypassed for testing (MTF disabled).", flush=True)
-            macro_info = {'macro_trend': 'UPTREND', 'z_score': 0.0, 'sma_50': 0.0}
+        if (
+            macro_info is None
+            or not macro_info.get('macro_trend')
+            or macro_info.get('sma_50') is None
+            or float(macro_info.get('sma_50', 0)) <= 0
+        ):
+            msg = f"🛑 [SKIP] {symbol}: Insufficient 1h Macro history or invalid SMA-50."
+            print(msg, flush=True)
+            log_to_db(session, symbol, "SKIP", msg)
+            return False
 
         macro_trend = macro_info['macro_trend']
-        macro_zscore = macro_info['z_score']
-        macro_sma = macro_info['sma_50']
+        macro_zscore = float(macro_info['z_score']) if macro_info.get('z_score') is not None else 0.0
+        macro_sma = float(macro_info['sma_50'])
         macro_emoji = "🟢" if macro_trend == 'UPTREND' else "🔴"
 
         print(f"  {macro_emoji} [{symbol}] Macro: {macro_trend} | "
@@ -997,6 +1003,20 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         msg = f"🧪 [{symbol}] SHORT Strategy C (TREND_ALIGN): Macro={macro_trend} + Price < SMA-50"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
+
+            # ── Stop-Loss Integrity Guard ──
+            if decision in ('LONG', 'SHORT'):
+                if new_stop_loss <= 0.0 or pd.isna(new_stop_loss):
+                    if decision == 'LONG':
+                        new_stop_loss = current_price * (1.0 - STOP_LOSS_PCT)
+                    else:  # SHORT
+                        new_stop_loss = current_price * (1.0 + STOP_LOSS_PCT)
+
+                if new_stop_loss <= 0.0 or pd.isna(new_stop_loss):
+                    msg = f"🛑 [SKIP] {symbol}: Unable to calculate valid Stop-Loss price for {decision}."
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "SKIP", msg)
+                    decision = 'WAIT'
 
             # ── 🚨 DEBUG LOGGER: Why is the bot skipping? ──
             if decision == 'WAIT' and not risk_exit_triggered:
@@ -1651,6 +1671,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         _exec_logger.warning(
                             f"⚠️ [SKIP EXECUTION] Allocated amount too small: "
                             f"${allocated_usdt:.2f} for {symbol} {direction}."
+                        )
+                    elif new_stop_loss <= 0.0 or pd.isna(new_stop_loss):
+                        _exec_logger.error(
+                            f"🛑 [SKIP EXECUTION] {symbol} {direction}: Invalid or missing Stop-Loss price (${new_stop_loss}). "
+                            f"Binance order placement blocked."
                         )
                     else:
                         try:
