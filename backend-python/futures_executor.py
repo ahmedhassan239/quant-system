@@ -12,6 +12,7 @@ containers share this module.
 """
 
 import logging
+import requests
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from config import (BINANCE_API_KEY, BINANCE_API_SECRET,
@@ -19,6 +20,27 @@ from config import (BINANCE_API_KEY, BINANCE_API_SECRET,
 
 logger = logging.getLogger('FuturesExecutor')
 logger.setLevel(logging.DEBUG)
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    """Check if an exception is a Binance rate limit / IP ban error (-1003 or 418)."""
+    if isinstance(exc, BinanceAPIException):
+        if getattr(exc, 'code', None) in (-1003, 418) or getattr(exc, 'status_code', None) in (418, 429):
+            return True
+        msg = str(exc)
+        if '-1003' in msg or '418' in msg or 'IP banned' in msg or 'way too many requests' in msg.lower():
+            return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        if exc.response is not None and exc.response.status_code in (418, 429):
+            return True
+        msg = str(exc)
+        if '418' in msg or '-1003' in msg or '429' in msg:
+            return True
+    msg = str(exc)
+    if '-1003' in msg or '418' in msg or 'IP banned' in msg:
+        return True
+    return False
+
 
 # Ensure at least a console handler exists
 if not logger.handlers:
@@ -231,14 +253,65 @@ def close_position(client: Client, symbol: str, direction: str,
 #  POSITION & BALANCE QUERIES
 # ──────────────────────────────────────────────────────────────────────
 
-def get_position_info(client: Client, symbol: str) -> dict:
+def fetch_all_positions(client: Client) -> dict[str, dict]:
+    """
+    Fetch all active Futures positions from Binance in a SINGLE API call.
+
+    Returns:
+        dict[str, dict]: A mapping of symbol -> position dict.
+        Raises BinanceAPIException or requests.exceptions.HTTPError if API request fails.
+    """
+    if not client:
+        return {}
+
+    try:
+        raw_positions = client.futures_position_information()
+        pos_dict = {}
+        for pos in raw_positions:
+            sym = pos.get('symbol')
+            amt = float(pos.get('positionAmt', 0))
+            if sym:
+                pos_dict[sym] = {
+                    'symbol': sym,
+                    'size': abs(amt),
+                    'direction': ('LONG' if amt > 0 else 'SHORT') if amt != 0 else None,
+                    'entry_price': float(pos.get('entryPrice', 0)) if amt != 0 else 0.0,
+                    'unrealized_pnl': float(pos.get('unRealizedProfit', 0)) if amt != 0 else 0.0,
+                }
+        return pos_dict
+    except (BinanceAPIException, requests.exceptions.HTTPError) as e:
+        if is_rate_limit_error(e):
+            logger.error(f"⚠️ API Rate Limit hit in fetch_all_positions: {e}")
+        else:
+            logger.error(f"Failed to fetch global position information: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error fetching global position information: {e}")
+        raise
+
+
+def get_position_info(client: Client, symbol: str, cached_positions: dict = None) -> dict:
     """
     Fetch current Futures position for a symbol.
+    If `cached_positions` is provided, uses it to avoid API calls.
 
     Returns:
         dict with keys: symbol, size, direction, entry_price, unrealized_pnl
-        size=0 means no open position.
+
+    Raises:
+        BinanceAPIException, requests.exceptions.HTTPError if API fails (when not cached).
     """
+    if cached_positions is not None:
+        if symbol in cached_positions:
+            return cached_positions[symbol]
+        return {
+            'symbol': symbol,
+            'size': 0.0,
+            'direction': None,
+            'entry_price': 0.0,
+            'unrealized_pnl': 0.0,
+        }
+
     try:
         positions = client.futures_position_information(symbol=symbol)
         for pos in positions:
@@ -259,14 +332,12 @@ def get_position_info(client: Client, symbol: str) -> dict:
             'entry_price': 0.0,
             'unrealized_pnl': 0.0,
         }
-    except BinanceAPIException as e:
-        logger.error(f"[{symbol}] Failed to fetch position info: [{e.code}] {e.message}")
-        return {'symbol': symbol, 'size': 0.0, 'direction': None,
-                'entry_price': 0.0, 'unrealized_pnl': 0.0}
+    except (BinanceAPIException, requests.exceptions.HTTPError) as e:
+        logger.error(f"[{symbol}] Failed to fetch position info: {e}")
+        raise
     except Exception as e:
         logger.error(f"[{symbol}] Unexpected error fetching position info: {e}")
-        return {'symbol': symbol, 'size': 0.0, 'direction': None,
-                'entry_price': 0.0, 'unrealized_pnl': 0.0}
+        raise
 
 
 def get_futures_balance(client: Client) -> float:
@@ -287,6 +358,8 @@ def get_futures_balance(client: Client) -> float:
         return 0.0
     except BinanceAPIException as e:
         logger.error(f"Failed to fetch Futures balance: [{e.code}] {e.message}")
+        if is_rate_limit_error(e):
+            raise
         return 0.0
     except Exception as e:
         logger.error(f"Unexpected error fetching Futures balance: {e}")
@@ -297,15 +370,18 @@ def get_futures_balance(client: Client) -> float:
 #  GLOBAL POSITION COUNTER (Live Binance)
 # ──────────────────────────────────────────────────────────────────────
 
-def count_all_open_positions(client: Client) -> int:
+def count_all_open_positions(client: Client, cached_positions: dict = None) -> int:
     """
     Count ALL open Futures positions on Binance (any symbol with positionAmt != 0).
-    This is the source-of-truth counter that prevents race conditions
-    vs. counting from the local DB.
+    Uses `cached_positions` if provided to avoid extra API calls.
 
     Returns:
         int: number of symbols with an active position.
     """
+    if cached_positions is not None:
+        count = sum(1 for pos in cached_positions.values() if pos.get('size', 0) > 0)
+        return count
+
     try:
         positions = client.futures_position_information()
         count = 0
@@ -315,8 +391,10 @@ def count_all_open_positions(client: Client) -> int:
                 count += 1
         logger.debug(f"Live Binance open positions: {count}")
         return count
-    except BinanceAPIException as e:
-        logger.error(f"Failed to count open positions: [{e.code}] {e.message}")
+    except (BinanceAPIException, requests.exceptions.HTTPError) as e:
+        logger.error(f"Failed to count open positions: {e}")
+        if is_rate_limit_error(e):
+            raise
         return 999  # Fail-safe: assume max so we don't open more
     except Exception as e:
         logger.error(f"Unexpected error counting open positions: {e}")

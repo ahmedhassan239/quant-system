@@ -448,12 +448,26 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
     db_pnl_usd = None
 
     if futures_client:
-        pos_info = get_position_info(futures_client, symbol)
-        if pos_info and pos_info['size'] > 0:
-            db_decision = pos_info['direction']  # Force 'LONG' or 'SHORT'
-            db_position_direction = pos_info['direction']
-            db_entry_price = pos_info['entry_price']
-            db_pnl_usd = pos_info['unrealized_pnl']
+        try:
+            pos_info = get_position_info(futures_client, symbol)
+            if pos_info and pos_info['size'] > 0:
+                db_decision = pos_info['direction']  # Force 'LONG' or 'SHORT'
+                db_position_direction = pos_info['direction']
+                db_entry_price = pos_info['entry_price']
+                db_pnl_usd = pos_info['unrealized_pnl']
+        except (BinanceAPIException, requests.exceptions.HTTPError, Exception) as exc:
+            if is_rate_limit_error(exc):
+                print(f"⚠️ API Rate Limit hit in _save_tracking_update for {symbol}. Preserving DB state.", flush=True)
+            else:
+                print(f"⚠️ API error in _save_tracking_update for {symbol} ({exc}). Preserving DB state.", flush=True)
+
+    sl_val = portfolio.get('stop_loss_price') if portfolio.get('stop_loss_price') is not None else portfolio.get('stop_loss')
+    if sl_val is None or (isinstance(sl_val, (int, float)) and sl_val <= 0):
+        last_rec = session.query(PortfolioState).filter(
+            PortfolioState.symbol == symbol
+        ).order_by(PortfolioState.id.desc()).first()
+        if last_rec:
+            sl_val = getattr(last_rec, 'stop_loss_price', None) or getattr(last_rec, 'stop_loss', None)
 
     portfolio_record = PortfolioState(
         timestamp=datetime.now(),
@@ -469,8 +483,8 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
         total_cost=float(portfolio['total_cost']),
         highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
         lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
-        stop_loss_price=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
-        stop_loss=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
+        stop_loss_price=float(sl_val) if sl_val is not None and float(sl_val) > 0 else None,
+        stop_loss=float(sl_val) if sl_val is not None and float(sl_val) > 0 else None,
         strategy=portfolio.get('strategy'),
         trailing_active=portfolio.get('trailing_active', False),
         pnl_pct=None,
@@ -1068,12 +1082,14 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         if decision == 'WAIT' and not risk_exit_triggered:
             # Check live Binance position (source of truth)
             if futures_client:
-                pos_info = get_position_info(futures_client, symbol)
-                if pos_info and pos_info['size'] > 0:
-                    db_decision = pos_info['direction']  # 'LONG' or 'SHORT'
-                    print(f"  🔒 [{symbol}] DB decision synced to '{db_decision}' "
-                          f"(live Binance position, size={pos_info['size']})", flush=True)
-
+                try:
+                    pos_info = get_position_info(futures_client, symbol)
+                    if pos_info and pos_info['size'] > 0:
+                        db_decision = pos_info['direction']  # 'LONG' or 'SHORT'
+                        print(f"  🔒 [{symbol}] DB decision synced to '{db_decision}' "
+                              f"(live Binance position, size={pos_info['size']})", flush=True)
+                except Exception as exc:
+                    print(f"⚠️ [{symbol}] Signal position sync check skipped ({exc})", flush=True)
             # Fallback: local portfolio state
             if db_decision == 'WAIT' and in_position and pos_direction in ('LONG', 'SHORT'):
                 db_decision = pos_direction
@@ -1480,22 +1496,28 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             db_unrealized_pnl = None
 
             if futures_client:
-                pos_info = get_position_info(futures_client, symbol)
-                if pos_info and pos_info['size'] > 0:
-                    db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
-                    db_pos_direction = pos_info['direction']
-                    db_entry_price = pos_info['entry_price']
-                    db_unrealized_pnl = pos_info['unrealized_pnl']
-                    in_position = True  # Binance confirms position is open
-                    print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
-                          f"Entry=${db_entry_price:.2f} | "
-                          f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
-                elif pos_info and pos_info['size'] == 0.0:
-                    if in_position and db_pos_direction in ('LONG', 'SHORT'):
-                        print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
-                        db_decision = 'MANUAL_CLOSE'
-                        portfolio['asset_balance'] = 0.0
-                        in_position = False
+                try:
+                    pos_info = get_position_info(futures_client, symbol)
+                    if pos_info and pos_info['size'] > 0:
+                        db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
+                        db_pos_direction = pos_info['direction']
+                        db_entry_price = pos_info['entry_price']
+                        db_unrealized_pnl = pos_info['unrealized_pnl']
+                        in_position = True  # Binance confirms position is open
+                        print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
+                              f"Entry=${db_entry_price:.2f} | "
+                              f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
+                    elif pos_info and pos_info['size'] == 0.0:
+                        if in_position and db_pos_direction in ('LONG', 'SHORT'):
+                            print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
+                            db_decision = 'MANUAL_CLOSE'
+                            portfolio['asset_balance'] = 0.0
+                            in_position = False
+                except (BinanceAPIException, requests.exceptions.HTTPError, Exception) as exc:
+                    if is_rate_limit_error(exc):
+                        print(f"⚠️ [{symbol}] API Rate Limit hit during position sync (-1003/418). PRESERVING DB state.", flush=True)
+                    else:
+                        print(f"⚠️ [{symbol}] Position sync error ({exc}). PRESERVING DB state.", flush=True)
 
             # Fallback: if db_decision is still WAIT but local portfolio has a position
             if db_decision == 'WAIT' and in_position and db_pos_direction in ('LONG', 'SHORT'):
@@ -1523,6 +1545,16 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 # ── Always save synced PortfolioState row ──
                 total_value = float(portfolio['usdt_balance']) + (float(portfolio['asset_balance']) * cp)
                 sl_val = portfolio.get('stop_loss_price') if portfolio.get('stop_loss_price') is not None else portfolio.get('stop_loss')
+                if sl_val is None or (isinstance(sl_val, (int, float)) and sl_val <= 0):
+                    last_rec = session.query(PortfolioState).filter(
+                        PortfolioState.symbol == symbol,
+                        PortfolioState.position_direction == db_pos_direction
+                    ).order_by(PortfolioState.id.desc()).first()
+                    if last_rec:
+                        sl_val = getattr(last_rec, 'stop_loss_price', None) or getattr(last_rec, 'stop_loss', None)
+                        if sl_val and float(sl_val) > 0:
+                            portfolio['stop_loss_price'] = float(sl_val)
+                            portfolio['stop_loss'] = float(sl_val)
 
                 portfolio_record = PortfolioState(
                     timestamp=datetime.now(),

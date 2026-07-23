@@ -89,6 +89,7 @@ def scanner_job():
         # ── Macro Trend Engine (1h) — analysis only, no orders ──
         for sym in all_symbols:
             run_macro_analyzer(symbol=sym)
+            time.sleep(0.5)
     else:
         # ── Execution Engine (15m) — trades with MTF confluence ──
         import logging
@@ -111,17 +112,22 @@ def scanner_job():
                 if current_open_count >= MAX_GLOBAL_POSITIONS:
                     logger.warning(f"Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.")
                     print(f"🛑 Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.", flush=True)
+                    time.sleep(0.5)
                     continue
 
                 if trades_opened_this_cycle >= 3:
                     logger.warning(f"Max trades per cycle (3) reached. Cooling down for {sym}.")
                     print(f"🛑 Max trades per cycle (3) reached. Skipping new entry for {sym}.", flush=True)
+                    time.sleep(0.5)
                     continue
 
                 newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
                 if newly_executed:
                     current_open_count += 1
                     trades_opened_this_cycle += 1
+
+            # ── Rate-limit protection: 500ms delay between symbol iterations ──
+            time.sleep(0.5)
 
     print("\nJob completed. Sleeping until next interval...", flush=True)
     print("="*60 + "\n", flush=True)
