@@ -1,12 +1,13 @@
 """
-scanner.py — Multi-Asset Radar for the Quant Futures Bot
+scanner.py — Dynamic Full-Market Radar for the Quant Futures Bot
 ====================================================================
-Dynamic Whitelist Scanner: Fetches live 24h ticker data from Binance
-Futures, filters strictly against a curated whitelist of ~50 major
-real-world coins, sorts by 24h quote volume, and returns the Top N.
+TRUE Full-Market Scanner: Fetches live 24h ticker data from Binance
+Futures for ALL active USDT perpetual pairs, cross-checks against
+/fapi/v1/exchangeInfo for TRADING status, filters out stablecoin pairs,
+sorts the entire valid universe by 24h quoteVolume descending, and
+returns the Top N most liquid pairs dynamically.
 
-This ensures testnet garbage coins (TACUSDT, KORUUSDT, Chinese-char
-symbols, etc.) are automatically excluded without needing regex hacks.
+No whitelist. No static symbol list. Pure liquidity-ranked discovery.
 
 Usage:
     python scanner.py
@@ -18,33 +19,58 @@ from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME, ALERT_PREFIX
 # ──────────────────────────────────────────────────────────────────────
 #  CONFIGURATION
 # ──────────────────────────────────────────────────────────────────────
-BINANCE_TICKER_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/24hr"
+BINANCE_TICKER_URL       = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/24hr"
+BINANCE_EXCHANGE_INFO_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/exchangeInfo"
 
 TOP_N = 15
 
-# ──────────────────────────────────────────────────────────────────────
-#  KNOWN MAJORS WHITELIST
-#  Only symbols in this set will be accepted by the dynamic scanner.
-#  Add/remove pairs as needed — this is the single source of truth.
-# ──────────────────────────────────────────────────────────────────────
-KNOWN_MAJORS_WHITELIST = {
-    # ── Top 10 by Market Cap ──
-    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
-    'ADAUSDT', 'DOGEUSDT', 'TRXUSDT', 'AVAXUSDT', 'DOTUSDT',
-    'ZECUSDT', 'PAXGUSDT','TRXUSDT','XLMUSDT','HBARUSDT',
-    # ── Large Cap Altcoins ──
-    'LINKUSDT', 'MATICUSDT', 'NEARUSDT', 'UNIUSDT', 'LTCUSDT',
-    'BCHUSDT', 'APTUSDT', 'FILUSDT', 'ARBUSDT', 'OPUSDT',
-    'ATOMUSDT', 'ICPUSDT', 'ETCUSDT', 'XLMUSDT', 'INJUSDT',
-    'IMXUSDT', 'SUIUSDT', 'SEIUSDT', 'TIAUSDT', 'STXUSDT',
-    # ── Mid Cap / High Volume ──
-    'FETUSDT', 'RENDERUSDT', 'AAVEUSDT', 'GRTUSDT', 'ALGOUSDT',
-    'FTMUSDT', 'SANDUSDT', 'MANAUSDT', 'AXSUSDT', 'GALAUSDT',
-    'THETAUSDT', 'EOSUSDT', 'MKRUSDT', 'SNXUSDT', 'COMPUSDT',
-    'LDOUSDT', 'RUNEUSDT', 'ENAUSDT', 'WLDUSDT', 'JUPUSDT',
-    # ── Meme / Momentum ──
-    'SHIBUSDT', 'PEPEUSDT', 'WIFUSDT', 'BONKUSDT', 'FLOKIUSDT',
+# Stablecoin / fiat-pegged quote pairs to exclude.
+# These end with USDT but do not represent tradeable crypto assets.
+STABLECOIN_BLACKLIST = {
+    'USDCUSDT', 'BUSDUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'DAIUSDT',
+    'USDPUSDT', 'EURUSDT', 'GBPUSDT', 'AUDUSDT', 'JPYUSDT',
 }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ACTIVE SYMBOL RESOLVER  (via /fapi/v1/exchangeInfo)
+# ──────────────────────────────────────────────────────────────────────
+
+def _fetch_active_usdt_perpetuals() -> set | None:
+    """
+    Query /fapi/v1/exchangeInfo and return the set of all USDT-margined
+    PERPETUAL contract symbols whose status is 'TRADING'.
+
+    This is the authoritative source for active contracts — it eliminates
+    testnet garbage, delisted symbols, and non-perpetual instruments.
+
+    Returns:
+        set[str]  — active symbols, or None if the request fails
+                    (caller falls back to ticker-only filtering).
+    """
+    try:
+        resp = requests.get(BINANCE_EXCHANGE_INFO_URL, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        print(
+            f"⚠️  [RADAR] exchangeInfo unavailable ({exc}). "
+            "Falling back to ticker-only USDT filter.",
+            flush=True,
+        )
+        return None
+
+    active = set()
+    for sym in data.get('symbols', []):
+        if (
+            sym.get('status')       == 'TRADING'
+            and sym.get('contractType') == 'PERPETUAL'
+            and sym.get('quoteAsset')   == 'USDT'
+        ):
+            active.add(sym['symbol'])
+
+    print(f"  [RADAR] exchangeInfo resolved {len(active)} active USDT perpetuals.", flush=True)
+    return active
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -53,13 +79,24 @@ KNOWN_MAJORS_WHITELIST = {
 
 def fetch_top_symbols():
     """
-    Fetch all 24h tickers from Binance Futures, accept ONLY symbols
-    present in KNOWN_MAJORS_WHITELIST, sort by 24h quoteVolume
-    descending, and return the Top N most liquid pairs.
+    TRUE FULL-MARKET DYNAMIC SCAN — no whitelist.
+
+    Pipeline:
+      1. Resolve active USDT PERPETUAL contracts via /fapi/v1/exchangeInfo.
+      2. Fetch all 24h tickers from /fapi/v1/ticker/24hr.
+      3. Accept only symbols present in the active perpetuals set.
+      4. Reject stablecoin / fiat-pegged pairs via STABLECOIN_BLACKLIST.
+      5. Sort the entire valid universe by 24h quoteVolume descending.
+      6. Return the Top N most liquid pairs.
 
     Returns:
-        list[dict]: Sorted list of candidate dicts.
+        list[dict]: Volume-ranked list of the top N candidate dicts,
+                    preserving strict quoteVolume descending order.
     """
+    # ── Step 1: Active perpetual universe ─────────────────────────────
+    active_perps = _fetch_active_usdt_perpetuals()
+
+    # ── Step 2: Fetch all 24h tickers ─────────────────────────────────
     response = requests.get(BINANCE_TICKER_URL, timeout=15)
     response.raise_for_status()
     tickers = response.json()
@@ -67,23 +104,31 @@ def fetch_top_symbols():
     candidates = []
 
     for t in tickers:
-        symbol = t['symbol']
+        symbol = t.get('symbol', '')
 
-        # Strict whitelist gate — reject everything not in the list
-        if symbol not in KNOWN_MAJORS_WHITELIST:
+        # Must be a USDT-quoted pair
+        if not symbol.endswith('USDT'):
             continue
 
-        quote_volume = float(t.get('quoteVolume', 0))
-        price_change_pct = abs(float(t.get('priceChangePercent', 0)))
+        # Must be an active USDT perpetual (when exchangeInfo resolved)
+        if active_perps is not None and symbol not in active_perps:
+            continue
+
+        # Exclude stablecoin / fiat pairs
+        if symbol in STABLECOIN_BLACKLIST:
+            continue
+
+        quote_volume    = float(t.get('quoteVolume', 0))
+        price_change_pct = float(t.get('priceChangePercent', 0))
 
         candidates.append({
-            'symbol': symbol,
+            'symbol':          symbol,
             'price_change_pct': price_change_pct,
-            'quote_volume': quote_volume,
-            'last_price': float(t.get('lastPrice', 0)),
+            'quote_volume':    quote_volume,
+            'last_price':      float(t.get('lastPrice', 0)),
         })
 
-    # Sort by highest 24h quote volume (most liquid first)
+    # ── Step 3: Rank by 24h quoteVolume, take Top N ───────────────────
     candidates.sort(key=lambda x: x['quote_volume'], reverse=True)
 
     return candidates[:TOP_N]
@@ -91,31 +136,37 @@ def fetch_top_symbols():
 
 def scan():
     """
-    Run the dynamic whitelist scanner and return the list of symbols
-    to trade. Fetches live data, filters by whitelist, ranks by volume.
+    Run the full-market dynamic radar and return the volume-ranked
+    list of top 15 symbols to trade.
+
+    Symbols are returned in strict descending quoteVolume order
+    (e.g. [BTCUSDT, ETHUSDT, SOLUSDT, ...]).
+    No static overrides or ALWAYS_INCLUDE lists are applied.
     """
-    top = fetch_top_symbols()
+    top     = fetch_top_symbols()
     symbols = [c['symbol'] for c in top]
 
-    # Ensure ALWAYS_INCLUDE symbols are in the list
-    ALWAYS_INCLUDE = ['PAXGUSDT']
-    for sym in ALWAYS_INCLUDE:
-        if sym not in symbols:
-            symbols.append(sym)
-
-    # Pretty-print the results
+    # ── Pretty-print the ranked results ───────────────────────────────
     print("=" * 70, flush=True)
-    print(f"  {ALERT_PREFIX} DYNAMIC RADAR — Top {TOP_N} Whitelisted USDT Futures Pairs", flush=True)
+    print(
+        f"  🚀 [LIVE - 5m EXEC] DYNAMIC RADAR — "
+        f"Top {TOP_N} Full Market Liquid USDT Futures Pairs",
+        flush=True,
+    )
     print("=" * 70, flush=True)
-    print(f"  {'#':<4} {'Symbol':<14} {'Price':>12} {'24h Chg %':>10} {'24h Vol ($M)':>14}", flush=True)
+    print(
+        f"  {'#':<4} {'Symbol':<14} {'Price':>12} {'24h Chg %':>10} {'24h Vol ($M)':>14}",
+        flush=True,
+    )
     print("-" * 70, flush=True)
 
     for i, c in enumerate(top, 1):
         vol_m = c['quote_volume'] / 1_000_000
-        sign = "+" if c['price_change_pct'] >= 0 else ""
+        chg   = c['price_change_pct']
+        sign  = "+" if chg >= 0 else ""
         print(
-            f"  {i:<4} {c['symbol']:<14} ${c['last_price']:>10,.2f} "
-            f"{sign}{c['price_change_pct']:>8.2f}% "
+            f"  {i:<4} {c['symbol']:<14} ${c['last_price']:>10,.4f} "
+            f"{sign}{chg:>8.2f}% "
             f"${vol_m:>12,.1f}M",
             flush=True,
         )
@@ -125,10 +176,11 @@ def scan():
 
     return symbols
 
+
 def update_radar():
     """
-    Run the scanner and update the active_symbols table in the shared DB.
-    Called every 60 minutes by the Macro engine.
+    Run the full-market scanner and persist the active symbol list to
+    the shared DB. Called every 5 minutes by the execution scheduler.
     """
     from database import update_active_symbols
     symbols = scan()
