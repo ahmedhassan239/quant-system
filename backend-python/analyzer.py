@@ -1498,26 +1498,27 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             if futures_client:
                 try:
                     pos_info = get_position_info(futures_client, symbol)
-                    if pos_info and pos_info['size'] > 0:
-                        db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
-                        db_pos_direction = pos_info['direction']
-                        db_entry_price = pos_info['entry_price']
-                        db_unrealized_pnl = pos_info['unrealized_pnl']
-                        in_position = True  # Binance confirms position is open
-                        print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
-                              f"Entry=${db_entry_price:.2f} | "
-                              f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
-                    elif pos_info and pos_info['size'] == 0.0:
-                        if in_position and db_pos_direction in ('LONG', 'SHORT'):
-                            print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
-                            db_decision = 'MANUAL_CLOSE'
-                            portfolio['asset_balance'] = 0.0
-                            in_position = False
-                except (BinanceAPIException, requests.exceptions.HTTPError, Exception) as exc:
-                    if is_rate_limit_error(exc):
-                        print(f"⚠️ [{symbol}] API Rate Limit hit during position sync (-1003/418). PRESERVING DB state.", flush=True)
+                    if pos_info is not None:
+                        if pos_info['size'] > 0:
+                            db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
+                            db_pos_direction = pos_info['direction']
+                            db_entry_price = pos_info['entry_price']
+                            db_unrealized_pnl = pos_info['unrealized_pnl']
+                            in_position = True  # Binance confirms position is open
+                            print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
+                                  f"Entry=${db_entry_price:.2f} | "
+                                  f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
+                        elif pos_info['size'] == 0.0:
+                            # ONLY clear DB slot if API successfully responded and confirmed size is 0
+                            if in_position and db_pos_direction in ('LONG', 'SHORT'):
+                                print(f"🧹 [{symbol}] Binance confirmed 0 position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
+                                db_decision = 'MANUAL_CLOSE'
+                                portfolio['asset_balance'] = 0.0
+                                in_position = False
                     else:
-                        print(f"⚠️ [{symbol}] Position sync error ({exc}). PRESERVING DB state.", flush=True)
+                        print(f"⚠️ [{symbol}] API error or Rate Limit during position sync. PRESERVING DB state.", flush=True)
+                except Exception as exc:
+                    print(f"⚠️ [{symbol}] Position sync error ({exc}). PRESERVING DB state.", flush=True)
 
             # Fallback: if db_decision is still WAIT but local portfolio has a position
             if db_decision == 'WAIT' and in_position and db_pos_direction in ('LONG', 'SHORT'):

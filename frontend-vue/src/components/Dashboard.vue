@@ -123,7 +123,7 @@
                 </td>
                 <td class="py-4 px-5 text-gray-300 font-mono">${{ pos.entry_price }}</td>
                 <td class="py-4 px-5 text-gray-300 font-mono">${{ pos.current_price }}</td>
-                <td class="py-4 px-5 text-gray-300 font-mono">{{ pos.stop_loss !== 'N/A' ? '$' + Number(pos.stop_loss).toFixed(4) : 'N/A' }}</td>
+                <td class="py-4 px-5 text-gray-300 font-mono">{{ (pos.stop_loss && pos.stop_loss !== 'N/A' && pos.stop_loss !== 'Inactive' && Number(pos.stop_loss) > 0) ? '$' + Number(pos.stop_loss).toFixed(4) : 'Inactive' }}</td>
                 <td class="py-4 px-5 text-gray-300 font-mono">${{ pos.allocated_usdt || '0.00' }}</td>
                 <td class="py-4 px-5 text-right font-bold font-mono" :class="getPnlColor(pos.unrealized_pnl)">
                   ${{ pos.unrealized_pnl }}
@@ -166,7 +166,7 @@
               <div class="text-gray-400">Entry: <span class="text-gray-300 font-mono ml-1">${{ pos.entry_price }}</span></div>
               <div class="text-gray-400">Current: <span class="text-gray-300 font-mono ml-1">${{ pos.current_price }}</span></div>
               <div class="text-gray-400">Margin: <span class="text-gray-300 font-mono ml-1">${{ pos.allocated_usdt || '0.00' }}</span></div>
-              <div class="text-gray-400">Stop Loss: <span class="text-gray-300 font-mono ml-1">{{ pos.stop_loss !== 'N/A' ? '$' + Number(pos.stop_loss).toFixed(4) : 'N/A' }}</span></div>
+              <div class="text-gray-400">Stop Loss: <span class="text-gray-300 font-mono ml-1">{{ (pos.stop_loss && pos.stop_loss !== 'N/A' && pos.stop_loss !== 'Inactive' && Number(pos.stop_loss) > 0) ? '$' + Number(pos.stop_loss).toFixed(4) : 'Inactive' }}</span></div>
             </div>
             
             <div class="flex justify-between items-center mt-2 pt-3 border-t border-gray-800">

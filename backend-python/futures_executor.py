@@ -323,14 +323,8 @@ def get_position_info(client: Client, symbol: str, cached_positions: dict = None
             'unrealized_pnl': 0.0,
         }
     except Exception as e:
-        logger.error(f"[{symbol}] Failed to fetch position info: {e}")
-        return {
-            'symbol': symbol,
-            'size': 0.0,
-            'direction': None,
-            'entry_price': 0.0,
-            'unrealized_pnl': 0.0,
-        }
+        logger.error(f"[{symbol}] Failed to fetch position info from Binance API: {e}")
+        return None
 
 
 def get_futures_balance(client: Client) -> float:

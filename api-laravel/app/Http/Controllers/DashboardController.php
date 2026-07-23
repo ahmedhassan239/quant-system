@@ -101,7 +101,7 @@ class DashboardController extends Controller
             }
 
             $rawSl = $localPos->stop_loss ?: ($localPos->stop_loss_price ?: null);
-            $actualStopLoss = 'N/A';
+            $actualStopLoss = 'Inactive';
             if ($rawSl && (float)$rawSl > 0) {
                 $actualStopLoss = number_format((float)$rawSl, 4, '.', '');
             }
