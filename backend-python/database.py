@@ -329,8 +329,24 @@ def init_db():
     Base.metadata.create_all(bind=engine)
 
 def init_shared_db():
-    """Create the MacroState table in the shared database."""
+    """Create the MacroState / ActiveSymbol tables in the shared database.
+
+    Also runs a safe migration to add the `rank` column to active_symbols
+    if the table already exists from a previous deployment without that column.
+    """
     SharedBase.metadata.create_all(bind=shared_engine)
+
+    # Safe migration: add `rank` to active_symbols if it is missing.
+    # `ALTER TABLE … ADD COLUMN IF NOT EXISTS` is idempotent in PostgreSQL 9.6+.
+    try:
+        with shared_engine.connect() as conn:
+            conn.execute(text(
+                "ALTER TABLE active_symbols ADD COLUMN IF NOT EXISTS rank INTEGER NOT NULL DEFAULT 0;"
+            ))
+            conn.commit()
+    except Exception:
+        # Table may not exist yet (first-time init) — create_all above handles it.
+        pass
 
 
 if __name__ == "__main__":
@@ -347,11 +363,17 @@ class ActiveSymbol(SharedBase):
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, unique=True, nullable=False)
     is_active = Column(Boolean, default=True)
+    # Volume-rank position from the Radar scan (0 = highest volume).
+    # ORDER BY rank ASC reproduces the exact Radar-ordered list.
+    rank = Column(Integer, nullable=False, default=0)
 
 def get_active_symbols():
     """
     Fetch active symbols dynamically from quant_shared_db.
-    Falls back to a default list if the table is missing or empty.
+
+    Returns symbols in STRICT volume-rank order (rank ASC), exactly as
+    the Radar scanner produced them. Falls back to a default list if the
+    table is missing or empty.
     """
     default_symbols = ['BTCUSDT', 'ETHUSDT']
     session = SharedSessionLocal()
@@ -359,9 +381,15 @@ def get_active_symbols():
         if not shared_engine.dialect.has_table(shared_engine.connect(), "active_symbols"):
             return default_symbols
 
-        symbols = session.query(ActiveSymbol).filter(ActiveSymbol.is_active == True).all()
-        symbol_list = [s.symbol for s in symbols]
-        
+        # ORDER BY rank ASC preserves the Radar's volume-ranked order.
+        # Do NOT sort alphabetically or by id — that destroys the ranking.
+        rows = (
+            session.query(ActiveSymbol)
+            .filter(ActiveSymbol.is_active == True)
+            .order_by(ActiveSymbol.rank.asc())
+            .all()
+        )
+        symbol_list = [r.symbol for r in rows]
         return symbol_list if symbol_list else default_symbols
     except Exception as e:
         print(f"⚠️ Error fetching active symbols: {e}")
@@ -371,9 +399,12 @@ def get_active_symbols():
 
 def update_active_symbols(new_symbols: list[str]):
     """
-    Update the active symbols in quant_shared_db.
-    Inserts new symbols, activates existing ones in the list,
-    and deactivates ones not in the list.
+    Update the active symbols in quant_shared_db, preserving the
+    EXACT volume-rank order produced by the Radar scanner.
+
+    The list index (0 = highest 24h volume) is stored in the `rank`
+    column and read back via ORDER BY rank ASC in get_active_symbols(),
+    guaranteeing the execution loop processes symbols in Radar order.
     """
     session = SharedSessionLocal()
     try:
@@ -381,23 +412,29 @@ def update_active_symbols(new_symbols: list[str]):
             print("⚠️ active_symbols table not found. Run init_shared_db() first.")
             return
 
-        # Fetch all existing
         existing_records = session.query(ActiveSymbol).all()
         existing_dict = {record.symbol: record for record in existing_records}
 
-        for sym in new_symbols:
+        # Store rank (index) alongside each symbol so ORDER BY rank ASC
+        # reproduces the Radar's volume-ranked order on read-back.
+        for rank_idx, sym in enumerate(new_symbols):
             if sym in existing_dict:
                 existing_dict[sym].is_active = True
+                existing_dict[sym].rank = rank_idx
             else:
-                new_record = ActiveSymbol(symbol=sym, is_active=True)
+                new_record = ActiveSymbol(symbol=sym, is_active=True, rank=rank_idx)
                 session.add(new_record)
 
         for sym, record in existing_dict.items():
             if sym not in new_symbols:
                 record.is_active = False
-                
+
         session.commit()
-        print(f"Radar updated DB: {len(new_symbols)} active symbols synced.", flush=True)
+        print(
+            f"Radar updated DB: {len(new_symbols)} active symbols synced "
+            f"(rank order preserved).",
+            flush=True,
+        )
     except Exception as e:
         session.rollback()
         print(f"⚠️ Error updating active symbols: {e}", flush=True)

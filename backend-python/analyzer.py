@@ -29,7 +29,7 @@ TRAILING_DISTANCE_PCT = 0.01              # 1.0 % trailing distance from peak/tr
 TRAILING_PULLBACK_PCT = 0.005             # -0.5 % (legacy, kept for compat)
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
-MAX_GLOBAL_POSITIONS = 10                 # Hard limit: max open positions on Binance
+MAX_GLOBAL_POSITIONS = 6                  # Hard limit: max open positions on Binance
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -710,9 +710,22 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['highest_price_since_entry'] = cp
                     highest_price = cp
 
+                # ── Fast Take-Profit (+1.0%) ──
+                # Capture quick gains immediately before TSL or SL logic.
+                if not risk_exit_triggered and unrealized_pct >= 0.01:
+                    msg = (f"🎯 QUICK TP HIT: {symbol} LONG at {unrealized_pct*100:+.2f}% PnL "
+                           f"(entry=${ep:.4f}, current=${cp:.4f})")
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "EXIT", msg)
+                    portfolio = _close_position_handler(
+                        portfolio, current_price, symbol, session, 'QUICK_TP',
+                        futures_client, bullish_ob, bearish_ob, current_rsi,
+                        current_zscore, macro_info)
+                    risk_exit_triggered = True
+
                 # ── Trailing Stop Loss (Profit-Locking) ──
                 # Only activates once unrealized PnL >= TRAILING_ACTIVATE_PCT
-                if unrealized_pct >= TRAILING_ACTIVATE_PCT:
+                if not risk_exit_triggered and unrealized_pct >= TRAILING_ACTIVATE_PCT:
                     if not trailing_active:
                         trailing_active = True
                         portfolio['trailing_active'] = True
@@ -753,7 +766,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         print(f"Warning: Failed to persist trailing SL to DB: {e}", flush=True)
 
                 # ── Check Stop Loss hit ──
-                if stop_loss > 0 and cp <= stop_loss:
+                if not risk_exit_triggered and stop_loss > 0 and cp <= stop_loss:
                     sl_type = 'TRAILING_STOP' if trailing_active else 'STOP_LOSS'
                     msg = (f"🚨 [{symbol}] LONG {sl_type} HIT at ${cp:.2f} "
                            f"(SL: ${stop_loss:.2f}) — EXECUTING CLOSE ON BINANCE")
@@ -765,6 +778,33 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         current_zscore, macro_info)
                     risk_exit_triggered = True
 
+                # ── Stagnant Trade Closer (>2h open, flat PnL) ──
+                # Frees frozen capital slots when a position goes sideways.
+                if not risk_exit_triggered and in_position:
+                    first_entry_row = (
+                        session.query(PortfolioState)
+                        .filter(
+                            PortfolioState.symbol == symbol,
+                            PortfolioState.position_direction == 'LONG',
+                        )
+                        .order_by(PortfolioState.id.asc())
+                        .first()
+                    )
+                    if first_entry_row:
+                        open_seconds = (datetime.now() - first_entry_row.timestamp).total_seconds()
+                        if open_seconds > 7200 and -0.005 <= unrealized_pct <= 0.005:
+                            open_hours = open_seconds / 3600
+                            msg = (f"⏰ STAGNANT POSITION CLOSED: {symbol} LONG open for "
+                                   f"{open_hours:.1f}h with flat PnL ({unrealized_pct*100:+.2f}%). "
+                                   f"Freeing slot for fresh opportunities.")
+                            print(msg, flush=True)
+                            log_to_db(session, symbol, "EXIT", msg)
+                            portfolio = _close_position_handler(
+                                portfolio, current_price, symbol, session, 'STAGNANT',
+                                futures_client, bullish_ob, bearish_ob, current_rsi,
+                                current_zscore, macro_info)
+                            risk_exit_triggered = True
+
 
             elif pos_direction == 'SHORT':
                 unrealized_pct = (ep - cp) / ep
@@ -774,9 +814,22 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['lowest_price_since_entry'] = cp
                     lowest_price = cp
 
+                # ── Fast Take-Profit (+1.0%) ──
+                # Capture quick gains immediately before TSL or SL logic.
+                if not risk_exit_triggered and unrealized_pct >= 0.01:
+                    msg = (f"🎯 QUICK TP HIT: {symbol} SHORT at {unrealized_pct*100:+.2f}% PnL "
+                           f"(entry=${ep:.4f}, current=${cp:.4f})")
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "EXIT", msg)
+                    portfolio = _close_position_handler(
+                        portfolio, current_price, symbol, session, 'QUICK_TP',
+                        futures_client, bullish_ob, bearish_ob, current_rsi,
+                        current_zscore, macro_info)
+                    risk_exit_triggered = True
+
                 # ── Trailing Stop Loss (Profit-Locking) ──
                 # Only activates once unrealized PnL >= TRAILING_ACTIVATE_PCT
-                if unrealized_pct >= TRAILING_ACTIVATE_PCT:
+                if not risk_exit_triggered and unrealized_pct >= TRAILING_ACTIVATE_PCT:
                     if not trailing_active:
                         trailing_active = True
                         portfolio['trailing_active'] = True
@@ -817,7 +870,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         print(f"Warning: Failed to persist trailing SL to DB: {e}", flush=True)
 
                 # ── Check Stop Loss hit ──
-                if stop_loss > 0 and cp >= stop_loss:
+                if not risk_exit_triggered and stop_loss > 0 and cp >= stop_loss:
                     sl_type = 'TRAILING_STOP' if trailing_active else 'STOP_LOSS'
                     msg = (f"🚨 [{symbol}] SHORT {sl_type} HIT at ${cp:.2f} "
                            f"(SL: ${stop_loss:.2f}) — EXECUTING CLOSE ON BINANCE")
@@ -829,7 +882,34 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         current_zscore, macro_info)
                     risk_exit_triggered = True
 
-        # ── 3.5 Detect Breakouts ──
+                # ── Stagnant Trade Closer (>2h open, flat PnL) ──
+                # Frees frozen capital slots when a position goes sideways.
+                if not risk_exit_triggered and in_position:
+                    first_entry_row = (
+                        session.query(PortfolioState)
+                        .filter(
+                            PortfolioState.symbol == symbol,
+                            PortfolioState.position_direction == 'SHORT',
+                        )
+                        .order_by(PortfolioState.id.asc())
+                        .first()
+                    )
+                    if first_entry_row:
+                        open_seconds = (datetime.now() - first_entry_row.timestamp).total_seconds()
+                        if open_seconds > 7200 and -0.005 <= unrealized_pct <= 0.005:
+                            open_hours = open_seconds / 3600
+                            msg = (f"⏰ STAGNANT POSITION CLOSED: {symbol} SHORT open for "
+                                   f"{open_hours:.1f}h with flat PnL ({unrealized_pct*100:+.2f}%). "
+                                   f"Freeing slot for fresh opportunities.")
+                            print(msg, flush=True)
+                            log_to_db(session, symbol, "EXIT", msg)
+                            portfolio = _close_position_handler(
+                                portfolio, current_price, symbol, session, 'STAGNANT',
+                                futures_client, bullish_ob, bearish_ob, current_rsi,
+                                current_zscore, macro_info)
+                            risk_exit_triggered = True
+
+
         bullish_breakout, bearish_breakout = detect_consolidation_breakout(df)
 
         # ──────────────────────────────────────────────────────────
