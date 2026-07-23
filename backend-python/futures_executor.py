@@ -394,7 +394,8 @@ def count_all_open_positions(client: Client, cached_positions: dict = None) -> i
     except (BinanceAPIException, requests.exceptions.HTTPError) as e:
         logger.error(f"Failed to count open positions: {e}")
         if is_rate_limit_error(e):
-            raise
+            from analyzer import MAX_GLOBAL_POSITIONS
+            return MAX_GLOBAL_POSITIONS
         return 999  # Fail-safe: assume max so we don't open more
     except Exception as e:
         logger.error(f"Unexpected error counting open positions: {e}")

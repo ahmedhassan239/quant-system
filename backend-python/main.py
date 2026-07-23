@@ -48,89 +48,98 @@ def scanner_job():
     print("\n" + "="*60, flush=True)
     print(f"{ALERT_PREFIX} Running dynamic scanner (Radar) at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     print("="*60, flush=True)
-    update_radar()
-    print("Radar update complete.", flush=True)
-
-    # 1. Fetch dynamic symbols from shared DB (Radar volume-ranked list)
-    radar_symbols = get_active_symbols()
-
-    # 2. Fetch currently open position symbols from local DB & live Binance
-    open_pos_symbols = set()
-    db_session = SessionLocal()
     try:
-        open_pos_symbols.update(get_open_position_symbols(db_session))
-    except Exception as e:
-        print(f"⚠️ Error querying open position symbols from DB: {e}", flush=True)
-    finally:
-        db_session.close()
+        update_radar()
+        print("Radar update complete.", flush=True)
 
-    if futures_client:
+        # 1. Fetch dynamic symbols from shared DB (Radar volume-ranked list)
+        radar_symbols = get_active_symbols()
+
+        # 2. Fetch currently open position symbols from local DB & live Binance
+        open_pos_symbols = set()
+        db_session = SessionLocal()
         try:
-            pos_risk = futures_client.futures_position_information()
-            for p in pos_risk:
-                if float(p.get('positionAmt', 0)) != 0:
-                    open_pos_symbols.add(p['symbol'])
+            open_pos_symbols.update(get_open_position_symbols(db_session))
         except Exception as e:
-            print(f"⚠️ Error fetching Binance live positions: {e}", flush=True)
+            print(f"⚠️ Error querying open position symbols from DB: {e}", flush=True)
+        finally:
+            db_session.close()
 
-    # Combine open position symbols + Radar symbols (open positions first, no duplicates)
-    all_symbols = list(open_pos_symbols)
-    for s in radar_symbols:
-        if s not in all_symbols:
-            all_symbols.append(s)
+        if futures_client:
+            try:
+                pos_risk = futures_client.futures_position_information()
+                for p in pos_risk:
+                    if float(p.get('positionAmt', 0)) != 0:
+                        open_pos_symbols.add(p['symbol'])
+            except Exception as e:
+                print(f"⚠️ Error fetching Binance live positions: {e}", flush=True)
 
-    print(f"Trading active symbols (Scanned: {len(radar_symbols)}, Open: {len(open_pos_symbols)}, Total: {len(all_symbols)}): {all_symbols}", flush=True)
+        # Combine open position symbols + Radar symbols (open positions first, no duplicates)
+        all_symbols = list(open_pos_symbols)
+        for s in radar_symbols:
+            if s not in all_symbols:
+                all_symbols.append(s)
 
-    # 3. Fetch latest Futures candle data for all processed symbols
-    run_fetcher(symbols=all_symbols)
+        print(f"Trading active symbols (Scanned: {len(radar_symbols)}, Open: {len(open_pos_symbols)}, Total: {len(all_symbols)}): {all_symbols}", flush=True)
 
-    # 4. Run the appropriate analyzer based on engine role
-    if ENGINE_ROLE.upper() == "MACRO":
-        # ── Macro Trend Engine (1h) — analysis only, no orders ──
-        for sym in all_symbols:
-            run_macro_analyzer(symbol=sym)
-            time.sleep(0.5)
-    else:
-        # ── Execution Engine (15m) — trades with MTF confluence ──
-        import logging
-        logger = logging.getLogger("ExecutionEngine")
+        # 3. Fetch latest Futures candle data for all processed symbols
+        run_fetcher(symbols=all_symbols)
 
-        current_open_count = count_all_open_positions(futures_client)
-        trades_opened_this_cycle = 0
+        # 4. Run the appropriate analyzer based on engine role
+        if ENGINE_ROLE.upper() == "MACRO":
+            # ── Macro Trend Engine (1h) — analysis only, no orders ──
+            for sym in all_symbols:
+                run_macro_analyzer(symbol=sym)
+                time.sleep(0.5)
+        else:
+            # ── Execution Engine (15m) — trades with MTF confluence ──
+            import logging
+            logger = logging.getLogger("ExecutionEngine")
 
-        for sym in all_symbols:
-            is_open_position = sym in open_pos_symbols
+            current_open_count = count_all_open_positions(futures_client)
+            trades_opened_this_cycle = 0
 
-            if is_open_position:
-                # ── RULE 1 & 2: ALWAYS evaluate risk management for open positions ──
-                print(f"🛡️ [{sym}] Open position detected — evaluating risk management (SL/TSL/TP/Stagnant) unconditionally.", flush=True)
-                newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
-                if newly_executed:
-                    trades_opened_this_cycle += 1
-            else:
-                # ── RULE 3: Restrict NEW entries when portfolio is full ──
-                if current_open_count >= MAX_GLOBAL_POSITIONS:
-                    logger.warning(f"Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.")
-                    print(f"🛑 Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.", flush=True)
-                    time.sleep(0.5)
-                    continue
+            for sym in all_symbols:
+                is_open_position = sym in open_pos_symbols
 
-                if trades_opened_this_cycle >= 3:
-                    logger.warning(f"Max trades per cycle (3) reached. Cooling down for {sym}.")
-                    print(f"🛑 Max trades per cycle (3) reached. Skipping new entry for {sym}.", flush=True)
-                    time.sleep(0.5)
-                    continue
+                if is_open_position:
+                    # ── RULE 1 & 2: ALWAYS evaluate risk management for open positions ──
+                    print(f"🛡️ [{sym}] Open position detected — evaluating risk management (SL/TSL/TP/Stagnant) unconditionally.", flush=True)
+                    newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+                    if newly_executed:
+                        trades_opened_this_cycle += 1
+                else:
+                    # ── RULE 3: Restrict NEW entries when portfolio is full ──
+                    if current_open_count >= MAX_GLOBAL_POSITIONS:
+                        logger.warning(f"Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.")
+                        print(f"🛑 Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.", flush=True)
+                        time.sleep(0.5)
+                        continue
 
-                newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
-                if newly_executed:
-                    current_open_count += 1
-                    trades_opened_this_cycle += 1
+                    if trades_opened_this_cycle >= 3:
+                        logger.warning(f"Max trades per cycle (3) reached. Cooling down for {sym}.")
+                        print(f"🛑 Max trades per cycle (3) reached. Skipping new entry for {sym}.", flush=True)
+                        time.sleep(0.5)
+                        continue
 
-            # ── Rate-limit protection: 500ms delay between symbol iterations ──
-            time.sleep(0.5)
+                    newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+                    if newly_executed:
+                        current_open_count += 1
+                        trades_opened_this_cycle += 1
 
-    print("\nJob completed. Sleeping until next interval...", flush=True)
-    print("="*60 + "\n", flush=True)
+                # ── Rate-limit protection: 500ms delay between symbol iterations ──
+                time.sleep(0.5)
+
+        print("\nJob completed. Sleeping until next interval...", flush=True)
+        print("="*60 + "\n", flush=True)
+    except Exception as e:
+        from futures_executor import is_rate_limit_error
+        if is_rate_limit_error(e):
+            print("🚨 API IP Ban detected. Sleeping for 60 seconds...", flush=True)
+            time.sleep(60)
+            return
+        else:
+            print(f"⚠️ Unexpected error in scanner_job: {e}", flush=True)
 
 def main():
     role_label = "MACRO TREND" if ENGINE_ROLE.upper() == "MACRO" else "EXECUTION"
