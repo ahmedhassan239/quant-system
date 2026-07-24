@@ -13,7 +13,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
                     BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
-                    TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT)
+                    TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT, FUTURES_LEVERAGE)
 from futures_executor import (open_position, close_position, get_futures_balance,
                               get_position_info, count_all_open_positions)
 
@@ -337,6 +337,8 @@ def sync_and_purge_all_positions(futures_client, session):
                     sl_val = getattr(latest_rec, 'stop_loss', None) or getattr(latest_rec, 'stop_loss_price', None) or 0.0
 
                 if not latest_rec or latest_rec.asset_balance <= 0 or latest_rec.decision not in ('LONG', 'SHORT'):
+                    leverage = pos.get('leverage', 1.0)
+                    allocated_margin = (size * entry_price) / leverage
                     new_rec = PortfolioState(
                         timestamp=datetime.now(),
                         symbol=sym,
@@ -347,6 +349,7 @@ def sync_and_purge_all_positions(futures_client, session):
                         position_direction=direction,
                         average_entry_price=entry_price,
                         dca_level=0,
+                        allocated_margin=allocated_margin,
                         total_cost=size * entry_price,
                         stop_loss_price=float(sl_val) if sl_val > 0 else 0.0,
                         stop_loss=float(sl_val) if sl_val > 0 else 0.0,
@@ -559,6 +562,7 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
         dca_level=int(portfolio['dca_level']),
         last_exec_price=float(portfolio['last_exec_price']) if portfolio['last_exec_price'] is not None else None,
         total_cost=float(portfolio['total_cost']),
+        allocated_margin=float(portfolio.get('total_cost', 0.0)) / FUTURES_LEVERAGE,
         highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
         lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
         stop_loss_price=float(sl_val) if sl_val is not None and float(sl_val) > 0 else 0.0,
@@ -726,6 +730,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
     """
     print(f"\n--- Execution Analyzer Started [{symbol}] (15m MTF Confluence) ---", flush=True)
 
+    order = None
     session = SessionLocal()
     try:
         # ── 0. Fetch macro trend from shared DB (Strict Requirement — No Bypass) ──
@@ -1315,6 +1320,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             dca_level=int(portfolio['dca_level']),
                             last_exec_price=float(portfolio['last_exec_price']),
                             total_cost=float(portfolio['total_cost']),
+                            allocated_margin=float(portfolio.get('total_cost', 0.0)) / FUTURES_LEVERAGE,
                             highest_price_since_entry=float(portfolio['highest_price_since_entry']),
                             stop_loss_price=float(new_stop_loss),
                             stop_loss=float(new_stop_loss),
@@ -1379,8 +1385,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
                             f"- Total Value: ${total_value:.2f}"
                         )
-                        if not futures_client or order:
-                            send_telegram_alert(alert_msg)
+                        send_telegram_alert(alert_msg)
 
                 # ── Execute SHORT (open new short position) ──
                 elif decision == 'SHORT' and not in_position:
@@ -1465,6 +1470,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             dca_level=int(portfolio['dca_level']),
                             last_exec_price=float(portfolio['last_exec_price']),
                             total_cost=float(portfolio['total_cost']),
+                            allocated_margin=float(portfolio.get('total_cost', 0.0)) / FUTURES_LEVERAGE,
                             highest_price_since_entry=None,
                             lowest_price_since_entry=float(portfolio['lowest_price_since_entry']),
                             stop_loss_price=float(new_stop_loss),
@@ -1529,8 +1535,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
                             f"- Total Value: ${total_value:.2f}"
                         )
-                        if not futures_client or order:
-                            send_telegram_alert(alert_msg)
+                        send_telegram_alert(alert_msg)
 
                 # ── Close LONG via SHORT signal (if holding LONG) ──
                 elif decision == 'SHORT' and in_position and pos_direction == 'LONG':
@@ -1647,6 +1652,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     dca_level=int(portfolio['dca_level']),
                     last_exec_price=float(portfolio['last_exec_price']) if portfolio['last_exec_price'] is not None else None,
                     total_cost=float(portfolio['total_cost']),
+                    allocated_margin=float(portfolio.get('total_cost', 0.0)) / FUTURES_LEVERAGE,
                     highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
                     lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
                     stop_loss_price=float(sl_val) if sl_val is not None and float(sl_val) > 0 else None,
@@ -1817,6 +1823,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"Binance order placement blocked."
                         )
                     else:
+                        order = None
                         try:
                             # ── Fetch stepSize precision for this symbol ──
                             info = futures_client.futures_exchange_info()

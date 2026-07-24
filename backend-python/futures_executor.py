@@ -281,6 +281,7 @@ def fetch_all_positions(client: Client) -> dict[str, dict]:
                     'direction': ('LONG' if amt > 0 else 'SHORT') if amt != 0 else None,
                     'entry_price': float(pos.get('entryPrice', 0)) if amt != 0 else 0.0,
                     'unrealized_pnl': float(pos.get('unRealizedProfit', 0)) if amt != 0 else 0.0,
+                    'leverage': float(pos.get('leverage', 1.0))
                 }
         return pos_dict
     except Exception as e:
@@ -305,6 +306,7 @@ def get_position_info(client: Client, symbol: str, cached_positions: dict = None
             'direction': None,
             'entry_price': 0.0,
             'unrealized_pnl': 0.0,
+            'leverage': 1.0,
         }
 
     try:
@@ -318,6 +320,7 @@ def get_position_info(client: Client, symbol: str, cached_positions: dict = None
                     'direction': 'LONG' if amt > 0 else 'SHORT',
                     'entry_price': float(pos.get('entryPrice', 0)),
                     'unrealized_pnl': float(pos.get('unRealizedProfit', 0)),
+                    'leverage': float(pos.get('leverage', 1.0)),
                 }
         # No open position
         return {
@@ -326,6 +329,7 @@ def get_position_info(client: Client, symbol: str, cached_positions: dict = None
             'direction': None,
             'entry_price': 0.0,
             'unrealized_pnl': 0.0,
+            'leverage': 1.0,
         }
     except Exception as e:
         logger.error(f"[{symbol}] Failed to fetch position info from Binance API: {e}")

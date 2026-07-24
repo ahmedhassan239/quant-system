@@ -90,11 +90,16 @@ class DashboardController extends Controller
             ->get();
 
         $mappedPositions = $activeLocalPositions->map(function ($localPos) {
+            $formatPrice = function($price) {
+                $formatted = number_format($price, 5, '.', '');
+                return preg_replace('/(\.\d{2,}?)0+$/', '$1', $formatted);
+            };
+
             $direction = $localPos->position_direction ?: ($localPos->decision === 'SHORT' ? 'SHORT' : 'LONG');
             $entryPrice = (float)($localPos->average_entry_price ?: $localPos->current_price);
             $currentPrice = (float)($localPos->current_price ?: $entryPrice);
             $assetBalance = (float)($localPos->asset_balance ?: 0);
-            $allocatedUsdt = $assetBalance * $entryPrice;
+            $allocatedUsdt = (float)($localPos->allocated_margin ?: 0);
 
             $unrealizedPnl = (float)($localPos->pnl_usd ?? 0.0);
             if ($localPos->pnl_usd === null && $entryPrice > 0 && $assetBalance > 0) {
@@ -108,15 +113,15 @@ class DashboardController extends Controller
             $rawSl = $localPos->stop_loss ?: ($localPos->stop_loss_price ?: null);
             $actualStopLoss = 'Inactive';
             if ($rawSl && (float)$rawSl > 0) {
-                $actualStopLoss = number_format((float)$rawSl, 4, '.', '');
+                $actualStopLoss = $formatPrice((float)$rawSl);
             }
 
             return [
                 'id' => $localPos->id,
                 'symbol' => $localPos->symbol,
                 'direction' => $direction,
-                'entry_price' => number_format($entryPrice, 2, '.', ''),
-                'current_price' => number_format($currentPrice, 2, '.', ''),
+                'entry_price' => $formatPrice($entryPrice),
+                'current_price' => $formatPrice($currentPrice),
                 'unrealized_pnl' => number_format($unrealizedPnl, 2, '.', ''),
                 'allocated_usdt' => number_format($allocatedUsdt, 2, '.', ''),
                 'entry_reason' => $localPos->entry_reason ?: 'Automated Strategy',
