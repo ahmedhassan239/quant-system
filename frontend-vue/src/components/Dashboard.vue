@@ -382,22 +382,35 @@ const closeSelectedPositions = async () => {
   }
 }
 
-let pollingInterval
+const isFetching = ref(false)
+let pollingTimer = null
+
+const pollDashboardData = async () => {
+  if (isFetching.value) return
+  isFetching.value = true
+
+  try {
+    await Promise.allSettled([
+      fetchMetrics(),
+      fetchMacroTrends()
+    ])
+  } catch (e) {
+    console.error('Error in dashboard polling loop', e)
+  } finally {
+    isFetching.value = false
+    pollingTimer = setTimeout(pollDashboardData, 3000)
+  }
+}
 
 onMounted(() => {
-  // Initial Fetch
-  fetchMetrics()
-  fetchMacroTrends()
   fetchSymbols()
-  
-  // 3-second Live Polling
-  pollingInterval = setInterval(() => {
-    fetchMetrics()
-    fetchMacroTrends()
-  }, 3000)
+  pollDashboardData()
 })
 
 onUnmounted(() => {
-  clearInterval(pollingInterval)
+  if (pollingTimer) {
+    clearTimeout(pollingTimer)
+    pollingTimer = null
+  }
 })
 </script>
