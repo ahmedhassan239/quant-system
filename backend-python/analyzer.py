@@ -17,6 +17,9 @@ from futures_executor import (open_position, close_position, get_futures_balance
                               get_position_info, count_all_open_positions,
                               place_stop_loss_order, cancel_all_open_orders)
 
+BREAKOUT_CONSOLIDATION_PERIOD = 20
+BREAKOUT_VOLUME_MULTIPLIER = 1.5
+
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
 # ──────────────────────────────────────────────────────────────────────
