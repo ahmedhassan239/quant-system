@@ -8,7 +8,8 @@ export default defineConfig({
     allowedHosts: ['quant.travelwzus.com'],
     hmr: {
       host: 'quant.travelwzus.com',
-      protocol: 'wss'
+      protocol: 'wss',
+      clientPort: 443
     }
   }
 })
