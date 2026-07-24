@@ -12,10 +12,10 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     MACRO_SMA_PERIOD, MACRO_SDC_MULTIPLIER,
                     ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
-                    BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT, FUTURES_LEVERAGE)
 from futures_executor import (open_position, close_position, get_futures_balance,
-                              get_position_info, count_all_open_positions)
+                              get_position_info, count_all_open_positions,
+                              place_stop_loss_order, cancel_all_open_orders)
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -413,6 +413,10 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
     if futures_client and asset_balance > 0:
         import logging as _close_logging
         _close_logger = _close_logging.getLogger("FuturesExecutor")
+        
+        # Clean up any open stop loss / take profit orders
+        cancel_all_open_orders(futures_client, symbol)
+        
         # Query the REAL position size from Binance to avoid quantity mismatches
         live_pos = get_position_info(futures_client, symbol)
         close_qty = live_pos['size'] if (live_pos and live_pos['size'] > 0) else asset_balance
@@ -864,6 +868,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                f"Peak: ${peak:.2f} | Locked Profit: {locked_pnl:+.2f}%")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "INFO", msg)
+                        
+                        # Apply new trailing stop on Binance
+                        if futures_client:
+                            cancel_all_open_orders(futures_client, symbol)
+                            place_stop_loss_order(futures_client, symbol, 'LONG', new_sl)
 
                     # Persist trailing state to DB for frontend
                     try:
@@ -969,6 +978,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                f"Trough: ${trough:.2f} | Locked Profit: {locked_pnl:+.2f}%")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "INFO", msg)
+                        
+                        # Apply new trailing stop on Binance
+                        if futures_client:
+                            cancel_all_open_orders(futures_client, symbol)
+                            place_stop_loss_order(futures_client, symbol, 'SHORT', new_sl)
 
                     # Persist trailing state to DB for frontend
                     try:
@@ -1874,6 +1888,12 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                     f"OrderID: {order['orderId']} | "
                                     f"Allocated: ${allocated_usdt:.2f}"
                                 )
+                                
+                                # Apply initial Hard Stop Loss
+                                initial_sl = portfolio.get('stop_loss_price') or portfolio.get('stop_loss')
+                                if initial_sl and initial_sl > 0:
+                                    place_stop_loss_order(futures_client, symbol, direction, initial_sl)
+                                    
                                 return True
 
                         except Exception as e:

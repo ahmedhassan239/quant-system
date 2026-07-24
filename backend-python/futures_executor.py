@@ -403,3 +403,53 @@ def _round_quantity(client: Client, symbol: str, raw_qty: float) -> float:
     except Exception as e:
         logger.warning(f"[{symbol}] Could not fetch step size, using 5 decimals: {e}")
         return round(raw_qty, 5)
+
+def place_stop_loss_order(client: Client, symbol: str, direction: str, stop_price: float) -> dict:
+    """
+    Places a STOP_MARKET order on Binance.
+    direction is the position direction ('LONG' or 'SHORT').
+    """
+    if not client:
+        return None
+        
+    try:
+        side = Client.SIDE_SELL if direction.upper() == 'LONG' else Client.SIDE_BUY
+        # Find step size for price precision
+        info = client.futures_exchange_info()
+        price_precision = 5
+        for s in info['symbols']:
+            if s['symbol'] == symbol:
+                price_precision = s['pricePrecision']
+                break
+                
+        rounded_stop = round(stop_price, price_precision)
+        
+        logger.info(f"[{symbol}] Placing STOP_MARKET SL for {direction} | Side: {side} | StopPrice: {rounded_stop}")
+        
+        order = client.futures_create_order(
+            symbol=symbol,
+            side=side,
+            type='STOP_MARKET',
+            stopPrice=rounded_stop,
+            closePosition=True
+        )
+        logger.info(f"[{symbol}] ✅ Stop Loss Placed | OrderID: {order['orderId']} | StopPrice: {rounded_stop}")
+        return order
+    except Exception as e:
+        logger.error(f"[{symbol}] ❌ Failed to place Stop Loss order: {e}")
+        return None
+
+def cancel_all_open_orders(client: Client, symbol: str) -> bool:
+    """
+    Cancels all open orders (e.g., Stop Loss / Take Profit) for a symbol on Binance.
+    """
+    if not client:
+        return False
+        
+    try:
+        client.futures_cancel_all_open_orders(symbol=symbol)
+        logger.info(f"[{symbol}] 🧹 Cancelled all open orders.")
+        return True
+    except Exception as e:
+        logger.error(f"[{symbol}] ❌ Failed to cancel open orders: {e}")
+        return False
