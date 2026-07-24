@@ -13,168 +13,194 @@ class DashboardController extends Controller
 {
     public function logs()
     {
-        $logs = BotLog::orderBy('created_at', 'desc')->take(100)->get();
-        return response()->json(array_reverse($logs->toArray()));
+        try {
+            $logs = BotLog::orderBy('created_at', 'desc')->take(100)->get();
+            return response()->json(array_reverse($logs->toArray()));
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error("DashboardController logs error: " . $e->getMessage());
+            return response()->json([]);
+        }
     }
 
     public function getDashboardMetrics()
     {
-        // 1 & 2. Total PNL & Win Rate from CLOSED trades (safe check)
-        $totalPnl = 0.00;
-        $winningTrades = 0;
-        $actualTotalTrades = 0;
-        $winRate = 0;
-
-        if (\Illuminate\Support\Facades\Schema::hasTable('trade_history')) {
-            $totalPnl = (float)\Illuminate\Support\Facades\DB::table('trade_history')->sum('pnl_usd'); 
-            $winningTrades = \Illuminate\Support\Facades\DB::table('trade_history')->where('outcome', 'WIN')->count();
-            $actualTotalTrades = \Illuminate\Support\Facades\DB::table('trade_history')->count();
-            $winRate = $actualTotalTrades > 0 ? round(($winningTrades / $actualTotalTrades) * 100, 2) : 0;
-        }
-
-        // 3. Wallet Balance from Binance Testnet (with DB fallback)
-        $apiKey = env('BINANCE_API_KEY');
-        $apiSecret = env('BINANCE_API_SECRET');
-        $walletBalance = 0.00;
-        $totalUnrealizedProfit = 0.00;
-        $totalMarginBalance = 0.00;
-
-        if ($apiKey && $apiSecret) {
-            $timestamp = round(microtime(true) * 1000);
-            $queryString = "timestamp=" . $timestamp;
-            $signature = hash_hmac('sha256', $queryString, $apiSecret);
+        try {
+            // 1 & 2. Total PNL & Win Rate from CLOSED trades (local DB query)
+            $totalPnl = 0.00;
+            $winningTrades = 0;
+            $actualTotalTrades = 0;
+            $winRate = 0;
 
             try {
-                $response = Http::withHeaders([
-                    'X-MBX-APIKEY' => $apiKey
-                ])->get("https://testnet.binancefuture.com/fapi/v2/account?{$queryString}&signature={$signature}");
+                $totalPnl = (float)\Illuminate\Support\Facades\DB::table('trade_history')->sum('pnl_usd'); 
+                $winningTrades = \Illuminate\Support\Facades\DB::table('trade_history')->where('outcome', 'WIN')->count();
+                $actualTotalTrades = \Illuminate\Support\Facades\DB::table('trade_history')->count();
+                $winRate = $actualTotalTrades > 0 ? round(($winningTrades / $actualTotalTrades) * 100, 2) : 0;
+            } catch (\Exception $e) {
+                // Table might not exist or DB busy
+            }
 
-                if ($response->successful()) {
-                    $account = $response->json();
-                    if (isset($account['totalWalletBalance'])) {
-                        $walletBalance = (float) $account['totalWalletBalance'];
-                    }
-                    if (isset($account['totalUnrealizedProfit'])) {
-                        $totalUnrealizedProfit = (float) $account['totalUnrealizedProfit'];
-                    }
-                    if (isset($account['totalMarginBalance'])) {
-                        $totalMarginBalance = (float) $account['totalMarginBalance'];
-                    }
+            // 3. Wallet Balance strictly from Local Database (NO synchronous external API calls)
+            $walletBalance = 0.00;
+            $totalUnrealizedProfit = 0.00;
+            $totalMarginBalance = 0.00;
+
+            // Query wallet_balance table first
+            try {
+                $wbRecord = \Illuminate\Support\Facades\DB::table('wallet_balance')->first();
+                if ($wbRecord && isset($wbRecord->balance)) {
+                    $walletBalance = (float) $wbRecord->balance;
                 }
             } catch (\Exception $e) {
-                // Ignore API failure, fallback below
+                // Ignore missing table
             }
-        }
 
-        // Fallback wallet balance from local DB if API call failed or rate-limited
-        $latestPortfolioRecord = \Illuminate\Support\Facades\DB::table('positions')
-            ->whereNotNull('usdt_balance')
-            ->orderBy('id', 'desc')
-            ->first();
-        if ($walletBalance <= 0 && $latestPortfolioRecord) {
-            $walletBalance = (float) $latestPortfolioRecord->usdt_balance;
-        }
-
-        // 4. Active Positions directly from LOCAL DATABASE (rate-limit immune, zero flickering)
-        $latestSubquery = \Illuminate\Support\Facades\DB::table('positions')
-            ->select('symbol', \Illuminate\Support\Facades\DB::raw('MAX(id) as max_id'))
-            ->groupBy('symbol');
-
-        $activeLocalPositions = \Illuminate\Support\Facades\DB::table('positions as p')
-            ->joinSub($latestSubquery, 'latest', function ($join) {
-                $join->on('p.symbol', '=', 'latest.symbol')
-                     ->on('p.id', '=', 'latest.max_id');
-            })
-            ->where('p.asset_balance', '>', 0)
-            ->whereNotIn('p.decision', ['CLOSE_LONG', 'CLOSE_SHORT', 'MANUAL_CLOSE', 'SL_CLOSE', 'TP_CLOSE'])
-            ->get();
-
-        $mappedPositions = $activeLocalPositions->map(function ($localPos) {
-            $formatPrice = function($price) {
-                $formatted = number_format($price, 5, '.', '');
-                return preg_replace('/(\.\d{2,}?)0+$/', '$1', $formatted);
-            };
-
-            $direction = $localPos->position_direction ?: ($localPos->decision === 'SHORT' ? 'SHORT' : 'LONG');
-            $entryPrice = (float)($localPos->average_entry_price ?: $localPos->current_price);
-            $currentPrice = (float)($localPos->current_price ?: $entryPrice);
-            $assetBalance = (float)($localPos->asset_balance ?: 0);
-            $allocatedUsdt = (float)($localPos->allocated_margin ?: 0);
-
-            $unrealizedPnl = (float)($localPos->pnl_usd ?? 0.0);
-            if ($localPos->pnl_usd === null && $entryPrice > 0 && $assetBalance > 0) {
-                if ($direction === 'LONG') {
-                    $unrealizedPnl = ($currentPrice - $entryPrice) * $assetBalance;
-                } else {
-                    $unrealizedPnl = ($entryPrice - $currentPrice) * $assetBalance;
+            // Fallback wallet balance from positions table if wallet_balance was 0
+            if ($walletBalance <= 0) {
+                try {
+                    $latestPortfolioRecord = \Illuminate\Support\Facades\DB::table('positions')
+                        ->whereNotNull('usdt_balance')
+                        ->orderBy('id', 'desc')
+                        ->first();
+                    if ($latestPortfolioRecord && isset($latestPortfolioRecord->usdt_balance)) {
+                        $walletBalance = (float) $latestPortfolioRecord->usdt_balance;
+                    }
+                } catch (\Exception $e) {
+                    // Ignore
                 }
             }
 
-            $rawSl = $localPos->stop_loss ?: ($localPos->stop_loss_price ?: null);
-            $actualStopLoss = 'Inactive';
-            if ($rawSl && (float)$rawSl > 0) {
-                $actualStopLoss = $formatPrice((float)$rawSl);
+            // 4. Active Positions directly from LOCAL DATABASE
+            $mappedPositions = collect([]);
+            try {
+                $latestSubquery = \Illuminate\Support\Facades\DB::table('positions')
+                    ->select('symbol', \Illuminate\Support\Facades\DB::raw('MAX(id) as max_id'))
+                    ->groupBy('symbol');
+
+                $activeLocalPositions = \Illuminate\Support\Facades\DB::table('positions as p')
+                    ->joinSub($latestSubquery, 'latest', function ($join) {
+                        $join->on('p.symbol', '=', 'latest.symbol')
+                             ->on('p.id', '=', 'latest.max_id');
+                    })
+                    ->where('p.asset_balance', '>', 0)
+                    ->whereNotIn('p.decision', ['CLOSE_LONG', 'CLOSE_SHORT', 'MANUAL_CLOSE', 'SL_CLOSE', 'TP_CLOSE'])
+                    ->get();
+
+                $mappedPositions = $activeLocalPositions->map(function ($localPos) {
+                    $formatPrice = function($price) {
+                        $formatted = number_format((float)$price, 5, '.', '');
+                        return preg_replace('/(\.\d{2,}?)0+$/', '$1', $formatted);
+                    };
+
+                    $direction = $localPos->position_direction ?: ($localPos->decision === 'SHORT' ? 'SHORT' : 'LONG');
+                    $entryPrice = (float)($localPos->average_entry_price ?: $localPos->current_price);
+                    $currentPrice = (float)($localPos->current_price ?: $entryPrice);
+                    $assetBalance = (float)($localPos->asset_balance ?: 0);
+                    $allocatedUsdt = (float)($localPos->allocated_margin ?: 0);
+
+                    $unrealizedPnl = (float)($localPos->pnl_usd ?? 0.0);
+                    if ($localPos->pnl_usd === null && $entryPrice > 0 && $assetBalance > 0) {
+                        if ($direction === 'LONG') {
+                            $unrealizedPnl = ($currentPrice - $entryPrice) * $assetBalance;
+                        } else {
+                            $unrealizedPnl = ($entryPrice - $currentPrice) * $assetBalance;
+                        }
+                    }
+
+                    $rawSl = $localPos->stop_loss ?: ($localPos->stop_loss_price ?: null);
+                    $actualStopLoss = 'Inactive';
+                    if ($rawSl && (float)$rawSl > 0) {
+                        $actualStopLoss = $formatPrice((float)$rawSl);
+                    }
+
+                    return [
+                        'id' => $localPos->id,
+                        'symbol' => $localPos->symbol,
+                        'direction' => $direction,
+                        'entry_price' => $formatPrice($entryPrice),
+                        'current_price' => $formatPrice($currentPrice),
+                        'unrealized_pnl' => number_format($unrealizedPnl, 2, '.', ''),
+                        'allocated_usdt' => number_format($allocatedUsdt, 2, '.', ''),
+                        'entry_reason' => $localPos->entry_reason ?: 'Automated Strategy',
+                        'stop_loss' => $actualStopLoss,
+                        'strategy' => $localPos->strategy ?? 'N/A',
+                    ];
+                })->values();
+
+                if ($mappedPositions->isNotEmpty()) {
+                    $totalUnrealizedProfit = $mappedPositions->sum(function ($pos) {
+                        return (float)$pos['unrealized_pnl'];
+                    });
+                }
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::error("DashboardController active positions error: " . $e->getMessage());
             }
 
-            return [
-                'id' => $localPos->id,
-                'symbol' => $localPos->symbol,
-                'direction' => $direction,
-                'entry_price' => $formatPrice($entryPrice),
-                'current_price' => $formatPrice($currentPrice),
-                'unrealized_pnl' => number_format($unrealizedPnl, 2, '.', ''),
-                'allocated_usdt' => number_format($allocatedUsdt, 2, '.', ''),
-                'entry_reason' => $localPos->entry_reason ?: 'Automated Strategy',
-                'stop_loss' => $actualStopLoss,
-                'strategy' => $localPos->strategy ?? 'N/A',
-            ];
-        })->values();
+            $totalMarginBalance = $walletBalance + $totalUnrealizedProfit;
 
-        if ($mappedPositions->isNotEmpty()) {
-            $totalUnrealizedProfit = $mappedPositions->sum(function ($pos) {
-                return (float)$pos['unrealized_pnl'];
-            });
+            return response()->json([
+                'wallet_balance' => number_format($walletBalance, 2, '.', ''),
+                'active_unrealized_pnl' => number_format($totalUnrealizedProfit, 2, '.', ''),
+                'realized_pnl' => number_format($totalPnl, 2, '.', ''),
+                'total_margin_balance' => number_format($totalMarginBalance, 2, '.', ''),
+                'win_rate' => $winRate,
+                'active_positions' => $mappedPositions
+            ]);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error("getDashboardMetrics Error: " . $e->getMessage());
+            return response()->json([
+                'wallet_balance' => '0.00',
+                'active_unrealized_pnl' => '0.00',
+                'realized_pnl' => '0.00',
+                'total_margin_balance' => '0.00',
+                'win_rate' => 0,
+                'active_positions' => []
+            ], 200);
         }
-
-        return response()->json([
-            'wallet_balance' => number_format($walletBalance, 2, '.', ''),
-            'active_unrealized_pnl' => number_format($totalUnrealizedProfit, 2, '.', ''),
-            'realized_pnl' => number_format($totalPnl, 2, '.', ''),
-            'total_margin_balance' => number_format($totalMarginBalance, 2, '.', ''),
-            'win_rate' => $winRate,
-            'active_positions' => $mappedPositions
-        ]);
     }
 
     public function macroTrends()
     {
-        // Only return macro trends for symbols currently active in the scanner
-        $activeSymbols = ActiveSymbol::where('is_active', true)->pluck('symbol');
-
-        $trends = MacroState::whereIn('symbol', $activeSymbols)->get();
-
-        return response()->json($trends);
+        try {
+            // Only return macro trends for symbols currently active in the scanner
+            $activeSymbols = ActiveSymbol::where('is_active', true)->pluck('symbol');
+            $trends = MacroState::whereIn('symbol', $activeSymbols)->get();
+            return response()->json($trends);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error("macroTrends Error: " . $e->getMessage());
+            return response()->json([], 200);
+        }
     }
-
-
 
     public function symbols()
     {
-        return response()->json(ActiveSymbol::where('is_active', true)->get());
+        try {
+            return response()->json(ActiveSymbol::where('is_active', true)->get());
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error("symbols Error: " . $e->getMessage());
+            return response()->json([], 200);
+        }
     }
 
     public function addSymbol(Request $request)
     {
-        $validated = $request->validate([
-            'symbol' => 'required|string|unique:active_symbols,symbol'
-        ]);
+        try {
+            $validated = $request->validate([
+                'symbol' => 'required|string|unique:active_symbols,symbol'
+            ]);
 
-        $symbol = ActiveSymbol::create([
-            'symbol' => strtoupper($validated['symbol']),
-            'is_active' => true
-        ]);
+            $symbol = ActiveSymbol::create([
+                'symbol' => strtoupper($validated['symbol']),
+                'is_active' => true
+            ]);
 
-        return response()->json(['message' => 'Symbol added successfully', 'data' => $symbol]);
+            return response()->json(['message' => 'Symbol added successfully', 'data' => $symbol]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json(['message' => $ve->getMessage(), 'errors' => $ve->errors()], 422);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error("addSymbol Error: " . $e->getMessage());
+            return response()->json(['message' => 'Failed to add symbol', 'error' => $e->getMessage()], 200);
+        }
     }
 
     public function closePosition($symbol)
@@ -210,6 +236,8 @@ class DashboardController extends Controller
             curl_setopt($chCancel, CURLOPT_URL, $cancelUrl);
             curl_setopt($chCancel, CURLOPT_CUSTOMREQUEST, "DELETE");
             curl_setopt($chCancel, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($chCancel, CURLOPT_CONNECTTIMEOUT, 3);
+            curl_setopt($chCancel, CURLOPT_TIMEOUT, 5);
             curl_setopt($chCancel, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . $apiKey]);
             curl_exec($chCancel);
             curl_close($chCancel);
@@ -227,6 +255,8 @@ class DashboardController extends Controller
             $chRisk = curl_init();
             curl_setopt($chRisk, CURLOPT_URL, $riskUrl);
             curl_setopt($chRisk, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($chRisk, CURLOPT_CONNECTTIMEOUT, 3);
+            curl_setopt($chRisk, CURLOPT_TIMEOUT, 5);
             curl_setopt($chRisk, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . $apiKey]);
             $riskResult = curl_exec($chRisk);
             curl_close($chRisk);
@@ -257,6 +287,8 @@ class DashboardController extends Controller
             $chInfo = curl_init();
             curl_setopt($chInfo, CURLOPT_URL, "https://testnet.binancefuture.com/fapi/v1/exchangeInfo");
             curl_setopt($chInfo, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($chInfo, CURLOPT_CONNECTTIMEOUT, 3);
+            curl_setopt($chInfo, CURLOPT_TIMEOUT, 5);
             $infoResult = curl_exec($chInfo);
             curl_close($chInfo);
 
@@ -307,6 +339,8 @@ class DashboardController extends Controller
             curl_setopt($ch, CURLOPT_URL, $url);
             curl_setopt($ch, CURLOPT_POST, true);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
             curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-MBX-APIKEY: ' . $apiKey]);
             $result = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
