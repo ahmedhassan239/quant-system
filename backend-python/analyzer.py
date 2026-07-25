@@ -477,13 +477,18 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
         pnl_usd=db_pnl_usd,
         total_portfolio_value=float(round(total_value, 2))
     )
-    try:
-        session.add(portfolio_record)
-        session.commit()
-    except Exception as e:
-        session.rollback()
-        print(f"Warning: Failed to save tracking update to DB: {e}", flush=True)
-        traceback.print_exc()
+    for attempt in range(3):
+        try:
+            session.add(portfolio_record)
+            session.commit()
+            break
+        except Exception as e:
+            session.rollback()
+            if attempt == 2:
+                print(f"Warning: Failed to save tracking update to DB after 3 attempts: {e}", flush=True)
+                traceback.print_exc()
+            else:
+                import time; time.sleep(1)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1321,13 +1326,18 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             total_portfolio_value=float(round(total_value, 2)),
                             entry_reason=reason_msg
                         )
-                        try:
-                            session.add(portfolio_record)
-                            session.commit()
-                        except Exception as e:
-                            session.rollback()
-                            print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
-                            traceback.print_exc()
+                        for attempt in range(3):
+                            try:
+                                session.add(portfolio_record)
+                                session.commit()
+                                break
+                            except Exception as e:
+                                session.rollback()
+                                if attempt == 2:
+                                    print(f"Warning: Failed to save portfolio state to DB after 3 attempts: {e}", flush=True)
+                                    traceback.print_exc()
+                                else:
+                                    import time; time.sleep(1)
 
 
 
@@ -1489,13 +1499,18 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             total_portfolio_value=float(round(total_value, 2)),
                             entry_reason=reason_msg
                         )
-                        try:
-                            session.add(portfolio_record)
-                            session.commit()
-                        except Exception as e:
-                            session.rollback()
-                            print(f"Warning: Failed to save portfolio state to DB: {e}", flush=True)
-                            traceback.print_exc()
+                        for attempt in range(3):
+                            try:
+                                session.add(portfolio_record)
+                                session.commit()
+                                break
+                            except Exception as e:
+                                session.rollback()
+                                if attempt == 2:
+                                    print(f"Warning: Failed to save portfolio state to DB after 3 attempts: {e}", flush=True)
+                                    traceback.print_exc()
+                                else:
+                                    import time; time.sleep(1)
 
 
 
@@ -1654,16 +1669,21 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     pnl_usd=None,
                     total_portfolio_value=float(round(total_value, 2))
                 )
-                try:
-                    session.add(portfolio_record)
-                    session.commit()
-                    msg = f"✅ [{symbol}] Position state synced to DB: decision='{db_decision}', direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}"
-                    print(f"  {msg}", flush=True)
-                    log_to_db(session, symbol, "INFO", msg)
-                except Exception as e:
-                    session.rollback()
-                    print(f"Warning: Failed to save synced portfolio state to DB: {e}", flush=True)
-                    traceback.print_exc()
+                for attempt in range(3):
+                    try:
+                        session.add(portfolio_record)
+                        session.commit()
+                        msg = f"✅ [{symbol}] Position state synced to DB: decision='{db_decision}', direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}"
+                        print(f"  {msg}", flush=True)
+                        log_to_db(session, symbol, "INFO", msg)
+                        break
+                    except Exception as e:
+                        session.rollback()
+                        if attempt == 2:
+                            print(f"Warning: Failed to save synced portfolio state to DB after 3 attempts: {e}", flush=True)
+                            traceback.print_exc()
+                        else:
+                            import time; time.sleep(1)
 
         # ── Back-patch TradingSignal if sync changed db_decision ──
         # The TradingSignal was committed early (before execution & sync).

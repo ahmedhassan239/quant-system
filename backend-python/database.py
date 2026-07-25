@@ -14,7 +14,7 @@ DB_NAME = os.environ.get("DB_NAME", "quant_db")  # Overridden per container in d
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # ──────────────────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 MACRO_DB_NAME = os.environ.get("MACRO_DB_NAME", "quant_shared_db")
 SHARED_DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{MACRO_DB_NAME}"
 
-shared_engine = create_engine(SHARED_DATABASE_URL)
+shared_engine = create_engine(SHARED_DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
 SharedSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=shared_engine)
 
 # ──────────────────────────────────────────────────────────────────────
