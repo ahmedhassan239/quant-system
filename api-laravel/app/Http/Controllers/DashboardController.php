@@ -125,6 +125,7 @@ class DashboardController extends Controller
                                 'allocated_usdt' => number_format($allocatedUsdt, 2, '.', ''),
                                 'entry_reason' => $localRecord && $localRecord->entry_reason ? $localRecord->entry_reason : 'Live from Binance',
                                 'stop_loss' => $actualStopLoss,
+                                'stop_loss_price' => $actualStopLoss,
                                 'strategy' => $localRecord->strategy ?? 'N/A',
                             ];
                         })->values();
