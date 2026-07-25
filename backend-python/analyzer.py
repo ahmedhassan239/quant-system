@@ -309,10 +309,35 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
     optionally execute on Futures exchange, save to DB, and send a Telegram alert.
     Returns the updated portfolio dict.
     """
-    direction = portfolio.get('position_direction', 'LONG')
-    asset_balance = float(portfolio['asset_balance'])
-    buy_price = portfolio.get('average_entry_price')
-    total_cost = portfolio.get('total_cost', 0.0)
+    # ── 1. Pull accurately from active position / live Binance position ──
+    live_pos = None
+    if futures_client:
+        try:
+            live_pos = get_position_info(futures_client, symbol)
+        except Exception as e:
+            print(f"⚠️ [{symbol}] Error checking live position in close handler: {e}", flush=True)
+
+    direction = portfolio.get('position_direction') or portfolio.get('direction')
+    asset_balance = float(portfolio.get('asset_balance') or 0.0)
+    buy_price = portfolio.get('average_entry_price') or portfolio.get('entry_price')
+
+    if live_pos and live_pos.get('size', 0) > 0:
+        if not direction or direction == 'None':
+            direction = live_pos.get('direction')
+        if asset_balance <= 0:
+            asset_balance = float(live_pos.get('size', 0.0))
+        if not buy_price or float(buy_price) <= 0:
+            buy_price = float(live_pos.get('entry_price', 0.0))
+
+    # ── 2. Fallback: NEVER pass None to a non-null column ──
+    if not direction or direction == 'None':
+        direction = 'LONG'
+    if not buy_price or float(buy_price) <= 0:
+        buy_price = float(current_price)
+    if not asset_balance or asset_balance < 0:
+        asset_balance = 0.0
+
+    total_cost = float(portfolio.get('total_cost') or (asset_balance * float(buy_price)))
     pnl_pct_val = None
     pnl_usd_val = None
     pnl_section = ""
@@ -338,8 +363,7 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
         import logging as _close_logging
         _close_logger = _close_logging.getLogger("FuturesExecutor")
         # Query the REAL position size from Binance to avoid quantity mismatches
-        live_pos = get_position_info(futures_client, symbol)
-        close_qty = live_pos['size'] if (live_pos and live_pos['size'] > 0) else asset_balance
+        close_qty = live_pos['size'] if (live_pos and live_pos.get('size', 0) > 0) else asset_balance
         _close_logger.warning(
             f"🚨 SL TRIGGERED & EXECUTED: {symbol} at {current_price} "
             f"(exit_reason={exit_reason}, closing qty={close_qty})"
@@ -1624,6 +1648,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     if (db_pos_direction == 'LONG' and macro_trend == 'DOWNTREND') or \
                        (db_pos_direction == 'SHORT' and macro_trend == 'UPTREND'):
                         print(f"🚨 [{symbol}] Counter-trend position detected (Direction: {db_pos_direction}, Macro: {macro_trend}). Closing immediately.", flush=True)
+                        portfolio['position_direction'] = db_pos_direction
+                        portfolio['asset_balance'] = pos_info['size']
+                        portfolio['average_entry_price'] = db_entry_price
                         _close_position_handler(
                             portfolio, current_price, symbol, session, 'TREND_REVERSAL',
                             futures_client, bullish_ob, bearish_ob, current_rsi,
