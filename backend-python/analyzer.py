@@ -1265,7 +1265,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['position_direction'] = 'LONG'
                         
                         # Set SL to max(old SL, new average entry price) to cover the scale-up cost
-                        if dca_level > 0:
+                        if dca_level == 0:
+                            if not new_stop_loss or float(new_stop_loss) <= 0.0:
+                                new_stop_loss = float(current_price) * 0.985
+                        elif dca_level > 0:
                             new_stop_loss = max(float(new_stop_loss), portfolio['average_entry_price'])
                         
                         portfolio['stop_loss_price'] = float(new_stop_loss)
@@ -1437,7 +1440,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['position_direction'] = 'SHORT'
                         
                         # Set SL to min(old SL, new average entry price) to cover the scale-up cost
-                        if dca_level > 0:
+                        if dca_level == 0:
+                            if not new_stop_loss or float(new_stop_loss) <= 0.0:
+                                new_stop_loss = float(current_price) * 1.015
+                        elif dca_level > 0:
                             new_stop_loss = min(float(new_stop_loss), portfolio['average_entry_price'])
                             
                         portfolio['stop_loss_price'] = float(new_stop_loss)

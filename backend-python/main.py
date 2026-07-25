@@ -10,7 +10,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD)
 from database import (SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS,
                       init_shared_db, get_active_symbols, save_wallet_balance,
-                      SessionLocal, get_open_position_symbols)
+                      SessionLocal, get_open_position_symbols, sync_missing_stop_losses)
 from futures_executor import create_futures_client, get_futures_balance, count_all_open_positions
 
 # ── Initialize Futures client once at module level ──
@@ -58,6 +58,7 @@ def scanner_job():
     open_pos_symbols = set()
     db_session = SessionLocal()
     try:
+        sync_missing_stop_losses(db_session)
         open_pos_symbols.update(get_open_position_symbols(db_session))
     except Exception as e:
         print(f"⚠️ Error querying open position symbols from DB: {e}", flush=True)

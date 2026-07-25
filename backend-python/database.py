@@ -215,6 +215,44 @@ def get_open_position_symbols(session):
     )
     return [r.symbol for r in rows]
 
+def sync_missing_stop_losses(session):
+    """
+    Finds active open positions (asset_balance > 0) with NULL stop_loss_price,
+    calculates a default 1.5% SL relative to average_entry_price, and updates the DB.
+    """
+    latest_ids = (
+        session.query(func.max(PortfolioState.id).label('max_id'))
+        .group_by(PortfolioState.symbol)
+        .subquery()
+    )
+
+    rows = (
+        session.query(PortfolioState)
+        .filter(
+            PortfolioState.id.in_(
+                session.query(latest_ids.c.max_id)
+            ),
+            PortfolioState.asset_balance > 0,
+            PortfolioState.stop_loss_price.is_(None)
+        )
+        .all()
+    )
+    
+    updated = False
+    for row in rows:
+        if row.position_direction == 'LONG':
+            row.stop_loss_price = float(row.average_entry_price) * 0.985
+            row.stop_loss = float(row.average_entry_price) * 0.985
+            print(f"🔄 Synced missing Stop Loss for {row.symbol} LONG: ${row.stop_loss_price:.4f}", flush=True)
+            updated = True
+        elif row.position_direction == 'SHORT':
+            row.stop_loss_price = float(row.average_entry_price) * 1.015
+            row.stop_loss = float(row.average_entry_price) * 1.015
+            print(f"🔄 Synced missing Stop Loss for {row.symbol} SHORT: ${row.stop_loss_price:.4f}", flush=True)
+            updated = True
+            
+    if updated:
+        session.commit()
 
 # ══════════════════════════════════════════════════════════════════════
 #  HELPERS — Shared MTF (MacroState)
