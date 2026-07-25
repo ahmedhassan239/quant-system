@@ -97,8 +97,9 @@ def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250):
         except Exception as e:
             print(f"  ⚠️ Failed to fetch {sym}: {e}", flush=True)
 
-        # Rate-limit protection: 1.5s delay between API calls to prevent 418 bans
-        time.sleep(1.5)
+        # Rate-limit protection: 500ms delay between API calls
+        if i < len(symbols) - 1:
+            time.sleep(0.5)
 
     print("--- Fetcher Completed (Futures) ---", flush=True)
 

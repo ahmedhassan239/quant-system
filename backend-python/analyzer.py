@@ -6,19 +6,16 @@ import pandas as pd
 from datetime import datetime
 from database import (SessionLocal, MarketData, TradingSignal, PortfolioState, BotLog,
                       TradeHistory, engine, init_db, init_shared_db, count_active_positions,
-                      save_macro_state, get_macro_trend, update_symbol_execution_data,
+                      save_macro_state, get_macro_trend,
                       SLOT_BUDGET, MAX_CONCURRENT_POSITIONS, TOTAL_CAPITAL)
 from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     MACRO_SMA_PERIOD, MACRO_SDC_MULTIPLIER,
                     ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
-                    TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT, FUTURES_LEVERAGE)
+                    BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
+                    TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT)
 from futures_executor import (open_position, close_position, get_futures_balance,
-                              get_position_info, count_all_open_positions,
-                              place_stop_loss_order, cancel_all_open_orders)
-
-BREAKOUT_CONSOLIDATION_PERIOD = 20
-BREAKOUT_VOLUME_MULTIPLIER = 1.5
+                              get_position_info, count_all_open_positions, set_stop_loss_order)
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -304,82 +301,6 @@ def load_portfolio(session, symbol):
     }
 
 
-def sync_and_purge_all_positions(futures_client, session):
-    """
-    Sync live Binance positions with DB and purge ghost positions.
-    Ensures real live positions (ETH, XRP, BNB, BROCCOLI, BANK, ON, etc.)
-    always have active PortfolioState DB records with asset_balance > 0
-    and decision in ('LONG', 'SHORT').
-    """
-    if not futures_client:
-        return
-
-    try:
-        from futures_executor import fetch_all_positions
-        from database import get_open_position_symbols
-        live_positions = fetch_all_positions(futures_client)
-        if not live_positions:
-            return
-
-        open_db_symbols = get_open_position_symbols(session)
-
-        # 1. Sync live Binance positions into DB
-        for sym, pos in live_positions.items():
-            size = pos.get('size', 0.0)
-            if size > 0:
-                direction = pos['direction']
-                entry_price = pos['entry_price']
-                u_pnl = pos['unrealized_pnl']
-
-                latest_rec = session.query(PortfolioState).filter(
-                    PortfolioState.symbol == sym
-                ).order_by(PortfolioState.id.desc()).first()
-
-                sl_val = 0.0
-                if latest_rec:
-                    sl_val = getattr(latest_rec, 'stop_loss', None) or getattr(latest_rec, 'stop_loss_price', None) or 0.0
-
-                if not latest_rec or latest_rec.asset_balance <= 0 or latest_rec.decision not in ('LONG', 'SHORT'):
-                    leverage = pos.get('leverage', 1.0)
-                    allocated_margin = (size * entry_price) / leverage
-                    new_rec = PortfolioState(
-                        timestamp=datetime.now(),
-                        symbol=sym,
-                        decision=direction,
-                        current_price=entry_price,
-                        usdt_balance=1000.0,
-                        asset_balance=size,
-                        position_direction=direction,
-                        average_entry_price=entry_price,
-                        dca_level=0,
-                        allocated_margin=allocated_margin,
-                        total_cost=size * entry_price,
-                        stop_loss_price=float(sl_val) if sl_val > 0 else 0.0,
-                        stop_loss=float(sl_val) if sl_val > 0 else 0.0,
-                        pnl_usd=u_pnl,
-                        total_portfolio_value=1000.0
-                    )
-                    session.add(new_rec)
-                    print(f"🔄 [SYNC] Live Binance position for {sym} ({direction}, Qty={size}) synced to DB", flush=True)
-
-        # 2. Purge ghost positions (symbols with DB asset_balance > 0 but size == 0 on Binance)
-        for sym in open_db_symbols:
-            live_info = live_positions.get(sym)
-            if live_info and live_info.get('size', 0.0) == 0.0:
-                print(f"🧹 [PURGE] Clearing ghost position in DB for {sym} (Binance size = 0)", flush=True)
-                latest_rec = session.query(PortfolioState).filter(
-                    PortfolioState.symbol == sym
-                ).order_by(PortfolioState.id.desc()).first()
-                if latest_rec:
-                    latest_rec.asset_balance = 0.0
-                    latest_rec.decision = 'MANUAL_CLOSE'
-
-        session.commit()
-    except Exception as e:
-        session.rollback()
-        print(f"⚠️ Error in sync_and_purge_all_positions: {e}", flush=True)
-
-
 def _close_position_handler(portfolio, current_price, symbol, session, exit_reason,
                             futures_client=None, bullish_ob=None, bearish_ob=None,
                             current_rsi=None, current_zscore=None, macro_info=None):
@@ -416,10 +337,6 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
     if futures_client and asset_balance > 0:
         import logging as _close_logging
         _close_logger = _close_logging.getLogger("FuturesExecutor")
-        
-        # Clean up any open stop loss / take profit orders
-        cancel_all_open_orders(futures_client, symbol)
-        
         # Query the REAL position size from Binance to avoid quantity mismatches
         live_pos = get_position_info(futures_client, symbol)
         close_qty = live_pos['size'] if (live_pos and live_pos['size'] > 0) else asset_balance
@@ -531,31 +448,12 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
     db_pnl_usd = None
 
     if futures_client:
-        try:
-            pos_info = get_position_info(futures_client, symbol)
-            if pos_info and pos_info['size'] > 0:
-                db_decision = pos_info['direction']  # Force 'LONG' or 'SHORT'
-                db_position_direction = pos_info['direction']
-                db_entry_price = pos_info['entry_price']
-                db_pnl_usd = pos_info['unrealized_pnl']
-                portfolio['asset_balance'] = pos_info['size']
-                portfolio['position_direction'] = pos_info['direction']
-        except (BinanceAPIException, requests.exceptions.HTTPError, Exception) as exc:
-            if is_rate_limit_error(exc):
-                print(f"⚠️ API Rate Limit hit in _save_tracking_update for {symbol}. Preserving DB state.", flush=True)
-            else:
-                print(f"⚠️ API error in _save_tracking_update for {symbol} ({exc}). Preserving DB state.", flush=True)
-
-    if portfolio.get('asset_balance', 0) > 0 and db_decision not in ('LONG', 'SHORT'):
-        db_decision = db_position_direction or 'LONG'
-
-    sl_val = portfolio.get('stop_loss_price') if portfolio.get('stop_loss_price') is not None else portfolio.get('stop_loss')
-    if sl_val is None or (isinstance(sl_val, (int, float)) and sl_val <= 0):
-        last_rec = session.query(PortfolioState).filter(
-            PortfolioState.symbol == symbol
-        ).order_by(PortfolioState.id.desc()).first()
-        if last_rec:
-            sl_val = getattr(last_rec, 'stop_loss_price', None) or getattr(last_rec, 'stop_loss', None)
+        pos_info = get_position_info(futures_client, symbol)
+        if pos_info and pos_info['size'] > 0:
+            db_decision = pos_info['direction']  # Force 'LONG' or 'SHORT'
+            db_position_direction = pos_info['direction']
+            db_entry_price = pos_info['entry_price']
+            db_pnl_usd = pos_info['unrealized_pnl']
 
     portfolio_record = PortfolioState(
         timestamp=datetime.now(),
@@ -569,11 +467,10 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
         dca_level=int(portfolio['dca_level']),
         last_exec_price=float(portfolio['last_exec_price']) if portfolio['last_exec_price'] is not None else None,
         total_cost=float(portfolio['total_cost']),
-        allocated_margin=float(portfolio.get('total_cost', 0.0)) / FUTURES_LEVERAGE,
         highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
         lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
-        stop_loss_price=float(sl_val) if sl_val is not None and float(sl_val) > 0 else 0.0,
-        stop_loss=float(sl_val) if sl_val is not None and float(sl_val) > 0 else 0.0,
+        stop_loss_price=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
+        stop_loss=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
         strategy=portfolio.get('strategy'),
         trailing_active=portfolio.get('trailing_active', False),
         pnl_pct=None,
@@ -737,7 +634,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
     """
     print(f"\n--- Execution Analyzer Started [{symbol}] (15m MTF Confluence) ---", flush=True)
 
-    order = None
     session = SessionLocal()
     try:
         # ── 0. Fetch macro trend from shared DB (Strict Requirement — No Bypass) ──
@@ -832,18 +728,33 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['highest_price_since_entry'] = cp
                     highest_price = cp
 
-                # ── Fast Take-Profit (+1.0%) ──
-                # Capture quick gains immediately before TSL or SL logic.
+                # ── Break-Even Trigger (+1.0%) ──
                 if not risk_exit_triggered and unrealized_pct >= 0.01:
-                    msg = (f"🎯 QUICK TP HIT: {symbol} LONG at {unrealized_pct*100:+.2f}% PnL "
-                           f"(entry=${ep:.4f}, current=${cp:.4f})")
-                    print(msg, flush=True)
-                    log_to_db(session, symbol, "EXIT", msg)
-                    portfolio = _close_position_handler(
-                        portfolio, current_price, symbol, session, 'QUICK_TP',
-                        futures_client, bullish_ob, bearish_ob, current_rsi,
-                        current_zscore, macro_info)
-                    risk_exit_triggered = True
+                    if stop_loss < ep:
+                        old_sl = stop_loss
+                        stop_loss = ep
+                        portfolio['stop_loss_price'] = stop_loss
+                        portfolio['stop_loss'] = stop_loss
+                        msg = (f"🛡️ BREAK-EVEN TRIGGERED: {symbol} LONG at {unrealized_pct*100:+.2f}% PnL. "
+                               f"Moved SL from ${old_sl:.4f} to Entry ${ep:.4f}")
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "INFO", msg)
+                        
+                        if futures_client:
+                            set_stop_loss_order(futures_client, symbol, 'LONG', stop_loss)
+                            
+                        try:
+                            latest_record = session.query(PortfolioState).filter(
+                                PortfolioState.symbol == symbol,
+                                PortfolioState.position_direction == 'LONG'
+                            ).order_by(PortfolioState.id.desc()).first()
+                            if latest_record:
+                                latest_record.stop_loss_price = stop_loss
+                                latest_record.stop_loss = stop_loss
+                                session.commit()
+                        except Exception as e:
+                            session.rollback()
+                            print(f"Warning: Failed to persist break-even SL to DB: {e}", flush=True)
 
                 # ── Trailing Stop Loss (Profit-Locking) ──
                 # Only activates once unrealized PnL >= TRAILING_ACTIVATE_PCT
@@ -871,11 +782,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                f"Peak: ${peak:.2f} | Locked Profit: {locked_pnl:+.2f}%")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "INFO", msg)
-                        
-                        # Apply new trailing stop on Binance
+
                         if futures_client:
-                            cancel_all_open_orders(futures_client, symbol)
-                            place_stop_loss_order(futures_client, symbol, 'LONG', new_sl)
+                            set_stop_loss_order(futures_client, symbol, 'LONG', stop_loss)
 
                     # Persist trailing state to DB for frontend
                     try:
@@ -942,18 +851,33 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['lowest_price_since_entry'] = cp
                     lowest_price = cp
 
-                # ── Fast Take-Profit (+1.0%) ──
-                # Capture quick gains immediately before TSL or SL logic.
+                # ── Break-Even Trigger (+1.0%) ──
                 if not risk_exit_triggered and unrealized_pct >= 0.01:
-                    msg = (f"🎯 QUICK TP HIT: {symbol} SHORT at {unrealized_pct*100:+.2f}% PnL "
-                           f"(entry=${ep:.4f}, current=${cp:.4f})")
-                    print(msg, flush=True)
-                    log_to_db(session, symbol, "EXIT", msg)
-                    portfolio = _close_position_handler(
-                        portfolio, current_price, symbol, session, 'QUICK_TP',
-                        futures_client, bullish_ob, bearish_ob, current_rsi,
-                        current_zscore, macro_info)
-                    risk_exit_triggered = True
+                    if stop_loss > ep or stop_loss == 0:
+                        old_sl = stop_loss
+                        stop_loss = ep
+                        portfolio['stop_loss_price'] = stop_loss
+                        portfolio['stop_loss'] = stop_loss
+                        msg = (f"🛡️ BREAK-EVEN TRIGGERED: {symbol} SHORT at {unrealized_pct*100:+.2f}% PnL. "
+                               f"Moved SL from ${old_sl:.4f} to Entry ${ep:.4f}")
+                        print(msg, flush=True)
+                        log_to_db(session, symbol, "INFO", msg)
+                        
+                        if futures_client:
+                            set_stop_loss_order(futures_client, symbol, 'SHORT', stop_loss)
+                            
+                        try:
+                            latest_record = session.query(PortfolioState).filter(
+                                PortfolioState.symbol == symbol,
+                                PortfolioState.position_direction == 'SHORT'
+                            ).order_by(PortfolioState.id.desc()).first()
+                            if latest_record:
+                                latest_record.stop_loss_price = stop_loss
+                                latest_record.stop_loss = stop_loss
+                                session.commit()
+                        except Exception as e:
+                            session.rollback()
+                            print(f"Warning: Failed to persist break-even SL to DB: {e}", flush=True)
 
                 # ── Trailing Stop Loss (Profit-Locking) ──
                 # Only activates once unrealized PnL >= TRAILING_ACTIVATE_PCT
@@ -981,11 +905,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                f"Trough: ${trough:.2f} | Locked Profit: {locked_pnl:+.2f}%")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "INFO", msg)
-                        
-                        # Apply new trailing stop on Binance
+
                         if futures_client:
-                            cancel_all_open_orders(futures_client, symbol)
-                            place_stop_loss_order(futures_client, symbol, 'SHORT', new_sl)
+                            set_stop_loss_order(futures_client, symbol, 'SHORT', stop_loss)
 
                     # Persist trailing state to DB for frontend
                     try:
@@ -1182,14 +1104,12 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         if decision == 'WAIT' and not risk_exit_triggered:
             # Check live Binance position (source of truth)
             if futures_client:
-                try:
-                    pos_info = get_position_info(futures_client, symbol)
-                    if pos_info and pos_info['size'] > 0:
-                        db_decision = pos_info['direction']  # 'LONG' or 'SHORT'
-                        print(f"  🔒 [{symbol}] DB decision synced to '{db_decision}' "
-                              f"(live Binance position, size={pos_info['size']})", flush=True)
-                except Exception as exc:
-                    print(f"⚠️ [{symbol}] Signal position sync check skipped ({exc})", flush=True)
+                pos_info = get_position_info(futures_client, symbol)
+                if pos_info and pos_info['size'] > 0:
+                    db_decision = pos_info['direction']  # 'LONG' or 'SHORT'
+                    print(f"  🔒 [{symbol}] DB decision synced to '{db_decision}' "
+                          f"(live Binance position, size={pos_info['size']})", flush=True)
+
             # Fallback: local portfolio state
             if db_decision == 'WAIT' and in_position and pos_direction in ('LONG', 'SHORT'):
                 db_decision = pos_direction
@@ -1246,8 +1166,31 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         current_zscore, macro_info)
                     in_position = False
 
-                # ── Execute LONG (open or DCA) ──
+                # ── Scale-Up (Pyramiding) Safety Checks ──
                 dca_level = portfolio.get('dca_level', 0)
+                if decision == 'LONG' and in_position and pos_direction == 'LONG':
+                    if dca_level >= 3:
+                        print(f"🛑 [{symbol}] LONG Scale-Up Skipped: Max iterations (2) reached.", flush=True)
+                        decision = 'WAIT'
+                    else:
+                        ep = float(portfolio.get('average_entry_price', 0))
+                        sl = float(portfolio.get('stop_loss', 0))
+                        if sl < ep or sl == 0:
+                            print(f"🛑 [{symbol}] LONG Scale-Up Skipped: Stop Loss (${sl:.4f}) not at/past Break-Even (${ep:.4f}).", flush=True)
+                            decision = 'WAIT'
+
+                if decision == 'SHORT' and in_position and pos_direction == 'SHORT':
+                    if dca_level >= 3:
+                        print(f"🛑 [{symbol}] SHORT Scale-Up Skipped: Max iterations (2) reached.", flush=True)
+                        decision = 'WAIT'
+                    else:
+                        ep = float(portfolio.get('average_entry_price', 0))
+                        sl = float(portfolio.get('stop_loss', 0))
+                        if sl > ep or sl == 0:
+                            print(f"🛑 [{symbol}] SHORT Scale-Up Skipped: Stop Loss (${sl:.4f}) not at/past Break-Even (${ep:.4f}).", flush=True)
+                            decision = 'WAIT'
+
+                # ── Execute LONG (open or DCA) ──
                 if decision == 'LONG':
                     # Determine Conviction Tier
                     vol_ratio = 0.0
@@ -1294,14 +1237,23 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['total_cost'] = float(portfolio.get('total_cost', 0)) + effective_usdt
                         portfolio['usdt_balance'] -= spend
                         portfolio['position_direction'] = 'LONG'
+                        
+                        # Set SL to max(old SL, new average entry price) to cover the scale-up cost
+                        if dca_level > 0:
+                            new_stop_loss = max(float(new_stop_loss), portfolio['average_entry_price'])
+                        
                         portfolio['stop_loss_price'] = float(new_stop_loss)
                         portfolio['stop_loss'] = float(new_stop_loss)
                         if dca_level == 0:
                             portfolio['highest_price_since_entry'] = float(current_price)
                             portfolio['lowest_price_since_entry'] = None
 
-                        # [REMOVED] Order execution was previously here before DB save.
-
+                        if futures_client:
+                            order = open_position(futures_client, symbol, 'LONG', effective_usdt)
+                            if order:
+                                set_stop_loss_order(futures_client, symbol, 'LONG', float(new_stop_loss))
+                        else:
+                            order = None
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
@@ -1337,7 +1289,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             dca_level=int(portfolio['dca_level']),
                             last_exec_price=float(portfolio['last_exec_price']),
                             total_cost=float(portfolio['total_cost']),
-                            allocated_margin=float(portfolio.get('total_cost', 0.0)) / FUTURES_LEVERAGE,
                             highest_price_since_entry=float(portfolio['highest_price_since_entry']),
                             stop_loss_price=float(new_stop_loss),
                             stop_loss=float(new_stop_loss),
@@ -1382,7 +1333,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             alert_reason = f"- Strategy: Unknown"
 
                         alert_msg = (
-                            f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: OPEN LONG* \U0001f6a8\n"
+                            f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: {'SCALE-UP LONG' if dca_level > 0 else 'OPEN LONG'}* \U0001f6a8\n"
                             f"\n"
                             f"*Symbol:* {symbol}\n"
                             f"*Price:* ${float(current_price):.2f}\n"
@@ -1400,12 +1351,14 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"- Slot Budget: ${SLOT_BUDGET:,.0f}\n"
                             f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
                             f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
-                            f"- Total Value: ${total_value:.2f}"
+                            f"- Total Value: ${total_value:.2f}\n"
+                            f"- DCA Iteration: {dca_level + 1}/3"
                         )
-                        send_telegram_alert(alert_msg)
+                        if not futures_client or order:
+                            send_telegram_alert(alert_msg)
 
-                # ── Execute SHORT (open new short position) ──
-                elif decision == 'SHORT' and not in_position:
+                # ── Execute SHORT (open new short position or Scale-Up) ──
+                elif decision == 'SHORT':
                     # Determine Conviction Tier
                     vol_ratio = 0.0
                     if strategy_type == 'PULLBACK' and bearish_ob and 'vol_ratio' in bearish_ob:
@@ -1439,19 +1392,36 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         effective_usdt = spend * (1 - TRADING_FEE)
                         asset_shorted = effective_usdt / float(current_price)
 
-                        portfolio['asset_balance'] = round(asset_shorted, 6)
-                        portfolio['average_entry_price'] = float(current_price)
-                        portfolio['dca_level'] = 1
+                        old_asset = float(portfolio.get('asset_balance', 0) or 0)
+                        old_avg = float(portfolio.get('average_entry_price', 0) or 0)
+                        old_val = old_asset * old_avg
+                        new_val = asset_shorted * float(current_price)
+
+                        portfolio['asset_balance'] = round(old_asset + asset_shorted, 6)
+                        portfolio['average_entry_price'] = (old_val + new_val) / portfolio['asset_balance']
+                        portfolio['dca_level'] = dca_level + 1
                         portfolio['last_exec_price'] = float(current_price)
-                        portfolio['total_cost'] = effective_usdt
+                        portfolio['total_cost'] = float(portfolio.get('total_cost', 0)) + effective_usdt
                         portfolio['usdt_balance'] -= spend
                         portfolio['position_direction'] = 'SHORT'
+                        
+                        # Set SL to min(old SL, new average entry price) to cover the scale-up cost
+                        if dca_level > 0:
+                            new_stop_loss = min(float(new_stop_loss), portfolio['average_entry_price'])
+                            
                         portfolio['stop_loss_price'] = float(new_stop_loss)
                         portfolio['stop_loss'] = float(new_stop_loss)
-                        portfolio['lowest_price_since_entry'] = float(current_price)
-                        portfolio['highest_price_since_entry'] = None
+                        
+                        if dca_level == 0:
+                            portfolio['lowest_price_since_entry'] = float(current_price)
+                            portfolio['highest_price_since_entry'] = None
 
-                        # [REMOVED] Order execution was previously here before DB save.
+                        if futures_client:
+                            order = open_position(futures_client, symbol, 'SHORT', effective_usdt)
+                            if order:
+                                set_stop_loss_order(futures_client, symbol, 'SHORT', float(new_stop_loss))
+                        else:
+                            order = None
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
@@ -1487,7 +1457,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             dca_level=int(portfolio['dca_level']),
                             last_exec_price=float(portfolio['last_exec_price']),
                             total_cost=float(portfolio['total_cost']),
-                            allocated_margin=float(portfolio.get('total_cost', 0.0)) / FUTURES_LEVERAGE,
                             highest_price_since_entry=None,
                             lowest_price_since_entry=float(portfolio['lowest_price_since_entry']),
                             stop_loss_price=float(new_stop_loss),
@@ -1532,7 +1501,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             alert_reason = f"- Strategy: Unknown"
 
                         alert_msg = (
-                            f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: OPEN SHORT* \U0001f6a8\n"
+                            f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: {'SCALE-UP SHORT' if dca_level > 0 else 'OPEN SHORT'}* \U0001f6a8\n"
                             f"\n"
                             f"*Symbol:* {symbol}\n"
                             f"*Price:* ${float(current_price):.2f}\n"
@@ -1550,9 +1519,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"- Slot Budget: ${SLOT_BUDGET:,.0f}\n"
                             f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
                             f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
-                            f"- Total Value: ${total_value:.2f}"
+                            f"- Total Value: ${total_value:.2f}\n"
+                            f"- DCA Iteration: {dca_level + 1}/3"
                         )
-                        send_telegram_alert(alert_msg)
+                        if not futures_client or order:
+                            send_telegram_alert(alert_msg)
 
                 # ── Close LONG via SHORT signal (if holding LONG) ──
                 elif decision == 'SHORT' and in_position and pos_direction == 'LONG':
@@ -1596,29 +1567,22 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             db_unrealized_pnl = None
 
             if futures_client:
-                try:
-                    pos_info = get_position_info(futures_client, symbol)
-                    if pos_info is not None:
-                        if pos_info['size'] > 0:
-                            db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
-                            db_pos_direction = pos_info['direction']
-                            db_entry_price = pos_info['entry_price']
-                            db_unrealized_pnl = pos_info['unrealized_pnl']
-                            in_position = True  # Binance confirms position is open
-                            print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
-                                  f"Entry=${db_entry_price:.2f} | "
-                                  f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
-                        elif pos_info['size'] == 0.0:
-                            # ONLY clear DB slot if API successfully responded and confirmed size is 0
-                            if in_position and db_pos_direction in ('LONG', 'SHORT'):
-                                print(f"🧹 [{symbol}] Binance confirmed 0 position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
-                                db_decision = 'MANUAL_CLOSE'
-                                portfolio['asset_balance'] = 0.0
-                                in_position = False
-                    else:
-                        print(f"⚠️ [{symbol}] API error or Rate Limit during position sync. PRESERVING DB state.", flush=True)
-                except Exception as exc:
-                    print(f"⚠️ [{symbol}] Position sync error ({exc}). PRESERVING DB state.", flush=True)
+                pos_info = get_position_info(futures_client, symbol)
+                if pos_info and pos_info['size'] > 0:
+                    db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
+                    db_pos_direction = pos_info['direction']
+                    db_entry_price = pos_info['entry_price']
+                    db_unrealized_pnl = pos_info['unrealized_pnl']
+                    in_position = True  # Binance confirms position is open
+                    print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
+                          f"Entry=${db_entry_price:.2f} | "
+                          f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
+                elif pos_info and pos_info['size'] == 0.0:
+                    if in_position and db_pos_direction in ('LONG', 'SHORT'):
+                        print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
+                        db_decision = 'MANUAL_CLOSE'
+                        portfolio['asset_balance'] = 0.0
+                        in_position = False
 
             # Fallback: if db_decision is still WAIT but local portfolio has a position
             if db_decision == 'WAIT' and in_position and db_pos_direction in ('LONG', 'SHORT'):
@@ -1646,16 +1610,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 # ── Always save synced PortfolioState row ──
                 total_value = float(portfolio['usdt_balance']) + (float(portfolio['asset_balance']) * cp)
                 sl_val = portfolio.get('stop_loss_price') if portfolio.get('stop_loss_price') is not None else portfolio.get('stop_loss')
-                if sl_val is None or (isinstance(sl_val, (int, float)) and sl_val <= 0):
-                    last_rec = session.query(PortfolioState).filter(
-                        PortfolioState.symbol == symbol,
-                        PortfolioState.position_direction == db_pos_direction
-                    ).order_by(PortfolioState.id.desc()).first()
-                    if last_rec:
-                        sl_val = getattr(last_rec, 'stop_loss_price', None) or getattr(last_rec, 'stop_loss', None)
-                        if sl_val and float(sl_val) > 0:
-                            portfolio['stop_loss_price'] = float(sl_val)
-                            portfolio['stop_loss'] = float(sl_val)
 
                 portfolio_record = PortfolioState(
                     timestamp=datetime.now(),
@@ -1669,7 +1623,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     dca_level=int(portfolio['dca_level']),
                     last_exec_price=float(portfolio['last_exec_price']) if portfolio['last_exec_price'] is not None else None,
                     total_cost=float(portfolio['total_cost']),
-                    allocated_margin=float(portfolio.get('total_cost', 0.0)) / FUTURES_LEVERAGE,
                     highest_price_since_entry=float(portfolio['highest_price_since_entry']) if portfolio['highest_price_since_entry'] is not None else None,
                     lowest_price_since_entry=float(portfolio['lowest_price_since_entry']) if portfolio['lowest_price_since_entry'] is not None else None,
                     stop_loss_price=float(sl_val) if sl_val is not None and float(sl_val) > 0 else None,
@@ -1683,7 +1636,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 try:
                     session.add(portfolio_record)
                     session.commit()
-                    msg = f"✅ [{symbol}] Position state synced to DB: decision='{db_decision}', direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}, sl=${float(sl_val) if sl_val else 0:.4f}"
+                    msg = f"✅ [{symbol}] Position state synced to DB: decision='{db_decision}', direction='{db_pos_direction}', entry=${db_entry_price or 0:.2f}"
                     print(f"  {msg}", flush=True)
                     log_to_db(session, symbol, "INFO", msg)
                 except Exception as e:
@@ -1840,7 +1793,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"Binance order placement blocked."
                         )
                     else:
-                        order = None
                         try:
                             # ── Fetch stepSize precision for this symbol ──
                             info = futures_client.futures_exchange_info()
@@ -1891,12 +1843,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                     f"OrderID: {order['orderId']} | "
                                     f"Allocated: ${allocated_usdt:.2f}"
                                 )
-                                
-                                # Apply initial Hard Stop Loss
-                                initial_sl = portfolio.get('stop_loss_price') or portfolio.get('stop_loss')
-                                if initial_sl and initial_sl > 0:
-                                    place_stop_loss_order(futures_client, symbol, direction, initial_sl)
-                                    
                                 return True
 
                         except Exception as e:
@@ -1908,17 +1854,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             traceback.print_exc()
         # ════════════════════════════════════════════════════════════════════
 
-        # ── 8. CRITICAL FIX: Unconditionally update dashboard state ──
-        # Guarantees the Laravel API serves real-time accurate macro trends
-        # and indicator values (RSI, Z-Score) regardless of the trading decision.
-        update_symbol_execution_data(
-            symbol=symbol,
-            current_price=current_price,
-            rsi=current_rsi,
-            z_score_15m=current_zscore,
-            z_score_1h=macro_zscore,
-            macro_trend=macro_trend
-        )
 
     except Exception as e:
         session.rollback()

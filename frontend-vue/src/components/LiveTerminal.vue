@@ -45,12 +45,9 @@ import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 
 const logs = ref([])
 const terminalContainer = ref(null)
-const isFetchingLogs = ref(false)
-let pollingTimer = null
+let pollingInterval
 
 const fetchLogs = async () => {
-  if (isFetchingLogs.value) return
-  isFetchingLogs.value = true
   try {
     const res = await fetch('/api/dashboard/logs', { headers: { 'Accept': 'application/json' } })
     if (res.ok) {
@@ -65,9 +62,6 @@ const fetchLogs = async () => {
     }
   } catch (e) {
     console.error('Failed to fetch bot logs', e)
-  } finally {
-    isFetchingLogs.value = false
-    pollingTimer = setTimeout(fetchLogs, 3000)
   }
 }
 
@@ -96,12 +90,10 @@ const getLogColor = (action) => {
 
 onMounted(() => {
   fetchLogs()
+  pollingInterval = setInterval(fetchLogs, 3000)
 })
 
 onUnmounted(() => {
-  if (pollingTimer) {
-    clearTimeout(pollingTimer)
-    pollingTimer = null
-  }
+  clearInterval(pollingInterval)
 })
 </script>

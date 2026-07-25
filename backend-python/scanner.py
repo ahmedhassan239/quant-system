@@ -98,10 +98,6 @@ def fetch_top_symbols():
     # ── Step 1: Active perpetual universe ─────────────────────────────
     active_perps = _fetch_active_usdt_perpetuals()
 
-    # Rate-limit protection: delay before next API request
-    import time as _scanner_time
-    _scanner_time.sleep(0.5)
-
     # ── Step 2: Fetch all 24h tickers ─────────────────────────────────
     response = requests.get(BINANCE_TICKER_URL, timeout=15)
     response.raise_for_status()

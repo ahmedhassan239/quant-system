@@ -95,7 +95,6 @@ class PortfolioState(Base):
     dca_level = Column(Integer, default=0, nullable=False)
     last_exec_price = Column(Float, nullable=True)
     total_cost = Column(Float, nullable=False, default=0.0)
-    allocated_margin = Column(Float, nullable=True)
     highest_price_since_entry = Column(Float, nullable=True)
     lowest_price_since_entry = Column(Float, nullable=True)
     stop_loss_price = Column(Float, nullable=True)
@@ -150,9 +149,6 @@ class MacroState(SharedBase):
     macro_trend = Column(String, nullable=False)          # 'UPTREND' or 'DOWNTREND'
     sma_50 = Column(Float, nullable=False)                # Current SMA-50 value
     z_score = Column(Float, nullable=False)               # Current Z-Score
-    rsi = Column(Float, nullable=True)
-    z_score_15m = Column(Float, nullable=True)
-    z_score_1h = Column(Float, nullable=True)
     std_dev = Column(Float, nullable=True)                # Current 50-period σ
     sdc_upper = Column(Float, nullable=True)              # SMA + 2σ
     sdc_lower = Column(Float, nullable=True)              # SMA - 2σ
@@ -295,36 +291,11 @@ def get_macro_trend(symbol):
                 'sdc_lower': state.sdc_lower,
                 'current_price': state.current_price,
                 'updated_at': state.updated_at,
-                'rsi': getattr(state, 'rsi', None),
-                'z_score_15m': getattr(state, 'z_score_15m', None),
-                'z_score_1h': getattr(state, 'z_score_1h', None),
             }
         return None
     except Exception as e:
         print(f"⚠️ [{symbol}] Failed to read MacroState: {e}", flush=True)
         return None
-    finally:
-        session.close()
-
-def update_symbol_execution_data(symbol, current_price, rsi, z_score_15m, z_score_1h, macro_trend):
-    """
-    Unconditionally updates the symbol's LATEST calculated data at the end of the
-    evaluation cycle. This ensures the dashboard stays in sync with the Python engine.
-    """
-    session = SharedSessionLocal()
-    try:
-        record = session.query(MacroState).filter(MacroState.symbol == symbol).first()
-        if record:
-            record.current_price = float(current_price) if current_price is not None else record.current_price
-            record.rsi = float(rsi) if rsi is not None else None
-            record.z_score_15m = float(z_score_15m) if z_score_15m is not None else None
-            record.z_score_1h = float(z_score_1h) if z_score_1h is not None else None
-            record.macro_trend = macro_trend
-            record.updated_at = datetime.utcnow()
-            session.commit()
-    except Exception as e:
-        session.rollback()
-        print(f"⚠️ [{symbol}] Failed to update execution data in MacroState: {e}", flush=True)
     finally:
         session.close()
 
@@ -354,67 +325,24 @@ def save_wallet_balance(balance: float):
 # ══════════════════════════════════════════════════════════════════════
 
 def init_db():
-    """Create tables if they don't exist, and perform safe migrations for new columns."""
+    """Create tables if they don't exist, drop/recreate positions for clean schema."""
     Base.metadata.create_all(bind=engine)
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS usdt_balance DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss_price DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS strategy VARCHAR;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS trailing_active BOOLEAN DEFAULT FALSE;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_reason VARCHAR;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_usd DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_pct DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_portfolio_value DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS lowest_price_since_entry DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS highest_price_since_entry DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_cost DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS last_exec_price DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS dca_level INTEGER DEFAULT 0;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS average_entry_price DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS position_direction VARCHAR;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS current_price DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS asset_balance DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS decision VARCHAR;"))
-            conn.commit()
-    except Exception as e:
-        print(f"⚠️ Safe migration warning in init_db: {e}", flush=True)
 
 def init_shared_db():
     """Create the MacroState / ActiveSymbol tables in the shared database.
 
     Also runs a safe migration to add the `rank` column to active_symbols
-    and all missing columns to `positions` if the table already exists.
+    if the table already exists from a previous deployment without that column.
     """
     SharedBase.metadata.create_all(bind=shared_engine)
 
+    # Safe migration: add `rank` to active_symbols if it is missing.
+    # `ALTER TABLE … ADD COLUMN IF NOT EXISTS` is idempotent in PostgreSQL 9.6+.
     try:
         with shared_engine.connect() as conn:
-            conn.execute(text("ALTER TABLE active_symbols ADD COLUMN IF NOT EXISTS rank INTEGER NOT NULL DEFAULT 0;"))
-            conn.execute(text("ALTER TABLE macro_state ADD COLUMN IF NOT EXISTS rsi DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE macro_state ADD COLUMN IF NOT EXISTS z_score_15m DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE macro_state ADD COLUMN IF NOT EXISTS z_score_1h DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS usdt_balance DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS allocated_margin DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS stop_loss_price DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS strategy VARCHAR;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS trailing_active BOOLEAN DEFAULT FALSE;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_reason VARCHAR;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_usd DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS pnl_pct DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_portfolio_value DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS lowest_price_since_entry DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS highest_price_since_entry DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_cost DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS last_exec_price DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS dca_level INTEGER DEFAULT 0;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS average_entry_price DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS position_direction VARCHAR;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS current_price DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS asset_balance DOUBLE PRECISION;"))
-            conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS decision VARCHAR;"))
+            conn.execute(text(
+                "ALTER TABLE active_symbols ADD COLUMN IF NOT EXISTS rank INTEGER NOT NULL DEFAULT 0;"
+            ))
             conn.commit()
     except Exception:
         # Table may not exist yet (first-time init) — create_all above handles it.
