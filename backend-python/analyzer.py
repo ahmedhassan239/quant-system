@@ -29,7 +29,7 @@ TRAILING_DISTANCE_PCT = 0.01              # 1.0 % trailing distance from peak/tr
 TRAILING_PULLBACK_PCT = 0.005             # -0.5 % (legacy, kept for compat)
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
-MAX_GLOBAL_POSITIONS = 6                  # Hard limit: max open positions on Binance
+MAX_GLOBAL_POSITIONS = 3                  # Hard limit: max open positions on Binance
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1619,6 +1619,28 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
                           f"Entry=${db_entry_price:.2f} | "
                           f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
+
+                    # Strict Trend Direction Enforcement
+                    if (db_pos_direction == 'LONG' and macro_trend == 'DOWNTREND') or \
+                       (db_pos_direction == 'SHORT' and macro_trend == 'UPTREND'):
+                        print(f"🚨 [{symbol}] Counter-trend position detected (Direction: {db_pos_direction}, Macro: {macro_trend}). Closing immediately.", flush=True)
+                        _close_position_handler(
+                            portfolio, current_price, symbol, session, 'TREND_REVERSAL',
+                            futures_client, bullish_ob, bearish_ob, current_rsi,
+                            current_zscore, macro_info
+                        )
+                        return False # Early return since position is closed
+
+                    # Always Calculate SL
+                    sl_val = portfolio.get('stop_loss_price')
+                    if sl_val is None or float(sl_val) <= 0:
+                        if db_pos_direction == 'LONG':
+                            sl_val = float(db_entry_price) * 0.985
+                        elif db_pos_direction == 'SHORT':
+                            sl_val = float(db_entry_price) * 1.015
+                        portfolio['stop_loss_price'] = sl_val
+                        portfolio['stop_loss'] = sl_val
+                        print(f"🔄 [{symbol}] Calculated missing Stop Loss during sync: ${sl_val:.4f}", flush=True)
                 elif pos_info and pos_info['size'] == 0.0:
                     if in_position and db_pos_direction in ('LONG', 'SHORT'):
                         print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
