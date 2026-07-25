@@ -7,7 +7,8 @@ from analyzer import run_analyzer, run_macro_analyzer, send_telegram_alert, MAX_
 from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     ENV_TYPE, SCHEDULE_INTERVAL_MINUTES, BINANCE_FUTURES_BASE_URL,
                     FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE,
-                    MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD)
+                    MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
+                    REAL_WORLD_WHITELIST, MOCK_TOKENS_BLACKLIST)
 from database import (SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS,
                       init_shared_db, get_active_symbols, save_wallet_balance,
                       SessionLocal, get_open_position_symbols, sync_missing_stop_losses)
@@ -80,7 +81,10 @@ def scanner_job():
         if s not in all_symbols:
             all_symbols.append(s)
 
-    print(f"Trading active symbols (Scanned: {len(radar_symbols)}, Open: {len(open_pos_symbols)}, Total: {len(all_symbols)}): {all_symbols}", flush=True)
+    # STRICT SAFETY RULE: Filter out any mock tokens or non-whitelisted assets under all circumstances
+    all_symbols = [s for s in all_symbols if s in REAL_WORLD_WHITELIST and s not in MOCK_TOKENS_BLACKLIST]
+
+    print(f"Trading active symbols (Scanned: {len(radar_symbols)}, Open: {len(open_pos_symbols)}, Total Whitelisted: {len(all_symbols)}): {all_symbols}", flush=True)
 
     # 3. Fetch latest Futures candle data for all processed symbols
     run_fetcher(symbols=all_symbols)

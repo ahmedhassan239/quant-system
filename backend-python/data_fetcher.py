@@ -4,9 +4,9 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.dialects.postgresql import insert
 from database import SessionLocal, MarketData, engine, init_db
-from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME
+from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME, REAL_WORLD_WHITELIST, MOCK_TOKENS_BLACKLIST
 
-def fetch_binance_klines(symbol='PAXGUSDT', interval=TIMEFRAME, limit=100):
+def fetch_binance_klines(symbol='BTCUSDT', interval=TIMEFRAME, limit=100):
     """
     Fetch klines/candlestick data from the Binance Futures API.
     Uses /fapi/v1/klines for Futures Testnet.
@@ -79,11 +79,15 @@ def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250):
     """
     Core execution logic for the data fetcher.
     Fetches Futures candle data for each symbol in the list.
-    Defaults to PAXGUSDT if no symbols provided.
+    Defaults to BTCUSDT if no symbols provided.
+    Strictly forbids fetching candles for mock tokens.
     Uses limit=250 to ensure SMA 200 has enough warmup data.
     """
     if symbols is None:
-        symbols = ['PAXGUSDT']
+        symbols = ['BTCUSDT']
+    else:
+        # Ensure under NO circumstances should the bot pull candles for mock tokens or non-whitelisted assets
+        symbols = [s for s in symbols if s in REAL_WORLD_WHITELIST and s not in MOCK_TOKENS_BLACKLIST]
 
     print("--- Fetcher Started (Futures) ---", flush=True)
     # Ensure tables exist before trying to save

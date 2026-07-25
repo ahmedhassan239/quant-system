@@ -14,7 +14,10 @@ Usage:
 """
 
 import requests
-from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME, ALERT_PREFIX
+from config import (
+    BINANCE_FUTURES_BASE_URL, TIMEFRAME, ALERT_PREFIX,
+    REAL_WORLD_WHITELIST, MOCK_TOKENS_BLACKLIST
+)
 
 # ──────────────────────────────────────────────────────────────────────
 #  CONFIGURATION
@@ -23,7 +26,7 @@ BINANCE_TICKER_URL       = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/24hr"
 BINANCE_EXCHANGE_INFO_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/exchangeInfo"
 
 TOP_N = 15
-MIN_QUOTE_VOLUME = 15_000_000.0  # Minimum 24h quote volume ($15M USDT)
+MIN_QUOTE_VOLUME = 5_000_000.0  # Minimum 24h quote volume ($5M USDT)
 
 # Stablecoin / fiat-pegged quote pairs to exclude.
 # These end with USDT but do not represent tradeable crypto assets.
@@ -80,20 +83,16 @@ def _fetch_active_usdt_perpetuals() -> set | None:
 
 def fetch_top_symbols():
     """
-    TRUE FULL-MARKET DYNAMIC SCAN — no whitelist.
+    WHITELIST-RESTRICTED DYNAMIC SCAN.
 
     Pipeline:
       1. Resolve active USDT PERPETUAL contracts via /fapi/v1/exchangeInfo.
       2. Fetch all 24h tickers from /fapi/v1/ticker/24hr.
-      3. Accept only symbols present in the active perpetuals set.
-      4. Reject stablecoin / fiat-pegged pairs via STABLECOIN_BLACKLIST.
-      5. Enforce minimum 24h quote volume of $10M USDT.
+      3. Accept ONLY symbols explicitly defined in REAL_WORLD_WHITELIST.
+      4. Reject any symbol in MOCK_TOKENS_BLACKLIST or stablecoin pairs.
+      5. Enforce minimum 24h quote volume of $5M USDT.
       6. Sort the entire valid universe by 24h quoteVolume descending.
-      7. Return the Top N most liquid pairs.
-
-    Returns:
-        list[dict]: Volume-ranked list of the top N candidate dicts,
-                    preserving strict quoteVolume descending order.
+      7. Return the Top N most liquid real-world pairs.
     """
     # ── Step 1: Active perpetual universe ─────────────────────────────
     active_perps = _fetch_active_usdt_perpetuals()
@@ -107,6 +106,14 @@ def fetch_top_symbols():
 
     for t in tickers:
         symbol = t.get('symbol', '')
+
+        # 1. STRICT WHITELIST CHECK: Must be in REAL_WORLD_WHITELIST
+        if symbol not in REAL_WORLD_WHITELIST:
+            continue
+
+        # 2. STRICT BLACKLIST CHECK: Under no circumstances allow mock tokens
+        if symbol in MOCK_TOKENS_BLACKLIST:
+            continue
 
         # Must be a USDT-quoted pair
         if not symbol.endswith('USDT'):
@@ -123,7 +130,7 @@ def fetch_top_symbols():
         quote_volume    = float(t.get('quoteVolume', 0))
         price_change_pct = float(t.get('priceChangePercent', 0))
 
-        # Enforce hard minimum 24h Quote Volume of $10M USDT
+        # Enforce hard minimum 24h Quote Volume
         if quote_volume < MIN_QUOTE_VOLUME:
             continue
 
@@ -142,12 +149,12 @@ def fetch_top_symbols():
 
 def scan():
     """
-    Run the full-market dynamic radar and return the volume-ranked
-    list of top 15 symbols to trade.
+    Run the whitelist-restricted dynamic radar and return the volume-ranked
+    list of top 15 real-world crypto symbols to trade.
 
     Symbols are returned in strict descending quoteVolume order
     (e.g. [BTCUSDT, ETHUSDT, SOLUSDT, ...]).
-    No static overrides or ALWAYS_INCLUDE lists are applied.
+    Mock tokens (like HANA, GWEI, ESPORTS, VELVET, PROM) are strictly rejected.
     """
     top     = fetch_top_symbols()
     symbols = [c['symbol'] for c in top]
@@ -156,7 +163,7 @@ def scan():
     print("=" * 70, flush=True)
     print(
         f"  🚀 [LIVE - 5m EXEC] DYNAMIC RADAR — "
-        f"Top {TOP_N} Full Market Liquid USDT Futures Pairs",
+        f"Top {TOP_N} Whitelisted Real-World Liquid USDT Futures Pairs",
         flush=True,
     )
     print("=" * 70, flush=True)

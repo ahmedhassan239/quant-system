@@ -21,6 +21,32 @@ ENV_TYPE = os.environ.get("ENV_TYPE", "LIVE")          # "LIVE" or "TESTNET"
 ENGINE_ROLE = os.environ.get("ENGINE_ROLE", "EXECUTION")  # "MACRO" or "EXECUTION"
 
 # ──────────────────────────────────────────────────────────────────────
+#  REAL-WORLD LIQUIDITY WHITELIST & MOCK TOKEN BLACKLIST
+# ──────────────────────────────────────────────────────────────────────
+# Authoritative Whitelist of major, highly liquid real-world crypto assets.
+# On Binance Futures Testnet, mock tokens (e.g., HANAUSDT, ESPORTSUSDT,
+# VELVETUSDT, GWEIUSDT, PROMUSDT) can have artificially inflated volume.
+# Instead of scanning all available perpetuals from exchangeInfo, the bot
+# MUST ONLY scan, rank, and trade symbols explicitly defined in this Whitelist.
+REAL_WORLD_WHITELIST = {
+    'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT',
+    'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'MATICUSDT', 'BCHUSDT', 'LTCUSDT',
+    'DOTUSDT', 'NEARUSDT', 'UNIUSDT', 'ATOMUSDT', 'ETCUSDT', 'FILUSDT',
+    'TRXUSDT', 'SUIUSDT', 'APTUSDT', 'ARBUSDT', 'OPUSDT', 'INJUSDT',
+    'PEPEUSDT', 'SHIBUSDT', 'RENDERUSDT', 'FETUSDT', 'TAOUSDT', 'SEIUSDT',
+    'WIFUSDT', 'FLOKIUSDT', 'BONKUSDT', 'NOTUSDT', 'TONUSDT', 'AAVEUSDT',
+    'MKRUSDT', 'SNXUSDT', 'CRVUSDT', 'LDOUSDT', 'RUNEUSDT', 'FTMUSDT',
+    'SANDUSDT', 'MANAUSDT', 'AXSUSDT', 'THETAUSDT', 'ALGOUSDT', 'XLMUSDT',
+}
+
+# Strict blacklist for known mock/testnet tokens as an extra layer of defense
+MOCK_TOKENS_BLACKLIST = {
+    'HANAUSDT', 'GWEIUSDT', 'ESPORTSUSDT', 'VELVETUSDT', 'PROMUSDT',
+    'DEXEUSDT', 'AKEUSDT', 'ONUSDT', 'EULUSDT', 'FXSUSDT', 'BANKUSDT',
+    'RIFUSDT',
+}
+
+# ──────────────────────────────────────────────────────────────────────
 #  BINANCE API
 # ──────────────────────────────────────────────────────────────────────
 # Legacy Spot URL (kept for backward compatibility)

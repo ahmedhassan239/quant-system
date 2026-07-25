@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, UniqueConstraint, text, func, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
+from config import REAL_WORLD_WHITELIST, MOCK_TOKENS_BLACKLIST
 
 # ──────────────────────────────────────────────────────────────────────
 #  PER-ENGINE DATABASE (portfolio, signals, market data)
@@ -427,7 +428,7 @@ def get_active_symbols():
             .order_by(ActiveSymbol.rank.asc())
             .all()
         )
-        symbol_list = [r.symbol for r in rows]
+        symbol_list = [r.symbol for r in rows if r.symbol in REAL_WORLD_WHITELIST and r.symbol not in MOCK_TOKENS_BLACKLIST]
         return symbol_list if symbol_list else default_symbols
     except Exception as e:
         print(f"⚠️ Error fetching active symbols: {e}")
@@ -449,6 +450,9 @@ def update_active_symbols(new_symbols: list[str]):
         if not shared_engine.dialect.has_table(shared_engine.connect(), "active_symbols"):
             print("⚠️ active_symbols table not found. Run init_shared_db() first.")
             return
+
+        # Ensure strict whitelist enforcement and exclude mock tokens
+        new_symbols = [s for s in new_symbols if s in REAL_WORLD_WHITELIST and s not in MOCK_TOKENS_BLACKLIST]
 
         existing_records = session.query(ActiveSymbol).all()
         existing_dict = {record.symbol: record for record in existing_records}
