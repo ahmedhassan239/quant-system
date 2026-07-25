@@ -720,7 +720,28 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             stop_loss = float(portfolio.get('stop_loss_price', 0) or 0)
             trailing_active = portfolio.get('trailing_active', False)
 
-            if pos_direction == 'LONG':
+            # ── 1. Trend Invalidation Exit ──
+            if pos_direction == 'LONG' and macro_trend == 'DOWNTREND':
+                msg = f"🚨 [{symbol}] TREND INVALIDATION: Macro flipped to DOWNTREND. Closing LONG immediately."
+                print(msg, flush=True)
+                log_to_db(session, symbol, "EXIT", msg)
+                portfolio = _close_position_handler(
+                    portfolio, current_price, symbol, session, 'TREND_INVALIDATION',
+                    futures_client, bullish_ob, bearish_ob, current_rsi,
+                    current_zscore, macro_info)
+                risk_exit_triggered = True
+
+            elif pos_direction == 'SHORT' and macro_trend == 'UPTREND':
+                msg = f"🚨 [{symbol}] TREND INVALIDATION: Macro flipped to UPTREND. Closing SHORT immediately."
+                print(msg, flush=True)
+                log_to_db(session, symbol, "EXIT", msg)
+                portfolio = _close_position_handler(
+                    portfolio, current_price, symbol, session, 'TREND_INVALIDATION',
+                    futures_client, bullish_ob, bearish_ob, current_rsi,
+                    current_zscore, macro_info)
+                risk_exit_triggered = True
+
+            if pos_direction == 'LONG' and not risk_exit_triggered:
                 unrealized_pct = (cp - ep) / ep
 
                 # Track new peak price
@@ -843,7 +864,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             risk_exit_triggered = True
 
 
-            elif pos_direction == 'SHORT':
+            elif pos_direction == 'SHORT' and not risk_exit_triggered:
                 unrealized_pct = (ep - cp) / ep
 
                 # Track new trough price
