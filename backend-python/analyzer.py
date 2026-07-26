@@ -2119,6 +2119,18 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                     portfolio['stop_loss_price'] = sl_val
                     portfolio['stop_loss'] = sl_val
+
+                    if sl_val and float(sl_val) > 0 and futures_client:
+                        try:
+                            open_ords = futures_client.futures_get_open_orders(symbol=symbol)
+                            algo_ords = futures_client.futures_get_open_algo_orders(symbol=symbol) if hasattr(futures_client, 'futures_get_open_algo_orders') else []
+                            has_sl = any(o.get('type') == 'STOP_MARKET' or o.get('orderType') == 'STOP_MARKET' for o in (open_ords + algo_ords))
+                            if not has_sl:
+                                print(f"🛡️ [{symbol}] Missing live SL on Binance! Placing emergency hard Stop Loss at ${float(sl_val):.4f}", flush=True)
+                                set_stop_loss_order(futures_client, symbol, db_pos_direction, float(sl_val))
+                        except Exception as sl_check_err:
+                            print(f"⚠️ [{symbol}] Could not check/set emergency SL on Binance: {sl_check_err}", flush=True)
+
                 elif pos_info and pos_info['size'] == 0.0:
                     if in_position and db_pos_direction in ('LONG', 'SHORT'):
                         print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)

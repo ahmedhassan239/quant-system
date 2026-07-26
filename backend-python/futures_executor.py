@@ -337,8 +337,8 @@ def count_all_open_positions(client: Client) -> int:
 
 def _round_quantity(client: Client, symbol: str, raw_qty: float) -> float:
     """
-    Round a quantity to the exchange-allowed step size (precision)
-    for a given Futures symbol.
+    Round a quantity strictly to the exchange-allowed step size (precision)
+    for a given Futures symbol without floating-point modulo artifacts.
     """
     try:
         info = client.futures_exchange_info()
@@ -348,11 +348,11 @@ def _round_quantity(client: Client, symbol: str, raw_qty: float) -> float:
                     if f['filterType'] == 'LOT_SIZE':
                         step_size = float(f['stepSize'])
                         if step_size > 0:
-                            # Floor to the nearest step
-                            precision = len(f['stepSize'].rstrip('0').split('.')[-1]) \
-                                if '.' in f['stepSize'] else 0
-                            rounded = round(raw_qty - (raw_qty % step_size), precision)
-                            return rounded
+                            precision = len(f['stepSize'].rstrip('0').split('.')[-1]) if '.' in f['stepSize'] else 0
+                            import math
+                            steps = math.floor(round(raw_qty / step_size, 8))
+                            rounded = round(steps * step_size, precision)
+                            return float(rounded)
         # Fallback: 5 decimal places
         return round(raw_qty, 5)
     except Exception as e:
@@ -362,8 +362,8 @@ def _round_quantity(client: Client, symbol: str, raw_qty: float) -> float:
 
 def _round_price(client: Client, symbol: str, raw_price: float) -> float:
     """
-    Round a price to the exchange-allowed tick size (precision)
-    for a given Futures symbol.
+    Round a price strictly to the exchange-allowed tick size (precision)
+    for a given Futures symbol without floating-point modulo artifacts.
     """
     try:
         info = client.futures_exchange_info()
@@ -373,10 +373,10 @@ def _round_price(client: Client, symbol: str, raw_price: float) -> float:
                     if f['filterType'] == 'PRICE_FILTER':
                         tick_size = float(f['tickSize'])
                         if tick_size > 0:
-                            precision = len(f['tickSize'].rstrip('0').split('.')[-1]) \
-                                if '.' in f['tickSize'] else 0
-                            rounded = round(raw_price - (raw_price % tick_size), precision)
-                            return rounded
+                            precision = len(f['tickSize'].rstrip('0').split('.')[-1]) if '.' in f['tickSize'] else 0
+                            steps = round(raw_price / tick_size)
+                            rounded = round(steps * tick_size, precision)
+                            return float(rounded)
         # Fallback: 2 decimal places
         return round(raw_price, 2)
     except Exception as e:
@@ -394,10 +394,18 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
         return None
 
     try:
-        # 1. Cancel existing orders (to clear old SLs)
-        client.futures_cancel_all_open_orders(symbol=symbol)
+        # 1. Cancel existing orders (to clear old SLs, both normal and conditional algo orders)
+        try:
+            client.futures_cancel_all_open_orders(symbol=symbol)
+        except Exception as err:
+            logger.debug(f"[{symbol}] Note canceling normal open orders: {err}")
+        try:
+            if hasattr(client, 'futures_cancel_all_algo_open_orders'):
+                client.futures_cancel_all_algo_open_orders(symbol=symbol)
+        except Exception as err:
+            logger.debug(f"[{symbol}] Note canceling algo open orders: {err}")
 
-        # 2. Format the stop price
+        # 2. Format the stop price strictly to symbol's tick size precision
         rounded_price = _round_price(client, symbol, stop_price)
         
         # 3. Determine side (close LONG = SELL, close SHORT = BUY)
@@ -405,21 +413,35 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
         
         logger.info(f"[{symbol}] SETTING STOP LOSS {direction} | Side: {side} | Stop Price: {rounded_price}")
 
-        # 4. Place order
-        order = client.futures_create_order(
-            symbol=symbol,
-            side=side,
-            type='STOP_MARKET',
-            stopPrice=rounded_price,
-            closePosition='true'
-        )
+        # 4. Place order wrapped in try-except with safe error handling
+        try:
+            order = client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type='STOP_MARKET',
+                stopPrice=rounded_price,
+                closePosition='true'
+            )
+        except BinanceAPIException as api_err:
+            logger.error(
+                f"[{symbol}] ❌ Binance API rejected SL order (status {api_err.status_code}): "
+                f"[{api_err.code}] {api_err.message} | Raw Response: {getattr(api_err, 'response', 'N/A')}"
+            )
+            return None
+        except Exception as exec_err:
+            logger.error(f"[{symbol}] ❌ Exception during SL futures_create_order: {type(exec_err).__name__} - {exec_err}")
+            return None
 
-        logger.info(f"[{symbol}] ✅ STOP LOSS SET | OrderID: {order['orderId']} | Status: {order['status']}")
+        order_id = order.get('orderId') or order.get('algoId')
+        status = order.get('status') or order.get('algoStatus', 'UNKNOWN')
+
+        if not order or not isinstance(order, dict) or not order_id:
+            logger.error(f"[{symbol}] ❌ SL order failed or orderId/algoId missing in response. Exact raw response: {order}")
+            return None
+
+        logger.info(f"[{symbol}] ✅ STOP LOSS SET | OrderID/AlgoID: {order_id} | Status: {status}")
         return order
 
-    except BinanceAPIException as e:
-        logger.error(f"[{symbol}] ❌ Failed to set Stop Loss: [{e.code}] {e.message}")
-        return None
     except Exception as e:
-        logger.error(f"[{symbol}] ❌ Unexpected error setting Stop Loss: {e}")
+        logger.error(f"[{symbol}] ❌ Unexpected error setting Stop Loss: {type(e).__name__} - {e}")
         return None
