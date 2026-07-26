@@ -116,7 +116,7 @@ MACRO_SDC_MULTIPLIER = 2.0         # ±2σ Standard Deviation Channel
 # Execution Engine (5m) — Risk & Position Limits
 HARD_STOP_LOSS_PCT = 0.05          # 5% absolute stop loss
 STOP_LOSS_PCT = 0.05               # 5% trailing/soft stop loss
-MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "8"))  # Max open positions limit
+MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "10"))  # Max open positions limit
 
 # Execution Engine (5m) — Z-Score thresholds for entry
 ZSCORE_LONG_THRESHOLD = -1.2       # Z < -1.2 for Pullback LONG / Z > +1.2 for Breakout LONG

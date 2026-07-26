@@ -31,7 +31,7 @@ TRAILING_DISTANCE_PCT = 0.01              # 1.0 % trailing distance from peak/tr
 TRAILING_PULLBACK_PCT = 0.005             # -0.5 % (legacy, kept for compat)
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
-MAX_GLOBAL_POSITIONS = MAX_GLOBAL_POSITIONS  # Hard limit: max open positions on Binance (8)
+MAX_GLOBAL_POSITIONS = MAX_GLOBAL_POSITIONS  # Hard limit: max open positions on Binance (10)
 
 
 # ══════════════════════════════════════════════════════════════════════
