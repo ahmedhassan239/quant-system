@@ -14,6 +14,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
                     BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
+                    WHALE_VOLUME_MULTIPLIER,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT,
                     MAX_GLOBAL_POSITIONS)
 from futures_executor import (open_position, close_position, get_futures_balance,
@@ -255,6 +256,66 @@ def send_telegram_alert(message):
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  STRATEGY C — WHALE HUNTER (VOLUME ANOMALY DETECTION)
+# ══════════════════════════════════════════════════════════════════════
+
+def detect_whale_strike(df, threshold=None):
+    """
+    Detect Strategy C: Whale Hunter (Volume Anomaly Spike).
+    Monitors 5m candle volume for sudden, massive volume spikes > WHALE_VOLUME_MULTIPLIER
+    (default 10.0x) of the 50-period volume SMA.
+
+    Returns:
+        dict or None: {
+            'is_whale': True,
+            'direction': 'LONG' | 'SHORT',
+            'vol_ratio': float,
+            'candle_high': float,
+            'candle_low': float,
+            'candle_close': float
+        }
+    """
+    if threshold is None:
+        threshold = WHALE_VOLUME_MULTIPLIER
+
+    if len(df) < 50:
+        return None
+
+    vol_sma50_prior = df['volume'].shift(1).rolling(50).mean()
+    baseline_vol_sma = vol_sma50_prior.iloc[-1]
+    current_vol = df['volume'].iloc[-1]
+
+    if pd.isna(baseline_vol_sma) or baseline_vol_sma <= 0:
+        return None
+
+    vol_ratio = current_vol / baseline_vol_sma
+
+    if vol_ratio >= threshold:
+        open_p = float(df['open'].iloc[-1])
+        close_p = float(df['close'].iloc[-1])
+        high_p = float(df['high'].iloc[-1])
+        low_p = float(df['low'].iloc[-1])
+
+        if close_p > open_p:
+            direction = 'LONG'
+        elif close_p < open_p:
+            direction = 'SHORT'
+        else:
+            return None
+
+        return {
+            'is_whale': True,
+            'direction': direction,
+            'vol_ratio': round(float(vol_ratio), 2),
+            'candle_high': high_p,
+            'candle_low': low_p,
+            'candle_close': close_p
+        }
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  TRADE UPGRADING (POSITION ROTATION) HELPERS
 # ══════════════════════════════════════════════════════════════════════
 
@@ -263,13 +324,17 @@ def calculate_strength_score(z_score, vol_ratio=1.0):
     Calculate a quantitative Strength Score for an entry signal or active position.
     Primary factors:
       - Absolute Z-Score (momentum / deviation extreme)
-      - Volume Multiplier (liquidity / breakout confirmation)
+      - Volume Multiplier (liquidity / breakout confirmation / whale spikes)
     Formula:
-      Strength Score = |Z-Score| * (1.0 + 0.1 * min(max(vol_ratio, 1.0), 5.0))
+      Strength Score = |Z-Score| * (1.0 + 0.1 * min(max(vol_ratio, 1.0), 10.0))
     """
     abs_z = abs(z_score) if z_score is not None else 0.0
     vr = float(vol_ratio) if vol_ratio is not None and float(vol_ratio) > 0 else 1.0
-    vol_bonus = 0.1 * min(max(vr, 1.0), 5.0)
+    # For Whale Strike volume spikes (vr >= 10x), give an effective Z baseline of 1.5 if Z is small
+    if vr >= 8.0 and abs_z < 1.5:
+        abs_z = 1.5
+
+    vol_bonus = 0.1 * min(max(vr, 1.0), 10.0)
     score = abs_z * (1.0 + vol_bonus)
     return round(score, 3)
 
@@ -300,7 +365,7 @@ def find_weakest_active_position(session, futures_client=None):
     )
 
     if not rows:
-        return None, None, None, False
+        return None, 0.0, None, False
 
     weakest_symbol = None
     weakest_score = float('inf')
@@ -357,7 +422,10 @@ def find_weakest_active_position(session, futures_client=None):
             weakest_portfolio = port
             weakest_is_stagnant = is_stag
 
-    return weakest_symbol, weakest_score, weakest_portfolio, weakest_is_stagnant
+    if weakest_score == float('inf'):
+        weakest_score = 0.0
+
+    return weakest_symbol, float(weakest_score or 0.0), weakest_portfolio, weakest_is_stagnant
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1135,54 +1203,86 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
 
         bullish_breakout, bearish_breakout = detect_consolidation_breakout(df)
+        whale_strike = detect_whale_strike(df)
 
         # ──────────────────────────────────────────────────────────
-        #  SIGNAL LOGIC — MTF Confluence (Dual-Strategy)
+        #  SIGNAL LOGIC — MTF Confluence & Multi-Strategy
         # ──────────────────────────────────────────────────────────
         decision = 'WAIT'
         strategy_type = None
         new_stop_loss = 0.0
 
-        if not risk_exit_triggered and current_zscore is not None and current_rsi is not None:
+        if not risk_exit_triggered:
             active_count = count_active_positions(session)
 
-            # ── LONG Confluence ──
-            if macro_trend == 'UPTREND' and not in_position and current_rsi > 55.0:
-                # Strategy A: Aggressive Pullback (Z < -1.2 into Bullish OB)
-                if (bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.2):
-                    if active_count >= MAX_CONCURRENT_POSITIONS:
-                        print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
-                    else:
-                        decision = 'LONG'
-                        strategy_type = 'PULLBACK'
-                        new_stop_loss = bullish_ob['low'] * 0.999 # Strictly below OB
-                        msg = f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro={macro_trend} + Bullish OB + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
-                        print(msg, flush=True)
-                        log_to_db(session, symbol, "ENTRY", msg)
-                
-                # Strategy B: Momentum Breakout (Z > +1.2 + Bullish Breakout)
-                elif bullish_breakout and current_zscore > 1.2:
-                    if active_count >= MAX_CONCURRENT_POSITIONS:
-                        print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
-                    else:
-                        decision = 'LONG'
-                        strategy_type = 'BREAKOUT'
-                        new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999 # Below breakout candle
-                        msg = f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x) + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
-                        print(msg, flush=True)
-                        log_to_db(session, symbol, "ENTRY", msg)
+            # ── STRATEGY C: Whale Hunter (Volume Anomaly Spike > 10x) ──
+            # Bypasses Z-Score & RSI chop zone constraints (volume creates momentum)
+            if whale_strike and not in_position:
+                w_direction = whale_strike['direction']
+                w_vol_ratio = whale_strike['vol_ratio']
 
-                # Strategy C: Testnet — Pure Trend Alignment (force trades)
-                elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma and current_rsi > 55.0 and current_zscore > 1.2:
+                is_macro_aligned = False
+                if w_direction == 'LONG' and macro_trend in ('UPTREND', 'NEUTRAL'):
+                    is_macro_aligned = True
+                elif w_direction == 'SHORT' and macro_trend in ('DOWNTREND', 'NEUTRAL'):
+                    is_macro_aligned = True
+
+                if is_macro_aligned:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
-                        decision = 'LONG'
-                        strategy_type = 'TREND_ALIGN'
-                        new_stop_loss = current_sma * 0.995  # SL just below the SMA
-                        msg = f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro={macro_trend} + Price > SMA-50"
+                        decision = w_direction
+                        strategy_type = 'WHALE_STRIKE'
+                        if w_direction == 'LONG':
+                            new_stop_loss = whale_strike['candle_low'] * 0.999
+                        else:
+                            new_stop_loss = whale_strike['candle_high'] * 1.001
+
+                        msg = (f"🐋 [WHALE STRIKE DETECTED] {symbol} {decision}! "
+                               f"Vol: {w_vol_ratio:.1f}x avg | Price: ${current_price:.2f} | Macro: {macro_trend}")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
+                        send_telegram_alert(msg)
+
+            # ── STRATEGY A & B: Pullback & Breakout (Standard MTF Confluence) ──
+            if decision == 'WAIT' and current_zscore is not None and current_rsi is not None:
+                # ── LONG Confluence ──
+                if macro_trend == 'UPTREND' and not in_position and current_rsi > 55.0:
+                    # Strategy A: Aggressive Pullback (Z < -1.2 into Bullish OB)
+                    if (bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.2):
+                        if active_count >= MAX_CONCURRENT_POSITIONS:
+                            print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
+                        else:
+                            decision = 'LONG'
+                            strategy_type = 'PULLBACK'
+                            new_stop_loss = bullish_ob['low'] * 0.999 # Strictly below OB
+                            msg = f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro={macro_trend} + Bullish OB + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
+                            print(msg, flush=True)
+                            log_to_db(session, symbol, "ENTRY", msg)
+                    
+                    # Strategy B: Momentum Breakout (Z > +1.2 + Bullish Breakout)
+                    elif bullish_breakout and current_zscore > 1.2:
+                        if active_count >= MAX_CONCURRENT_POSITIONS:
+                            print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
+                        else:
+                            decision = 'LONG'
+                            strategy_type = 'BREAKOUT'
+                            new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999 # Below breakout candle
+                            msg = f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x) + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
+                            print(msg, flush=True)
+                            log_to_db(session, symbol, "ENTRY", msg)
+
+                    # Strategy C: Testnet — Pure Trend Alignment (force trades)
+                    elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma and current_rsi > 55.0 and current_zscore > 1.2:
+                        if active_count >= MAX_CONCURRENT_POSITIONS:
+                            print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
+                        else:
+                            decision = 'LONG'
+                            strategy_type = 'TREND_ALIGN'
+                            new_stop_loss = current_sma * 0.995  # SL just below the SMA
+                            msg = f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro={macro_trend} + Price > SMA-50"
+                            print(msg, flush=True)
+                            log_to_db(session, symbol, "ENTRY", msg)
 
             # ── SHORT Confluence ──
             if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position and current_rsi < 45.0:
@@ -1968,7 +2068,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             if can_proceed_with_entry and current_open_count >= MAX_GLOBAL_POSITIONS:
                 # Calculate candidate signal Strength Score
                 cand_vol = 1.0
-                if bullish_ob and 'vol_ratio' in bullish_ob:
+                if whale_strike:
+                    cand_vol = whale_strike['vol_ratio']
+                elif bullish_ob and 'vol_ratio' in bullish_ob:
                     cand_vol = bullish_ob['vol_ratio']
                 elif bearish_ob and 'vol_ratio' in bearish_ob:
                     cand_vol = bearish_ob['vol_ratio']
@@ -1981,12 +2083,13 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                 # Scan active open positions to find the weakest link
                 weak_sym, weak_score, weak_port, weak_stagnant = find_weakest_active_position(session, futures_client)
+                weak_score_val = float(weak_score) if weak_score is not None else 0.0
 
                 # Anti-churn upgrade threshold: candidate score >= weakest score + 1.5 (or weakest is stagnant)
-                if weak_sym and weak_sym != symbol and (weak_stagnant or (cand_score >= weak_score + 1.5)):
+                if weak_sym and weak_sym != symbol and (weak_stagnant or (cand_score >= weak_score_val + 1.5)):
                     upgrade_msg = (
                         f"🔄 [POSITION UPGRADE] Max slots ({MAX_GLOBAL_POSITIONS}) reached! "
-                        f"Closing weak position '{weak_sym}' (Score={weak_score:.2f}, Stagnant={weak_stagnant}) "
+                        f"Closing weak position '{weak_sym}' (Score={weak_score_val:.2f}, Stagnant={weak_stagnant}) "
                         f"to enter superior signal '{symbol}' {direction} (Score={cand_score:.2f}, Z={current_zscore:+.2f})."
                     )
                     print(upgrade_msg, flush=True)
@@ -1994,7 +2097,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     send_telegram_alert(upgrade_msg)
 
                     # Gracefully close weakest position
-                    weak_price = float(weak_port.get('average_entry_price') or current_price)
+                    weak_price = float(weak_port.get('average_entry_price') or current_price) if weak_port else current_price
                     _close_position_handler(
                         weak_port, weak_price, weak_sym, session, 'POSITION_UPGRADE',
                         futures_client, bullish_ob, bearish_ob, current_rsi,
@@ -2006,7 +2109,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     _exec_logger.warning(
                         f"🛑 [SKIP UPGRADE] Max global positions ({MAX_GLOBAL_POSITIONS}) reached. "
                         f"Candidate signal {symbol} (Score={cand_score:.2f}, Z={current_zscore:+.2f}) "
-                        f"is not strong enough to replace weakest position '{weak_sym}' (Score={weak_score:.2f}). "
+                        f"is not strong enough to replace weakest position '{weak_sym or 'N/A'}' (Score={weak_score_val:.2f}). "
                         f"Required gap: +1.5."
                     )
                     can_proceed_with_entry = False

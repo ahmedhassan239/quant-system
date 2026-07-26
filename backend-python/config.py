@@ -131,6 +131,9 @@ OB_VOLUME_MA_PERIOD = 20           # Moving average window for volume baseline
 BREAKOUT_VOLUME_MULTIPLIER = 1.1   # Breakout candle volume > 1.1x 20-period avg  [PROD: 2.5]
 BREAKOUT_CONSOLIDATION_PERIOD = 20 # Lookback for consolidation zone
 
+# Strategy C — Whale Hunter (Volume Anomaly Detection)
+WHALE_VOLUME_MULTIPLIER = float(os.environ.get("WHALE_VOLUME_MULTIPLIER", "10.0")) # Volume spike > 10.0x 50-period volume SMA
+
 # ──────────────────────────────────────────────────────────────────────
 #  TELEGRAM ALERT PREFIX
 # ──────────────────────────────────────────────────────────────────────
