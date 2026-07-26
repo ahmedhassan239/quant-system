@@ -82,9 +82,7 @@ class PositionController extends Controller
                     }
 
                     if ($positionAmt == 0) {
-                        $positionAmt = $position->position_direction === 'LONG'
-                            ? (float)$position->asset_balance
-                            : -(float)$position->asset_balance;
+                        // Already 0 on Binance, do not place close order
                     }
 
                     if ($positionAmt != 0) {

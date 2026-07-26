@@ -78,9 +78,11 @@ class DashboardController extends Controller
                 if ($riskResponse->successful()) {
                     $riskData = $riskResponse->json();
                     
-                    // Filter out positions with 0 amount
+                    // Filter out positions with 0 amount or dust value (< $2.0 USD)
                     $activeBinancePositions = collect($riskData)->filter(function ($pos) {
-                        return abs((float) $pos['positionAmt']) > 0;
+                        $amt = abs((float) $pos['positionAmt']);
+                        $price = (float) ($pos['markPrice'] ?? ($pos['entryPrice'] ?? 0));
+                        return $amt > 0 && ($amt * $price) >= 2.0;
                     });
 
                     if ($activeBinancePositions->isNotEmpty()) {
@@ -243,10 +245,10 @@ class DashboardController extends Controller
             }
 
             if ($positionAmt == 0) {
-                // Fallback to DB quantity
-                $positionAmt = $position->position_direction === 'LONG'
-                    ? (float)$position->asset_balance
-                    : -(float)$position->asset_balance;
+                $position->decision = 'MANUAL_CLOSE';
+                $position->asset_balance = 0;
+                $position->save();
+                return response()->json(['message' => 'Position closed successfully (already 0 on Binance)', 'data' => []]);
             }
 
             // 2. Determine side

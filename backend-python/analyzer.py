@@ -244,10 +244,15 @@ def send_telegram_alert(message):
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+    escaped_message = message.replace("_", "\\_")
+    payload = {"chat_id": chat_id, "text": escaped_message, "parse_mode": "Markdown"}
 
     try:
         response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 400 and "can't parse entities" in response.text.lower():
+            print(f"Telegram Markdown parse failed ({response.text}). Retrying without parse_mode...", flush=True)
+            payload_plain = {"chat_id": chat_id, "text": message}
+            response = requests.post(url, json=payload_plain, timeout=10)
         if response.status_code == 200:
             print("Telegram alert sent successfully.", flush=True)
         else:
@@ -731,15 +736,16 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
         cp = float(current_price)
         if direction == 'LONG':
             pnl_pct_val = ((cp - ep) / ep) * 100
-            sell_value = asset_balance * cp * (1 - TRADING_FEE)
+            pnl_usd_val = (cp - ep) * asset_balance
+            sell_value = asset_balance * cp
         else:  # SHORT
             pnl_pct_val = ((ep - cp) / ep) * 100
-            sell_value = asset_balance * ep + (asset_balance * (ep - cp)) - (asset_balance * cp * TRADING_FEE)
-        pnl_usd_val = float(sell_value - total_cost)
-        sign = "+" if pnl_pct_val >= 0 else ""
+            pnl_usd_val = (ep - cp) * asset_balance
+            sell_value = asset_balance * (2 * ep - cp)
+        sign = "+" if pnl_usd_val >= 0 else ""
         pnl_section = f"\n- PnL (This Trade): {sign}{pnl_pct_val:.2f}% ({sign}${pnl_usd_val:.2f})"
     else:
-        sell_value = asset_balance * float(current_price) * (1 - TRADING_FEE)
+        sell_value = asset_balance * float(current_price)
 
     # ── Execute Futures close order (use LIVE Binance position size) ──
     if futures_client and asset_balance > 0:
@@ -788,8 +794,31 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
 
     try:
         session.add(history_record)
-        # 2. Delete the active position from PortfolioState
+        # 2. Delete active position from PortfolioState and save CLOSED record
         session.query(PortfolioState).filter(PortfolioState.symbol == symbol).delete(synchronize_session=False)
+        closed_rec = PortfolioState(
+            timestamp=datetime.now(),
+            symbol=symbol,
+            decision='CLOSED',
+            current_price=float(current_price),
+            usdt_balance=float(portfolio['usdt_balance']),
+            asset_balance=0.0,
+            position_direction=None,
+            average_entry_price=None,
+            dca_level=0,
+            last_exec_price=None,
+            total_cost=0.0,
+            highest_price_since_entry=None,
+            lowest_price_since_entry=None,
+            stop_loss_price=None,
+            stop_loss=None,
+            strategy=portfolio.get('strategy'),
+            trailing_active=False,
+            pnl_pct=float(pnl_pct_val) if pnl_pct_val is not None else 0.0,
+            pnl_usd=float(pnl_usd_val) if pnl_usd_val is not None else 0.0,
+            total_portfolio_value=float(portfolio['usdt_balance'])
+        )
+        session.add(closed_rec)
         session.commit()
     except Exception as e:
         session.rollback()
@@ -1722,12 +1751,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             portfolio['highest_price_since_entry'] = float(current_price)
                             portfolio['lowest_price_since_entry'] = None
 
-                        if futures_client:
-                            order = open_position(futures_client, symbol, 'LONG', effective_usdt)
-                            if order:
-                                set_stop_loss_order(futures_client, symbol, 'LONG', float(new_stop_loss))
-                        else:
-                            order = None
+                        order = None
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
@@ -1898,12 +1922,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             portfolio['lowest_price_since_entry'] = float(current_price)
                             portfolio['highest_price_since_entry'] = None
 
-                        if futures_client:
-                            order = open_position(futures_client, symbol, 'SHORT', effective_usdt)
-                            if order:
-                                set_stop_loss_order(futures_client, symbol, 'SHORT', float(new_stop_loss))
-                        else:
-                            order = None
+                        order = None
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
@@ -2304,8 +2323,29 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         futures_client, bullish_ob, bearish_ob, current_rsi,
                         current_zscore, macro_info
                     )
-                    current_open_count = count_all_open_positions(futures_client)
-                    can_proceed_with_entry = True
+                    # ── ROTATION SYNC: Verify closure on Binance and DB before proceeding ──
+                    closed_confirmed = False
+                    if futures_client:
+                        for _attempt in range(5):
+                            import time
+                            time.sleep(0.5)
+                            check_pos = get_position_info(futures_client, weak_sym)
+                            if not check_pos or check_pos.get('size', 0.0) == 0.0:
+                                closed_confirmed = True
+                                break
+                    else:
+                        closed_confirmed = True
+
+                    if closed_confirmed:
+                        current_open_count = count_all_open_positions(futures_client)
+                        if current_open_count < MAX_GLOBAL_POSITIONS:
+                            can_proceed_with_entry = True
+                        else:
+                            _exec_logger.error(f"❌ [ROTATION SYNC] After closing {weak_sym}, open count ({current_open_count}) >= limit ({MAX_GLOBAL_POSITIONS}). Blocking new entry.")
+                            can_proceed_with_entry = False
+                    else:
+                        _exec_logger.error(f"❌ [ROTATION SYNC FAILED] Could not confirm closure of {weak_sym} on Binance after retries. Aborting upgrade entry for {symbol}.")
+                        can_proceed_with_entry = False
                 else:
                     _exec_logger.warning(
                         f"🛑 [SKIP UPGRADE] Max global positions ({MAX_GLOBAL_POSITIONS}) reached. "
@@ -2417,6 +2457,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                     f"OrderID: {order['orderId']} | "
                                     f"Allocated: ${allocated_usdt:.2f}"
                                 )
+                                if new_stop_loss and float(new_stop_loss) > 0:
+                                    set_stop_loss_order(futures_client, symbol, direction, float(new_stop_loss))
                                 return True
 
                         except Exception as e:

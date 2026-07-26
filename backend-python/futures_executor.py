@@ -244,6 +244,10 @@ def get_position_info(client: Client, symbol: str) -> dict:
         for pos in positions:
             amt = float(pos.get('positionAmt', 0))
             if amt != 0:
+                mark_price = float(pos.get('markPrice') or pos.get('entryPrice') or 0)
+                if abs(amt) * mark_price < 2.0:
+                    logger.debug(f"[{symbol}] Ignoring micro/dust position: amt={amt}, val=${abs(amt)*mark_price:.2f}")
+                    continue
                 return {
                     'symbol': symbol,
                     'size': abs(amt),
@@ -312,7 +316,11 @@ def count_all_open_positions(client: Client) -> int:
         for pos in positions:
             amt = float(pos.get('positionAmt', 0))
             if amt != 0:
-                count += 1
+                mark_price = float(pos.get('markPrice') or pos.get('entryPrice') or 0)
+                if abs(amt) * mark_price >= 2.0:
+                    count += 1
+                else:
+                    logger.debug(f"Ignoring dust in count: symbol={pos.get('symbol')}, amt={amt}, val=${abs(amt)*mark_price:.2f}")
         logger.debug(f"Live Binance open positions: {count}")
         return count
     except BinanceAPIException as e:
