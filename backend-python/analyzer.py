@@ -502,30 +502,64 @@ def calculate_strength_score(z_score, vol_ratio=1.0):
 
 def find_weakest_active_position(session, futures_client=None):
     """
-    Scan all active open positions in DB (PortfolioState with asset_balance > 0).
-    Evaluates each position's current PnL, duration, and Strength Score.
+    Scan all active open positions from live Binance Futures API (or local DB).
+    Evaluates each position's real-time PnL, duration, and Strength Score.
     Flags positions open >= 2 hours with minimal PnL (< 0.5%) as STAGNANT (Score = 0.0).
 
     Returns:
       (weakest_symbol, weakest_score, weakest_portfolio, is_stagnant)
-      or (None, None, None, False) if no active positions exist.
+      or (None, 0.0, None, False) if no active positions exist.
     """
-    latest_ids = (
-        session.query(func.max(PortfolioState.id).label('max_id'))
-        .group_by(PortfolioState.symbol)
-        .subquery()
-    )
+    active_items = []
 
-    rows = (
-        session.query(PortfolioState)
-        .filter(
-            PortfolioState.id.in_(session.query(latest_ids.c.max_id)),
-            PortfolioState.asset_balance > 0
+    # 1. Fetch live open positions from Binance Futures API if client is available
+    if futures_client:
+        try:
+            info = futures_client.futures_position_information()
+            for p in info:
+                amt = float(p.get('positionAmt', 0))
+                if amt != 0:
+                    sym = p['symbol']
+                    ep = float(p.get('entryPrice', 0))
+                    cp = float(p.get('markPrice', 0) or ep)
+                    direction = 'LONG' if amt > 0 else 'SHORT'
+                    active_items.append({
+                        'symbol': sym,
+                        'amount': abs(amt),
+                        'entry_price': ep,
+                        'current_price': cp,
+                        'direction': direction
+                    })
+        except Exception as e:
+            print(f"Warning: Failed to fetch live Binance positions in weakest scanner: {e}", flush=True)
+
+    # 2. Fallback to DB if futures_client not available or returned no items
+    if not active_items:
+        latest_ids = (
+            session.query(func.max(PortfolioState.id).label('max_id'))
+            .group_by(PortfolioState.symbol)
+            .subquery()
         )
-        .all()
-    )
 
-    if not rows:
+        db_rows = (
+            session.query(PortfolioState)
+            .filter(
+                PortfolioState.id.in_(session.query(latest_ids.c.max_id)),
+                func.abs(PortfolioState.asset_balance) > 0
+            )
+            .all()
+        )
+
+        for row in db_rows:
+            active_items.append({
+                'symbol': row.symbol,
+                'amount': float(abs(row.asset_balance or 0)),
+                'entry_price': float(row.average_entry_price or 0),
+                'current_price': float(row.current_price or 0),
+                'direction': row.position_direction or 'LONG'
+            })
+
+    if not active_items:
         return None, 0.0, None, False
 
     weakest_symbol = None
@@ -533,25 +567,30 @@ def find_weakest_active_position(session, futures_client=None):
     weakest_portfolio = None
     weakest_is_stagnant = False
 
-    for row in rows:
-        sym = row.symbol
+    for item in active_items:
+        sym = item['symbol']
         port = load_portfolio(session, sym)
+
+        ep = item['entry_price'] or float(port.get('average_entry_price') or 0)
+        cp = item['current_price'] or float(port.get('current_price') or ep)
+        direction = item['direction'] or port.get('position_direction') or 'LONG'
+
+        if not port.get('average_entry_price') or port.get('average_entry_price') == 0:
+            port['average_entry_price'] = ep
+            port['position_direction'] = direction
+            port['asset_balance'] = item['amount']
 
         # Calculate position duration (in hours)
         first_entry = (
             session.query(PortfolioState.timestamp)
-            .filter(PortfolioState.symbol == sym, PortfolioState.asset_balance > 0)
+            .filter(PortfolioState.symbol == sym, PortfolioState.asset_balance != 0)
             .order_by(PortfolioState.id.asc())
             .first()
         )
-        entry_time = first_entry[0] if first_entry else row.timestamp
+        entry_time = first_entry[0] if first_entry else datetime.now()
         hours_open = (datetime.now() - entry_time).total_seconds() / 3600.0 if entry_time else 0.0
 
         # Calculate current unrealized PnL %
-        cp = float(row.current_price or 0.0)
-        ep = float(row.average_entry_price or 0.0)
-        direction = row.position_direction or 'LONG'
-
         pnl_pct = 0.0
         if ep > 0 and cp > 0:
             if direction == 'LONG':
@@ -562,7 +601,7 @@ def find_weakest_active_position(session, futures_client=None):
         # Flag stagnant trades: open >= 2.0 hours with PnL < 0.5%
         is_stag = (hours_open >= 2.0 and pnl_pct < 0.5)
 
-        # Fetch current 15m signal or market data Z-score for the position
+        # Fetch current signal Z-score for the position
         latest_sig = (
             session.query(TradingSignal)
             .filter(TradingSignal.symbol == sym)
@@ -572,10 +611,7 @@ def find_weakest_active_position(session, futures_client=None):
         z_val = latest_sig.z_score if (latest_sig and latest_sig.z_score is not None) else 0.0
         v_ratio = getattr(latest_sig, 'bullish_ob_vol_ratio', 1.0) or 1.0
 
-        if is_stag:
-            pos_score = 0.0
-        else:
-            pos_score = calculate_strength_score(z_val, v_ratio)
+        pos_score = 0.0 if is_stag else calculate_strength_score(z_val, v_ratio)
 
         if pos_score < weakest_score:
             weakest_score = pos_score
