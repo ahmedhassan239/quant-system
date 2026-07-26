@@ -242,6 +242,30 @@ $$\text{Should Upgrade} = \begin{cases}
 
 ---
 
+### 5.4 التعزيز التراكمي المأمون للأرباح (Pyramiding - Scaling Into Winners)
+
+لتعظيم الأرباح في الاتجاهات القوية دون تعريض رأس المال للطرود الخسارية، يطبق الروبوت استراتيجية التعزيز التراكمي المأمون (Pyramiding):
+
+#### 1. مستويات وشروط التعزيز (Profit Tiers):
+- **المستوى الأول (Tier 1)**: عند وصول الأرباح غير المحققة إلى $\ge +2.0\%$، يتم إضافة **50%** من حجم الصفقة الأولي.
+- **المستوى الثاني (Tier 2)**: عند وصول الأرباح غير المحققة إلى $\ge +4.0\%$، يتم إضافة **25%** من حجم الصفقة الأولي.
+- **الحد الأقصى للتعزيز**: يُسمح بمرتين تعزيز كحد أقصى لكل صفقة رابحة (`MAX_SCALE_INS = 2`).
+
+#### 2. الشرط الصارم لنقطة التعادل (Break-Even Mandate):
+قبل تنفيذ أي أمر تعزيز، يتم حساب متوسط سعر الدخول الجديد للمركب المركب:
+
+$$\text{New Avg Price} = \frac{\text{Existing Cost} + \text{Added Cost}}{\text{Existing Qty} + \text{Added Qty}}$$
+
+ويتم رفع الـ Stop Loss فوراً ليصبح عند أو أفضل من متوسط سعر الدخول الجديد (Break-even للمركز المجمع). إذا تعذر نقل الـ SL إلى منطقة الأمان مطلقاً، يتم إلغاء أمر التعزيز فوراً لحماية الأرباح.
+
+```python
+# تنفيذ التعزيز التراكمي في analyzer.py
+new_avg_entry_price = (existing_cost + add_cost) / (existing_qty + add_qty)
+new_stop_loss = max(current_sl, new_avg_entry_price) # لصفقات الـ LONG
+```
+
+---
+
 ## 6. ملخص محددات الإعدادات (Core Configuration Summary)
 
 | المعلمة (Parameter) | القيمة (Value) | الوصف (Description) |

@@ -134,6 +134,13 @@ BREAKOUT_CONSOLIDATION_PERIOD = 20 # Lookback for consolidation zone
 # Strategy C — Whale Hunter (Volume Anomaly Detection)
 WHALE_VOLUME_MULTIPLIER = float(os.environ.get("WHALE_VOLUME_MULTIPLIER", "10.0")) # Volume spike > 10.0x 50-period volume SMA
 
+# Pyramiding Strategy (Scaling Into Winners)
+MAX_SCALE_INS = 2                      # Max 2 scale-ins per winning position
+PYRAMID_TIER1_PNL = 0.02               # Tier 1 trigger: +2.0% unrealized PnL
+PYRAMID_TIER2_PNL = 0.04               # Tier 2 trigger: +4.0% unrealized PnL
+PYRAMID_TIER1_SIZE_PCT = 0.50          # Add 50% of initial position size on Tier 1
+PYRAMID_TIER2_SIZE_PCT = 0.25          # Add 25% of initial position size on Tier 2
+
 # ──────────────────────────────────────────────────────────────────────
 #  TELEGRAM ALERT PREFIX
 # ──────────────────────────────────────────────────────────────────────

@@ -15,6 +15,8 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
                     BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
                     WHALE_VOLUME_MULTIPLIER,
+                    MAX_SCALE_INS, PYRAMID_TIER1_PNL, PYRAMID_TIER2_PNL,
+                    PYRAMID_TIER1_SIZE_PCT, PYRAMID_TIER2_SIZE_PCT,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT,
                     MAX_GLOBAL_POSITIONS)
 from futures_executor import (open_position, close_position, get_futures_balance,
@@ -313,6 +315,165 @@ def detect_whale_strike(df, threshold=None):
         }
 
     return None
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PYRAMIDING (SCALING INTO WINNERS) HELPERS
+# ══════════════════════════════════════════════════════════════════════
+
+def evaluate_pyramid_scale_in(portfolio, current_price, symbol, session, futures_client=None):
+    """
+    Evaluate and execute Pyramiding (Scaling Into Winners) for an active position.
+    
+    Tiers:
+      - Tier 1 (dca_level == 0): Unrealized PnL >= +2.0%. Add 50% of initial size.
+      - Tier 2 (dca_level == 1): Unrealized PnL >= +4.0%. Add 25% of initial size.
+
+    Strict Risk Rule (Break-Even Mandate):
+      - Calculate hypothetical new Average Entry Price.
+      - Move Trailing Stop Loss to Break-Even (or better) for the combined position.
+      - Abort scale-in if SL cannot be set safely.
+    """
+    if not portfolio or not portfolio.get('asset_balance') or portfolio['asset_balance'] <= 0:
+        return False, portfolio
+
+    dca_level = int(portfolio.get('dca_level', 0) or 0)
+    if dca_level >= MAX_SCALE_INS:
+        return False, portfolio
+
+    direction = portfolio.get('position_direction')
+    if not direction or direction not in ('LONG', 'SHORT'):
+        return False, portfolio
+
+    ep = float(portfolio.get('average_entry_price') or 0.0)
+    cp = float(current_price)
+    if ep <= 0 or cp <= 0:
+        return False, portfolio
+
+    # Calculate current unrealized PnL %
+    if direction == 'LONG':
+        unrealized_pnl = (cp - ep) / ep
+    else:
+        unrealized_pnl = (ep - cp) / ep
+
+    # Check Tier Eligibility
+    tier_num = 0
+    scale_size_pct = 0.0
+
+    if dca_level == 0 and unrealized_pnl >= PYRAMID_TIER1_PNL:
+        tier_num = 1
+        scale_size_pct = PYRAMID_TIER1_SIZE_PCT
+    elif dca_level == 1 and unrealized_pnl >= PYRAMID_TIER2_PNL:
+        tier_num = 2
+        scale_size_pct = PYRAMID_TIER2_SIZE_PCT
+    else:
+        return False, portfolio
+
+    # Quantities and Costs
+    existing_qty = float(portfolio['asset_balance'])
+    if dca_level == 0:
+        initial_qty = existing_qty
+    else:
+        initial_qty = existing_qty / 1.50
+
+    add_qty = initial_qty * scale_size_pct
+    if add_qty <= 0:
+        return False, portfolio
+
+    existing_cost = existing_qty * ep
+    add_cost = add_qty * cp
+    new_qty = existing_qty + add_qty
+    new_avg_entry_price = (existing_cost + add_cost) / new_qty
+
+    # ── Strict Risk Rule: Break-Even Mandate ──
+    # The new SL MUST be at or better than new_avg_entry_price
+    current_sl = float(portfolio.get('stop_loss_price', 0) or 0)
+    
+    if direction == 'LONG':
+        new_stop_loss = max(current_sl, new_avg_entry_price)
+        if new_stop_loss >= cp:
+            print(f"🛑 [PYRAMID ABORT] {symbol} LONG Tier {tier_num}: Proposed Break-Even SL (${new_stop_loss:.2f}) >= Current Price (${cp:.2f}). Aborting scale-in.", flush=True)
+            return False, portfolio
+    else:  # SHORT
+        if current_sl > 0:
+            new_stop_loss = min(current_sl, new_avg_entry_price)
+        else:
+            new_stop_loss = new_avg_entry_price
+        if new_stop_loss <= cp:
+            print(f"🛑 [PYRAMID ABORT] {symbol} SHORT Tier {tier_num}: Proposed Break-Even SL (${new_stop_loss:.2f}) <= Current Price (${cp:.2f}). Aborting scale-in.", flush=True)
+            return False, portfolio
+
+    # ── Execute Scale-In ──
+    if futures_client:
+        try:
+            info = futures_client.futures_exchange_info()
+            step_size = 0.001
+            for s in info.get('symbols', []):
+                if s['symbol'] == symbol:
+                    for flt in s.get('filters', []):
+                        if flt['filterType'] == 'LOT_SIZE':
+                            step_size = float(flt['stepSize'])
+                            break
+                    break
+            precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
+            order_qty = round(add_qty - (add_qty % step_size), precision)
+            if order_qty <= 0:
+                print(f"⚠️ [PYRAMID SKIP] {symbol}: Calculated scale-in qty too small after rounding.", flush=True)
+                return False, portfolio
+
+            side = 'BUY' if direction == 'LONG' else 'SELL'
+            futures_client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type='MARKET',
+                quantity=order_qty
+            )
+            set_stop_loss_order(futures_client, symbol, direction, new_stop_loss)
+        except Exception as exc:
+            print(f"❌ [PYRAMID ERROR] Failed Binance scale-in order for {symbol}: {exc}", flush=True)
+            return False, portfolio
+
+    # Update Portfolio Dictionary & DB
+    portfolio['dca_level'] = dca_level + 1
+    portfolio['asset_balance'] = new_qty
+    portfolio['average_entry_price'] = new_avg_entry_price
+    portfolio['stop_loss_price'] = new_stop_loss
+    portfolio['stop_loss'] = new_stop_loss
+    portfolio['trailing_active'] = True
+
+    pyramid_msg = (
+        f"🔼 [PYRAMID] Scaled into winning position {symbol} ({direction}) | Tier {tier_num} ({unrealized_pnl*100:+.2f}% PnL) | "
+        f"New Avg Price: ${new_avg_entry_price:.2f} | Added Qty: {add_qty:.4f} | SL moved to Break-Even: ${new_stop_loss:.2f}"
+    )
+    print(pyramid_msg, flush=True)
+    log_to_db(session, symbol, "PYRAMID", pyramid_msg)
+    send_telegram_alert(pyramid_msg)
+
+    try:
+        new_state = PortfolioState(
+            timestamp=datetime.now(),
+            symbol=symbol,
+            decision=portfolio.get('decision', direction),
+            current_price=cp,
+            usdt_balance=portfolio.get('usdt_balance', 1000.0),
+            asset_balance=new_qty,
+            position_direction=direction,
+            average_entry_price=new_avg_entry_price,
+            highest_price_since_entry=portfolio.get('highest_price_since_entry', cp),
+            lowest_price_since_entry=portfolio.get('lowest_price_since_entry', cp),
+            stop_loss_price=new_stop_loss,
+            stop_loss=new_stop_loss,
+            trailing_active=True,
+            dca_level=portfolio['dca_level'],
+            total_portfolio_value=portfolio.get('total_portfolio_value', 1000.0)
+        )
+        session.add(new_state)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"Warning: Failed to persist pyramid scale-in to DB: {e}", flush=True)
+
+    return True, portfolio
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1201,6 +1362,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                 current_zscore, macro_info)
                             risk_exit_triggered = True
 
+
+        # ── Pyramiding (Scaling Into Winners) Check ──
+        if in_position and not risk_exit_triggered:
+            scaled_in, portfolio = evaluate_pyramid_scale_in(portfolio, current_price, symbol, session, futures_client)
 
         bullish_breakout, bearish_breakout = detect_consolidation_breakout(df)
         whale_strike = detect_whale_strike(df)
