@@ -4,6 +4,7 @@ import traceback
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from sqlalchemy import func
 from database import (SessionLocal, MarketData, TradingSignal, PortfolioState, BotLog,
                       TradeHistory, engine, init_db, init_shared_db, count_active_positions,
                       save_macro_state, get_macro_trend,
@@ -251,6 +252,112 @@ def send_telegram_alert(message):
     except requests.exceptions.RequestException as e:
         print(f"Failed to send Telegram alert: {e}", flush=True)
         traceback.print_exc()
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  TRADE UPGRADING (POSITION ROTATION) HELPERS
+# ══════════════════════════════════════════════════════════════════════
+
+def calculate_strength_score(z_score, vol_ratio=1.0):
+    """
+    Calculate a quantitative Strength Score for an entry signal or active position.
+    Primary factors:
+      - Absolute Z-Score (momentum / deviation extreme)
+      - Volume Multiplier (liquidity / breakout confirmation)
+    Formula:
+      Strength Score = |Z-Score| * (1.0 + 0.1 * min(max(vol_ratio, 1.0), 5.0))
+    """
+    abs_z = abs(z_score) if z_score is not None else 0.0
+    vr = float(vol_ratio) if vol_ratio is not None and float(vol_ratio) > 0 else 1.0
+    vol_bonus = 0.1 * min(max(vr, 1.0), 5.0)
+    score = abs_z * (1.0 + vol_bonus)
+    return round(score, 3)
+
+
+def find_weakest_active_position(session, futures_client=None):
+    """
+    Scan all active open positions in DB (PortfolioState with asset_balance > 0).
+    Evaluates each position's current PnL, duration, and Strength Score.
+    Flags positions open >= 2 hours with minimal PnL (< 0.5%) as STAGNANT (Score = 0.0).
+
+    Returns:
+      (weakest_symbol, weakest_score, weakest_portfolio, is_stagnant)
+      or (None, None, None, False) if no active positions exist.
+    """
+    latest_ids = (
+        session.query(func.max(PortfolioState.id).label('max_id'))
+        .group_by(PortfolioState.symbol)
+        .subquery()
+    )
+
+    rows = (
+        session.query(PortfolioState)
+        .filter(
+            PortfolioState.id.in_(session.query(latest_ids.c.max_id)),
+            PortfolioState.asset_balance > 0
+        )
+        .all()
+    )
+
+    if not rows:
+        return None, None, None, False
+
+    weakest_symbol = None
+    weakest_score = float('inf')
+    weakest_portfolio = None
+    weakest_is_stagnant = False
+
+    for row in rows:
+        sym = row.symbol
+        port = load_portfolio(session, sym)
+
+        # Calculate position duration (in hours)
+        first_entry = (
+            session.query(PortfolioState.timestamp)
+            .filter(PortfolioState.symbol == sym, PortfolioState.asset_balance > 0)
+            .order_by(PortfolioState.id.asc())
+            .first()
+        )
+        entry_time = first_entry[0] if first_entry else row.timestamp
+        hours_open = (datetime.now() - entry_time).total_seconds() / 3600.0 if entry_time else 0.0
+
+        # Calculate current unrealized PnL %
+        cp = float(row.current_price or 0.0)
+        ep = float(row.average_entry_price or 0.0)
+        direction = row.position_direction or 'LONG'
+
+        pnl_pct = 0.0
+        if ep > 0 and cp > 0:
+            if direction == 'LONG':
+                pnl_pct = ((cp - ep) / ep) * 100.0
+            else:
+                pnl_pct = ((ep - cp) / ep) * 100.0
+
+        # Flag stagnant trades: open >= 2.0 hours with PnL < 0.5%
+        is_stag = (hours_open >= 2.0 and pnl_pct < 0.5)
+
+        # Fetch current 15m signal or market data Z-score for the position
+        latest_sig = (
+            session.query(TradingSignal)
+            .filter(TradingSignal.symbol == sym)
+            .order_by(TradingSignal.id.desc())
+            .first()
+        )
+        z_val = latest_sig.z_score if (latest_sig and latest_sig.z_score is not None) else 0.0
+        v_ratio = getattr(latest_sig, 'bullish_ob_vol_ratio', 1.0) or 1.0
+
+        if is_stag:
+            pos_score = 0.0
+        else:
+            pos_score = calculate_strength_score(z_val, v_ratio)
+
+        if pos_score < weakest_score:
+            weakest_score = pos_score
+            weakest_symbol = sym
+            weakest_portfolio = port
+            weakest_is_stagnant = is_stag
+
+    return weakest_symbol, weakest_score, weakest_portfolio, weakest_is_stagnant
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1845,23 +1952,66 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             _exec_logger = logging.getLogger("FuturesExecutor")
             direction = db_decision
 
-            # ── GUARD 0: Global Max Positions (Live Binance Count) ──
+            # ── GUARD 0: Global Max Positions & Trade Upgrading (Position Rotation) ──
             current_open_count = count_all_open_positions(futures_client)
-            if current_open_count >= MAX_GLOBAL_POSITIONS:
-                _exec_logger.warning(
-                    f"🛑 [SKIP ENTRY] Max global positions ({MAX_GLOBAL_POSITIONS}) reached. "
-                    f"Currently open: {current_open_count}. "
-                    f"Skipping {symbol} {direction} this cycle."
+            can_proceed_with_entry = True
+
+            # Check if candidate symbol is ALREADY in an active position
+            live_pos = get_position_info(futures_client, symbol)
+            if live_pos and live_pos['size'] > 0:
+                _exec_logger.info(
+                    f"🔒 [SKIP ENTRY] {symbol} already has an active Binance "
+                    f"{live_pos['direction']} position (size={live_pos['size']}). Skipping."
                 )
-            else:
-                # ── GUARD 1: No Duplicate Entries ──
-                live_pos = get_position_info(futures_client, symbol)
-                if live_pos and live_pos['size'] > 0:
-                    _exec_logger.info(
-                        f"🔒 [SKIP ENTRY] {symbol} already has an active Binance "
-                        f"{live_pos['direction']} position (size={live_pos['size']}). Skipping."
+                can_proceed_with_entry = False
+
+            if can_proceed_with_entry and current_open_count >= MAX_GLOBAL_POSITIONS:
+                # Calculate candidate signal Strength Score
+                cand_vol = 1.0
+                if bullish_ob and 'vol_ratio' in bullish_ob:
+                    cand_vol = bullish_ob['vol_ratio']
+                elif bearish_ob and 'vol_ratio' in bearish_ob:
+                    cand_vol = bearish_ob['vol_ratio']
+                elif bullish_breakout and 'vol_ratio' in bullish_breakout:
+                    cand_vol = bullish_breakout['vol_ratio']
+                elif bearish_breakout and 'vol_ratio' in bearish_breakout:
+                    cand_vol = bearish_breakout['vol_ratio']
+
+                cand_score = calculate_strength_score(current_zscore, cand_vol)
+
+                # Scan active open positions to find the weakest link
+                weak_sym, weak_score, weak_port, weak_stagnant = find_weakest_active_position(session, futures_client)
+
+                # Anti-churn upgrade threshold: candidate score >= weakest score + 1.5 (or weakest is stagnant)
+                if weak_sym and weak_sym != symbol and (weak_stagnant or (cand_score >= weak_score + 1.5)):
+                    upgrade_msg = (
+                        f"🔄 [POSITION UPGRADE] Max slots ({MAX_GLOBAL_POSITIONS}) reached! "
+                        f"Closing weak position '{weak_sym}' (Score={weak_score:.2f}, Stagnant={weak_stagnant}) "
+                        f"to enter superior signal '{symbol}' {direction} (Score={cand_score:.2f}, Z={current_zscore:+.2f})."
                     )
+                    print(upgrade_msg, flush=True)
+                    log_to_db(session, symbol, "UPGRADE", upgrade_msg)
+                    send_telegram_alert(upgrade_msg)
+
+                    # Gracefully close weakest position
+                    weak_price = float(weak_port.get('average_entry_price') or current_price)
+                    _close_position_handler(
+                        weak_port, weak_price, weak_sym, session, 'POSITION_UPGRADE',
+                        futures_client, bullish_ob, bearish_ob, current_rsi,
+                        current_zscore, macro_info
+                    )
+                    current_open_count = count_all_open_positions(futures_client)
+                    can_proceed_with_entry = True
                 else:
+                    _exec_logger.warning(
+                        f"🛑 [SKIP UPGRADE] Max global positions ({MAX_GLOBAL_POSITIONS}) reached. "
+                        f"Candidate signal {symbol} (Score={cand_score:.2f}, Z={current_zscore:+.2f}) "
+                        f"is not strong enough to replace weakest position '{weak_sym}' (Score={weak_score:.2f}). "
+                        f"Required gap: +1.5."
+                    )
+                    can_proceed_with_entry = False
+
+            if can_proceed_with_entry:
                     # ── GUARD 2: Live Free Margin Check ──
                     available_balance = get_futures_balance(futures_client)
 

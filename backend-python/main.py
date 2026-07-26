@@ -112,20 +112,15 @@ def scanner_job():
                 if newly_executed:
                     trades_opened_this_cycle += 1
             else:
-                # ── RULE 3: Restrict NEW entries when portfolio is full ──
-                if current_open_count >= MAX_GLOBAL_POSITIONS:
-                    logger.warning(f"Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.")
-                    print(f"🛑 Max global positions ({MAX_GLOBAL_POSITIONS}) reached. Skipping new entry for {sym}.", flush=True)
-                    continue
-
                 if trades_opened_this_cycle >= 3:
                     logger.warning(f"Max trades per cycle (3) reached. Cooling down for {sym}.")
                     print(f"🛑 Max trades per cycle (3) reached. Skipping new entry for {sym}.", flush=True)
                     continue
 
+                # Run analyzer (evaluates new entry or trade upgrade if portfolio is full)
                 newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
                 if newly_executed:
-                    current_open_count += 1
+                    current_open_count = count_all_open_positions(futures_client)
                     trades_opened_this_cycle += 1
 
     print("\nJob completed. Sleeping until next interval...", flush=True)
