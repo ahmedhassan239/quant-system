@@ -13,7 +13,8 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
                     ZSCORE_SMA_PERIOD, OB_VOLUME_MULTIPLIER, OB_VOLUME_MA_PERIOD,
                     BREAKOUT_VOLUME_MULTIPLIER, BREAKOUT_CONSOLIDATION_PERIOD,
-                    TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT)
+                    TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT,
+                    MAX_GLOBAL_POSITIONS)
 from futures_executor import (open_position, close_position, get_futures_balance,
                               get_position_info, count_all_open_positions, set_stop_loss_order)
 
@@ -29,7 +30,7 @@ TRAILING_DISTANCE_PCT = 0.01              # 1.0 % trailing distance from peak/tr
 TRAILING_PULLBACK_PCT = 0.005             # -0.5 % (legacy, kept for compat)
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
-MAX_GLOBAL_POSITIONS = 3                  # Hard limit: max open positions on Binance
+MAX_GLOBAL_POSITIONS = MAX_GLOBAL_POSITIONS  # Hard limit: max open positions on Binance (8)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -268,6 +269,16 @@ def load_portfolio(session, symbol):
         sl_val = getattr(last_state, 'stop_loss_price', None)
         if sl_val is None:
             sl_val = getattr(last_state, 'stop_loss', None)
+
+        # If stop_loss_price is None on the latest row but position is active, look up latest non-null local SL
+        if sl_val is None and getattr(last_state, 'asset_balance', 0) and float(last_state.asset_balance) > 0:
+            prev_sl = session.query(PortfolioState.stop_loss_price, PortfolioState.stop_loss).filter(
+                PortfolioState.symbol == symbol,
+                PortfolioState.asset_balance > 0,
+                (PortfolioState.stop_loss_price.isnot(None) | PortfolioState.stop_loss.isnot(None))
+            ).order_by(PortfolioState.id.desc()).first()
+            if prev_sl:
+                sl_val = prev_sl.stop_loss_price if prev_sl.stop_loss_price is not None else prev_sl.stop_loss
 
         return {
             'usdt_balance': last_state.usdt_balance,
@@ -1025,37 +1036,37 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         strategy_type = None
         new_stop_loss = 0.0
 
-        if not risk_exit_triggered and current_zscore is not None:
+        if not risk_exit_triggered and current_zscore is not None and current_rsi is not None:
             active_count = count_active_positions(session)
 
             # ── LONG Confluence ──
-            if macro_trend == 'UPTREND' and not in_position:
-                # Strategy A: Aggressive Pullback
-                if (bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.0):
+            if macro_trend == 'UPTREND' and not in_position and current_rsi > 55.0:
+                # Strategy A: Aggressive Pullback (Z < -1.2 into Bullish OB)
+                if (bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.2):
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
                         decision = 'LONG'
                         strategy_type = 'PULLBACK'
                         new_stop_loss = bullish_ob['low'] * 0.999 # Strictly below OB
-                        msg = f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro={macro_trend} + Bullish OB + Z={current_zscore:+.2f}"
+                        msg = f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro={macro_trend} + Bullish OB + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
                 
-                # Strategy B: Momentum Breakout
-                elif bullish_breakout:
+                # Strategy B: Momentum Breakout (Z > +1.2 + Bullish Breakout)
+                elif bullish_breakout and current_zscore > 1.2:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
                         decision = 'LONG'
                         strategy_type = 'BREAKOUT'
                         new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999 # Below breakout candle
-                        msg = f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x)"
+                        msg = f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x) + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
 
                 # Strategy C: Testnet — Pure Trend Alignment (force trades)
-                elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma and current_rsi < 65 and current_zscore < 1.5:
+                elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma and current_rsi > 55.0 and current_zscore > 1.2:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
@@ -1067,33 +1078,33 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         log_to_db(session, symbol, "ENTRY", msg)
 
             # ── SHORT Confluence ──
-            if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position:
-                # Strategy A: Aggressive Pullback
-                if (bearish_ob and current_price <= bearish_ob['high'] and current_zscore > 1.0):
+            if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position and current_rsi < 45.0:
+                # Strategy A: Aggressive Pullback (Z > +1.2 into Bearish OB)
+                if (bearish_ob and current_price <= bearish_ob['high'] and current_zscore > 1.2):
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
                         decision = 'SHORT'
                         strategy_type = 'PULLBACK'
                         new_stop_loss = bearish_ob['high'] * 1.001 # Strictly above OB
-                        msg = f"✨ [{symbol}] SHORT Strategy A (PULLBACK): Macro={macro_trend} + Bearish OB + Z={current_zscore:+.2f}"
+                        msg = f"✨ [{symbol}] SHORT Strategy A (PULLBACK): Macro={macro_trend} + Bearish OB + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
                 
-                # Strategy B: Momentum Breakout
-                elif bearish_breakout:
+                # Strategy B: Momentum Breakout (Z < -1.2 + Bearish Breakout)
+                elif bearish_breakout and current_zscore < -1.2:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
                         decision = 'SHORT'
                         strategy_type = 'BREAKOUT'
                         new_stop_loss = bearish_breakout['breakout_candle_high'] * 1.001 # Above breakout candle
-                        msg = f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x)"
+                        msg = f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x) + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
 
                 # Strategy C: Testnet — Pure Trend Alignment (force trades)
-                elif TESTNET_FORCE_TRADES and current_sma and current_price < current_sma and current_rsi > 35 and current_zscore > -1.5:
+                elif TESTNET_FORCE_TRADES and current_sma and current_price < current_sma and current_rsi < 45.0 and current_zscore < -1.2:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
                     else:
@@ -1131,7 +1142,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 if in_position:
                     print(f"  [DEBUG] {symbol} | Skipping entry: Already in position.", flush=True)
                 else:
-                    print(f"  [DEBUG] {symbol} | Z: {current_zscore:+.3f} (Req: <{ZSCORE_LONG_THRESHOLD} or >{ZSCORE_SHORT_THRESHOLD})", flush=True)
+                    if 45.0 <= current_rsi <= 55.0:
+                        print(f"  [DEBUG] {symbol} | Skipping trade: RSI in chop zone ({current_rsi:.1f}) [Req: >55 for LONG, <45 for SHORT].", flush=True)
+                    print(f"  [DEBUG] {symbol} | Z: {current_zscore:+.3f} (Req: > +1.2 for Breakout LONG/Pullback SHORT, < -1.2 for Pullback LONG/Breakout SHORT) | RSI: {current_rsi:.1f}", flush=True)
                     
                     if bullish_ob:
                         print(f"  [DEBUG] {symbol} | Bullish OB detected. High=${bullish_ob['high']:.2f}, Price=${current_price:.2f} (Req: Price <= OB High)", flush=True)
@@ -1143,7 +1156,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     elif active_count >= MAX_CONCURRENT_POSITIONS:
                         print(f"  [DEBUG] {symbol} | Skipping trade: Max concurrent slots reached ({active_count}/{MAX_CONCURRENT_POSITIONS}).", flush=True)
                     else:
-                        print(f"  [DEBUG] {symbol} | Skipping trade: Signal does not match all criteria (Z-score not extreme enough OR Price not inside OB).", flush=True)
+                        print(f"  [DEBUG] {symbol} | Skipping trade: Signal does not match all criteria (|Z|>=1.2, RSI outside 45-55 chop zone, and OB/Breakout touch).", flush=True)
 
         # ── 6. Save signal to Database ──
         # Build db_decision from live Binance state WITHOUT mutating `decision`.
@@ -1658,16 +1671,27 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         )
                         return False # Early return since position is closed
 
-                    # Always Calculate SL
+                    # Preserve existing local SL, or only calculate new SL if it's a completely new execution
                     sl_val = portfolio.get('stop_loss_price')
                     if sl_val is None or float(sl_val) <= 0:
-                        if db_pos_direction == 'LONG':
-                            sl_val = float(db_entry_price) * 0.985
-                        elif db_pos_direction == 'SHORT':
-                            sl_val = float(db_entry_price) * 1.015
-                        portfolio['stop_loss_price'] = sl_val
-                        portfolio['stop_loss'] = sl_val
-                        print(f"🔄 [{symbol}] Calculated missing Stop Loss during sync: ${sl_val:.4f}", flush=True)
+                        existing_sl_row = session.query(PortfolioState.stop_loss_price, PortfolioState.stop_loss).filter(
+                            PortfolioState.symbol == symbol,
+                            PortfolioState.asset_balance > 0,
+                            (PortfolioState.stop_loss_price.isnot(None) | PortfolioState.stop_loss.isnot(None))
+                        ).order_by(PortfolioState.id.desc()).first()
+
+                        if existing_sl_row and (existing_sl_row.stop_loss_price or existing_sl_row.stop_loss):
+                            sl_val = float(existing_sl_row.stop_loss_price or existing_sl_row.stop_loss)
+                            print(f"🔄 [{symbol}] Preserved existing local Stop Loss during sync: ${sl_val:.4f}", flush=True)
+                        else:
+                            if db_pos_direction == 'LONG':
+                                sl_val = float(db_entry_price) * 0.985
+                            elif db_pos_direction == 'SHORT':
+                                sl_val = float(db_entry_price) * 1.015
+                            print(f"🔄 [{symbol}] Calculated missing Stop Loss for new position execution during sync: ${sl_val:.4f}", flush=True)
+
+                    portfolio['stop_loss_price'] = sl_val
+                    portfolio['stop_loss'] = sl_val
                 elif pos_info and pos_info['size'] == 0.0:
                     if in_position and db_pos_direction in ('LONG', 'SHORT'):
                         print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)

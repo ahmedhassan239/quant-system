@@ -219,7 +219,8 @@ def get_open_position_symbols(session):
 def sync_missing_stop_losses(session):
     """
     Finds active open positions (asset_balance > 0) with NULL stop_loss_price,
-    calculates a default 1.5% SL relative to average_entry_price, and updates the DB.
+    preserves existing local stop_loss_price if available, or calculates a default 1.5% SL
+    relative to average_entry_price if it's a completely new execution.
     """
     latest_ids = (
         session.query(func.max(PortfolioState.id).label('max_id'))
@@ -241,16 +242,34 @@ def sync_missing_stop_losses(session):
     
     updated = False
     for row in rows:
-        if row.position_direction == 'LONG':
-            row.stop_loss_price = float(row.average_entry_price) * 0.985
-            row.stop_loss = float(row.average_entry_price) * 0.985
-            print(f"🔄 Synced missing Stop Loss for {row.symbol} LONG: ${row.stop_loss_price:.4f}", flush=True)
+        prev_sl = (
+            session.query(PortfolioState.stop_loss_price, PortfolioState.stop_loss)
+            .filter(
+                PortfolioState.symbol == row.symbol,
+                PortfolioState.asset_balance > 0,
+                (PortfolioState.stop_loss_price.isnot(None) | PortfolioState.stop_loss.isnot(None))
+            )
+            .order_by(PortfolioState.id.desc())
+            .first()
+        )
+
+        if prev_sl and (prev_sl.stop_loss_price or prev_sl.stop_loss):
+            val = float(prev_sl.stop_loss_price or prev_sl.stop_loss)
+            row.stop_loss_price = val
+            row.stop_loss = val
+            print(f"🔄 Preserved existing local Stop Loss for {row.symbol} ({row.position_direction}): ${row.stop_loss_price:.4f}", flush=True)
             updated = True
-        elif row.position_direction == 'SHORT':
-            row.stop_loss_price = float(row.average_entry_price) * 1.015
-            row.stop_loss = float(row.average_entry_price) * 1.015
-            print(f"🔄 Synced missing Stop Loss for {row.symbol} SHORT: ${row.stop_loss_price:.4f}", flush=True)
-            updated = True
+        else:
+            if row.position_direction == 'LONG':
+                row.stop_loss_price = float(row.average_entry_price) * 0.985
+                row.stop_loss = float(row.average_entry_price) * 0.985
+                print(f"🔄 Synced missing Stop Loss for new {row.symbol} LONG execution: ${row.stop_loss_price:.4f}", flush=True)
+                updated = True
+            elif row.position_direction == 'SHORT':
+                row.stop_loss_price = float(row.average_entry_price) * 1.015
+                row.stop_loss = float(row.average_entry_price) * 1.015
+                print(f"🔄 Synced missing Stop Loss for new {row.symbol} SHORT execution: ${row.stop_loss_price:.4f}", flush=True)
+                updated = True
             
     if updated:
         session.commit()
