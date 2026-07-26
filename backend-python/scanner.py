@@ -25,8 +25,8 @@ from config import (
 BINANCE_TICKER_URL       = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/24hr"
 BINANCE_EXCHANGE_INFO_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/exchangeInfo"
 
-TOP_N = 15
-MIN_QUOTE_VOLUME = 5_000_000.0  # Minimum 24h quote volume ($5M USDT)
+TOP_N = 50
+MIN_QUOTE_VOLUME = 1_000_000.0  # Minimum 24h quote volume ($1M USDT)
 
 # Stablecoin / fiat-pegged quote pairs to exclude.
 # These end with USDT but do not represent tradeable crypto assets.

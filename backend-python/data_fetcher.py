@@ -75,10 +75,21 @@ def save_to_db(df):
     finally:
         session.close()
 
-def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250):
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def _fetch_and_save_symbol(sym, interval, limit):
+    """Helper worker to fetch and persist candles for a single symbol."""
+    try:
+        df = fetch_binance_klines(symbol=sym, interval=interval, limit=limit)
+        save_to_db(df)
+        return sym, True, None
+    except Exception as e:
+        return sym, False, str(e)
+
+def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250, chunk_size=10):
     """
     Core execution logic for the data fetcher.
-    Fetches Futures candle data for each symbol in the list.
+    Fetches Futures candle data for each symbol in the list in concurrent chunks.
     Defaults to BTCUSDT if no symbols provided.
     Strictly forbids fetching candles for mock tokens.
     Uses limit=250 to ensure SMA 200 has enough warmup data.
@@ -89,23 +100,31 @@ def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250):
         # Ensure under NO circumstances should the bot pull candles for mock tokens or non-whitelisted assets
         symbols = [s for s in symbols if s in REAL_WORLD_WHITELIST and s not in MOCK_TOKENS_BLACKLIST]
 
-    print("--- Fetcher Started (Futures) ---", flush=True)
+    print(f"--- Fetcher Started (Futures — {len(symbols)} symbols) ---", flush=True)
     # Ensure tables exist before trying to save
     init_db()
 
-    for i, sym in enumerate(symbols):
-        print(f"Fetching {limit} x {interval} Futures candles for {sym}...", flush=True)
-        try:
-            df = fetch_binance_klines(symbol=sym, interval=interval, limit=limit)
-            save_to_db(df)
-        except Exception as e:
-            print(f"  ⚠️ Failed to fetch {sym}: {e}", flush=True)
+    # Split symbols into chunks of chunk_size (default 10) to stay safely within rate limits
+    chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+    success_count = 0
+    fail_count = 0
 
-        # Rate-limit protection: 500ms delay between API calls
-        if i < len(symbols) - 1:
-            time.sleep(0.5)
+    for chunk_idx, chunk in enumerate(chunks):
+        with ThreadPoolExecutor(max_workers=len(chunk)) as executor:
+            futures = [executor.submit(_fetch_and_save_symbol, sym, interval, limit) for sym in chunk]
+            for future in as_completed(futures):
+                sym, success, err = future.result()
+                if success:
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    print(f"  ⚠️ Failed to fetch {sym}: {err}", flush=True)
 
-    print("--- Fetcher Completed (Futures) ---", flush=True)
+        # Rate-limit safety: slight pause between chunks
+        if chunk_idx < len(chunks) - 1:
+            time.sleep(0.15)
+
+    print(f"--- Fetcher Completed ({success_count}/{len(symbols)} symbols processed successfully) ---", flush=True)
 
 if __name__ == "__main__":
     run_fetcher()
