@@ -128,11 +128,14 @@ HARD_STOP_LOSS_PCT = 0.05          # 5% absolute stop loss
 STOP_LOSS_PCT = 0.05               # 5% trailing/soft stop loss
 MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "10"))  # Max open positions limit
 
-# Execution Engine (5m) — Aggressive Trailing Stop Loss (TSL) Settings
-TSL_ACTIVATION_PCT = float(os.environ.get("TSL_ACTIVATION_PCT", "0.008"))   # Activate TSL at +0.8% profit
-TSL_TRAIL_PCT = float(os.environ.get("TSL_TRAIL_PCT", "0.004"))            # Trail price by 0.4% distance
-TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT                                 # Alias for backward compatibility
-TRAILING_DISTANCE_PCT = TSL_TRAIL_PCT                                      # Alias for backward compatibility
+# Execution Engine (5m) — Dynamic ATR Trailing Stop Loss (TSL) Settings
+ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                               # 14-period ATR
+TSL_ATR_ACTIVATION_MULT = float(os.environ.get("TSL_ATR_ACTIVATION_MULT", "2.0"))  # Activate TSL at 2.0 * ATR profit distance
+TSL_ATR_TRAIL_MULT = float(os.environ.get("TSL_ATR_TRAIL_MULT", "1.5"))            # Trail price strictly by 1.5 * ATR distance
+TSL_ACTIVATION_PCT = float(os.environ.get("TSL_ACTIVATION_PCT", "0.008"))          # Legacy fallback
+TSL_TRAIL_PCT = float(os.environ.get("TSL_TRAIL_PCT", "0.004"))                   # Legacy fallback
+TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT                                        # Alias for backward compatibility
+TRAILING_DISTANCE_PCT = TSL_TRAIL_PCT                                             # Alias for backward compatibility
 
 
 # Execution Engine (5m) — Z-Score thresholds for entry

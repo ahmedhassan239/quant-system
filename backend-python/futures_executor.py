@@ -433,9 +433,11 @@ def _round_price(client: Client, symbol: str, raw_price: float) -> float:
         return round(raw_price, 2)
 
 
-def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price: float) -> dict | None:
+def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price: float,
+                        trailing_distance: float = None, atr_val: float = None) -> dict | None:
     """
     Cancel existing open orders (e.g. old SL) and place a new STOP_MARKET reduce-only order.
+    Supports dynamic ATR trailing stop loss tracking.
     """
     direction = direction.upper()
     if direction not in ('LONG', 'SHORT'):
@@ -460,7 +462,10 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
         # 3. Determine side (close LONG = SELL, close SHORT = BUY)
         side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
         
-        logger.info(f"[{symbol}] SETTING STOP LOSS {direction} | Side: {side} | Stop Price: {rounded_price}")
+        if atr_val is not None and trailing_distance is not None:
+            logger.info(f"[{symbol}] 📐 SETTING DYNAMIC ATR STOP LOSS {direction} | Side: {side} | Stop Price: {rounded_price} | ATR(14): {atr_val:.4f} | Trail Dist: {trailing_distance:.4f} (1.5x ATR)")
+        else:
+            logger.info(f"[{symbol}] SETTING STOP LOSS {direction} | Side: {side} | Stop Price: {rounded_price}")
 
         # 4. Place order wrapped in try-except with safe error handling
         try:
@@ -497,3 +502,13 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
     except Exception as e:
         logger.error(f"[{symbol}] ❌ Unexpected error setting Stop Loss: {type(e).__name__} - {e}")
         return None
+
+
+def update_stop_loss_price(client: Client, symbol: str, direction: str, stop_price: float,
+                           trailing_distance: float = None, atr_val: float = None) -> dict | None:
+    """
+    Real-time adjustment of Stop Loss order when dynamic ATR changes or price moves.
+    Delegates directly to set_stop_loss_order.
+    """
+    return set_stop_loss_order(client, symbol, direction, stop_price,
+                               trailing_distance=trailing_distance, atr_val=atr_val)

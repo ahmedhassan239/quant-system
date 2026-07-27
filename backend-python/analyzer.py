@@ -19,9 +19,11 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     PYRAMID_TIER1_SIZE_PCT, PYRAMID_TIER2_SIZE_PCT,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT,
                     MAX_GLOBAL_POSITIONS, TSL_ACTIVATION_PCT, TSL_TRAIL_PCT,
-                    TRAILING_ACTIVATE_PCT, TRAILING_DISTANCE_PCT)
+                    TRAILING_ACTIVATE_PCT, TRAILING_DISTANCE_PCT,
+                    ATR_PERIOD, TSL_ATR_ACTIVATION_MULT, TSL_ATR_TRAIL_MULT)
 from futures_executor import (open_position, close_position, get_futures_balance,
-                              get_position_info, count_all_open_positions, set_stop_loss_order)
+                              get_position_info, count_all_open_positions, set_stop_loss_order,
+                              update_stop_loss_price)
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -34,6 +36,9 @@ TSL_ACTIVATION_PCT = TSL_ACTIVATION_PCT   # +0.8 % unrealized PnL to activate TS
 TSL_TRAIL_PCT = TSL_TRAIL_PCT             # 0.4 % trailing distance from peak/trough
 TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT # +0.8 % alias
 TRAILING_DISTANCE_PCT = TSL_TRAIL_PCT     # 0.4 % alias
+ATR_PERIOD = ATR_PERIOD                           # 14-period ATR
+TSL_ATR_ACTIVATION_MULT = TSL_ATR_ACTIVATION_MULT # 2.0x ATR activation distance
+TSL_ATR_TRAIL_MULT = TSL_ATR_TRAIL_MULT           # 1.5x ATR trailing distance
 TRAILING_PULLBACK_PCT = 0.005             # -0.5 % (legacy, kept for compat)
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
@@ -114,6 +119,25 @@ def calculate_sdc(df, sma_period=50, multiplier=2.0):
     df['SDC_upper'] = df[sma_col] + multiplier * df[std_col]
     df['SDC_lower'] = df[sma_col] - multiplier * df[std_col]
 
+    return df
+
+
+def calculate_atr(df, period=14):
+    """
+    Calculate 14-period Average True Range (ATR) using pure Pandas and Wilder's Smoothing.
+    True Range = max(high - low, abs(high - prev_close), abs(low - prev_close))
+    """
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    prev_close = close.shift(1)
+
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df['ATR'] = tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     return df
 
 
@@ -1202,6 +1226,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         # ── 2. Compute indicators ──
         df = calculate_rsi(df, period=14)
         df = calculate_zscore(df, sma_period=ZSCORE_SMA_PERIOD)
+        df = calculate_atr(df, period=ATR_PERIOD)
 
         # ── 3. Detect volume-filtered Order Blocks ──
         bullish_ob, bearish_ob = detect_order_blocks(df, lookback=15)
@@ -1212,6 +1237,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         current_rsi = float(last_row['RSI']) if pd.notna(last_row['RSI']) else None
         current_zscore = float(last_row['Z_Score']) if pd.notna(last_row['Z_Score']) else None
         current_sma = float(last_row[f'SMA_{ZSCORE_SMA_PERIOD}']) if pd.notna(last_row[f'SMA_{ZSCORE_SMA_PERIOD}']) else None
+        current_atr = float(last_row['ATR']) if pd.notna(last_row['ATR']) and float(last_row['ATR']) > 0 else (float(current_price) * 0.005)
 
         print(f"  📊 [{symbol}] 15m Z-Score: {current_zscore:+.3f} | "
               f"RSI: {current_rsi:.1f}" if current_zscore and current_rsi else
@@ -1308,19 +1334,24 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             print(f"Warning: Failed to persist break-even SL to DB: {e}", flush=True)
 
                 # ── Trailing Stop Loss (Profit-Locking) ──
-                # Only activates once unrealized PnL >= TRAILING_ACTIVATE_PCT
-                if not risk_exit_triggered and unrealized_pct >= TRAILING_ACTIVATE_PCT:
+                # Dynamic Volatility-Based TSL using ATR: activates when profit >= 2.0 * ATR
+                tsl_activation_dist = TSL_ATR_ACTIVATION_MULT * current_atr
+                tsl_trailing_dist = TSL_ATR_TRAIL_MULT * current_atr
+                price_move_fav = cp - ep
+
+                if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
                     if not trailing_active:
                         trailing_active = True
                         portfolio['trailing_active'] = True
-                        msg = (f"📈 [{symbol}] TRAILING STOP ACTIVATED for LONG | "
-                               f"Unrealized: {unrealized_pct*100:+.2f}% (threshold: {TRAILING_ACTIVATE_PCT*100:.1f}%)")
+                        msg = (f"📈 [{symbol}] DYNAMIC ATR TRAILING STOP ACTIVATED for LONG | "
+                               f"Move: +${price_move_fav:.4f} (+{unrealized_pct*100:.2f}%) | "
+                               f"Threshold: +${tsl_activation_dist:.4f} ({TSL_ATR_ACTIVATION_MULT}x ATR: ${current_atr:.4f})")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "INFO", msg)
 
-                    # Trail from the PEAK price, not current price
+                    # Trail strictly by 1.5 * ATR from the PEAK price
                     peak = float(highest_price) if highest_price else cp
-                    new_sl = peak * (1 - TRAILING_DISTANCE_PCT)
+                    new_sl = peak - tsl_trailing_dist
 
                     if new_sl > stop_loss:
                         old_sl = stop_loss
@@ -1328,14 +1359,14 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['stop_loss'] = new_sl
                         stop_loss = new_sl
                         locked_pnl = ((new_sl - ep) / ep) * 100
-                        msg = (f"📈 TRAILING STOP UPDATED: {symbol} | "
+                        msg = (f"📈 DYNAMIC ATR TRAILING STOP UPDATED: {symbol} | "
                                f"New SL: ${new_sl:.4f} (was ${old_sl:.4f}) | "
-                               f"Peak: ${peak:.2f} | Locked Profit: {locked_pnl:+.2f}%")
+                               f"Peak: ${peak:.2f} | Trailing Dist: ${tsl_trailing_dist:.4f} ({TSL_ATR_TRAIL_MULT}x ATR) | Locked Profit: {locked_pnl:+.2f}%")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "INFO", msg)
 
                         if futures_client:
-                            set_stop_loss_order(futures_client, symbol, 'LONG', stop_loss)
+                            set_stop_loss_order(futures_client, symbol, 'LONG', stop_loss, trailing_distance=tsl_trailing_dist, atr_val=current_atr)
 
                     # Persist trailing state to DB for frontend
                     try:
@@ -1431,19 +1462,24 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             print(f"Warning: Failed to persist break-even SL to DB: {e}", flush=True)
 
                 # ── Trailing Stop Loss (Profit-Locking) ──
-                # Only activates once unrealized PnL >= TRAILING_ACTIVATE_PCT
-                if not risk_exit_triggered and unrealized_pct >= TRAILING_ACTIVATE_PCT:
+                # Dynamic Volatility-Based TSL using ATR: activates when profit >= 2.0 * ATR
+                tsl_activation_dist = TSL_ATR_ACTIVATION_MULT * current_atr
+                tsl_trailing_dist = TSL_ATR_TRAIL_MULT * current_atr
+                price_move_fav = ep - cp
+
+                if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
                     if not trailing_active:
                         trailing_active = True
                         portfolio['trailing_active'] = True
-                        msg = (f"📈 [{symbol}] TRAILING STOP ACTIVATED for SHORT | "
-                               f"Unrealized: {unrealized_pct*100:+.2f}% (threshold: {TRAILING_ACTIVATE_PCT*100:.1f}%)")
+                        msg = (f"📈 [{symbol}] DYNAMIC ATR TRAILING STOP ACTIVATED for SHORT | "
+                               f"Move: +${price_move_fav:.4f} (+{unrealized_pct*100:.2f}%) | "
+                               f"Threshold: +${tsl_activation_dist:.4f} ({TSL_ATR_ACTIVATION_MULT}x ATR: ${current_atr:.4f})")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "INFO", msg)
 
-                    # Trail from the TROUGH price, not current price
+                    # Trail strictly by 1.5 * ATR from the TROUGH price
                     trough = float(lowest_price) if lowest_price else cp
-                    new_sl = trough * (1 + TRAILING_DISTANCE_PCT)
+                    new_sl = trough + tsl_trailing_dist
 
                     if stop_loss == 0 or new_sl < stop_loss:
                         old_sl = stop_loss
@@ -1451,14 +1487,14 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         portfolio['stop_loss'] = new_sl
                         stop_loss = new_sl
                         locked_pnl = ((ep - new_sl) / ep) * 100
-                        msg = (f"📈 TRAILING STOP UPDATED: {symbol} | "
+                        msg = (f"📈 DYNAMIC ATR TRAILING STOP UPDATED: {symbol} | "
                                f"New SL: ${new_sl:.4f} (was ${old_sl:.4f}) | "
-                               f"Trough: ${trough:.2f} | Locked Profit: {locked_pnl:+.2f}%")
+                               f"Trough: ${trough:.2f} | Trailing Dist: ${tsl_trailing_dist:.4f} ({TSL_ATR_TRAIL_MULT}x ATR) | Locked Profit: {locked_pnl:+.2f}%")
                         print(msg, flush=True)
                         log_to_db(session, symbol, "INFO", msg)
 
                         if futures_client:
-                            set_stop_loss_order(futures_client, symbol, 'SHORT', stop_loss)
+                            set_stop_loss_order(futures_client, symbol, 'SHORT', stop_loss, trailing_distance=tsl_trailing_dist, atr_val=current_atr)
 
                     # Persist trailing state to DB for frontend
                     try:
@@ -1937,7 +1973,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"\U0001f6e1 *Risk Management:*\n"
                             f"- Entry Price: ${float(portfolio['average_entry_price']):.2f}\n"
                             f"- Stop-Loss: ${new_stop_loss:.2f} (Dynamic)\n"
-                            f"- Trailing Stop activates at: +{TRAILING_ACTIVATE_PCT*100:.1f}%\n"
+                            f"- Trailing Stop: {TSL_ATR_ACTIVATION_MULT}x ATR act / {TSL_ATR_TRAIL_MULT}x ATR trail\n"
                             f"\n"
                             f"\U0001f4bc *Virtual Portfolio:*\n"
                             f"- Slot Budget: ${SLOT_BUDGET:,.0f}\n"
@@ -2108,7 +2144,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             f"\U0001f6e1 *Risk Management:*\n"
                             f"- Entry Price: ${float(portfolio['average_entry_price']):.2f}\n"
                             f"- Stop-Loss: ${new_stop_loss:.2f} (Dynamic)\n"
-                            f"- Trailing Stop activates at: +{TRAILING_ACTIVATE_PCT*100:.1f}%\n"
+                            f"- Trailing Stop: {TSL_ATR_ACTIVATION_MULT}x ATR act / {TSL_ATR_TRAIL_MULT}x ATR trail\n"
                             f"\n"
                             f"\U0001f4bc *Virtual Portfolio:*\n"
                             f"- Slot Budget: ${SLOT_BUDGET:,.0f}\n"
@@ -2344,8 +2380,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 trailing_status = "🟢 ACTIVE" if is_trailing else "⚪ INACTIVE"
                 print(f"\n--- Risk Management (LONG) ---", flush=True)
                 print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}% | Peak: ${hp:.2f}", flush=True)
+                tsl_act_str = f"+${TSL_ATR_ACTIVATION_MULT * current_atr:.4f} ({TSL_ATR_ACTIVATION_MULT}x ATR)" if current_atr else f"+{TRAILING_ACTIVATE_PCT*100:.1f}%"
+                tsl_trl_str = f"${TSL_ATR_TRAIL_MULT * current_atr:.4f} ({TSL_ATR_TRAIL_MULT}x ATR)" if current_atr else f"{TRAILING_DISTANCE_PCT*100:.1f}%"
                 print(f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} "
-                      f"(activates at +{TRAILING_ACTIVATE_PCT*100:.1f}%, trails {TRAILING_DISTANCE_PCT*100:.1f}%)", flush=True)
+                      f"(activates at {tsl_act_str}, trails {tsl_trl_str})", flush=True)
             elif pos_direction == 'SHORT':
                 lp = float(portfolio['lowest_price_since_entry']) if portfolio.get('lowest_price_since_entry') else cp
                 current_sl = float(portfolio.get('stop_loss_price', 0) or 0)
@@ -2354,8 +2392,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 trailing_status = "🟢 ACTIVE" if is_trailing else "⚪ INACTIVE"
                 print(f"\n--- Risk Management (SHORT) ---", flush=True)
                 print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}% | Trough: ${lp:.2f}", flush=True)
+                tsl_act_str = f"+${TSL_ATR_ACTIVATION_MULT * current_atr:.4f} ({TSL_ATR_ACTIVATION_MULT}x ATR)" if current_atr else f"+{TRAILING_ACTIVATE_PCT*100:.1f}%"
+                tsl_trl_str = f"${TSL_ATR_TRAIL_MULT * current_atr:.4f} ({TSL_ATR_TRAIL_MULT}x ATR)" if current_atr else f"{TRAILING_DISTANCE_PCT*100:.1f}%"
                 print(f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} "
-                      f"(activates at +{TRAILING_ACTIVATE_PCT*100:.1f}%, trails {TRAILING_DISTANCE_PCT*100:.1f}%)", flush=True)
+                      f"(activates at {tsl_act_str}, trails {tsl_trl_str})", flush=True)
 
         if risk_exit_triggered:
             print(f"\n⚠️ [{symbol}] Risk exit was triggered this cycle.", flush=True)
