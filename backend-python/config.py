@@ -21,17 +21,19 @@ ENV_TYPE = os.environ.get("ENV_TYPE", "LIVE")          # "LIVE" or "TESTNET"
 ENGINE_ROLE = os.environ.get("ENGINE_ROLE", "EXECUTION")  # "MACRO" or "EXECUTION"
 
 # ──────────────────────────────────────────────────────────────────────
-#  REAL-WORLD LIQUIDITY WHITELIST & MOCK TOKEN BLACKLIST
+#  DYNAMIC SCANNER RADAR SETTINGS
 # ──────────────────────────────────────────────────────────────────────
-# Authoritative Whitelist of major, highly liquid real-world crypto assets.
-# The bot MUST ONLY scan, rank, and trade symbols explicitly defined in this list.
-SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-    'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
-    'MATICUSDT', 'LTCUSDT', 'NEARUSDT', 'ATOMUSDT', 'BCHUSDT',
-]
+# Minimum 24h quote volume threshold in USDT ($150,000,000.0)
+MIN_24H_VOLUME_USDT = float(os.environ.get("MIN_24H_VOLUME_USDT", "150000000.0"))
 
-REAL_WORLD_WHITELIST = set(SYMBOLS)
+# Max number of top volume-ranked symbols to scan dynamically (e.g. 40)
+TOP_N = int(os.environ.get("TOP_N", "40"))
+
+# Stablecoin / fiat-pegged quote pairs to exclude from trading
+STABLECOIN_BLACKLIST = {
+    'USDCUSDT', 'BUSDUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'DAIUSDT',
+    'USDPUSDT', 'EURUSDT', 'GBPUSDT', 'AUDUSDT', 'JPYUSDT',
+}
 
 # Strict blacklist for known mock/testnet tokens as an extra layer of defense
 MOCK_TOKENS_BLACKLIST = {
@@ -39,6 +41,13 @@ MOCK_TOKENS_BLACKLIST = {
     'DEXEUSDT', 'AKEUSDT', 'ONUSDT', 'EULUSDT', 'FXSUSDT', 'BANKUSDT',
     'RIFUSDT',
 }
+
+# Default fallback list if Binance API fails during initial startup
+DEFAULT_SYMBOLS = [
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
+    'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'SUIUSDT',
+]
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  BINANCE API

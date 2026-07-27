@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.dialects.postgresql import insert
 from database import SessionLocal, MarketData, engine, init_db
-from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME, REAL_WORLD_WHITELIST, MOCK_TOKENS_BLACKLIST
+from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME, STABLECOIN_BLACKLIST, MOCK_TOKENS_BLACKLIST
 
 def fetch_binance_klines(symbol='BTCUSDT', interval=TIMEFRAME, limit=100):
     """
@@ -97,8 +97,8 @@ def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250, chunk_size=10):
     if symbols is None:
         symbols = ['BTCUSDT']
     else:
-        # Ensure under NO circumstances should the bot pull candles for mock tokens or non-whitelisted assets
-        symbols = [s for s in symbols if s in REAL_WORLD_WHITELIST and s not in MOCK_TOKENS_BLACKLIST]
+        # Ensure under NO circumstances should the bot pull candles for mock tokens or stablecoins
+        symbols = [s for s in symbols if s not in MOCK_TOKENS_BLACKLIST and s not in STABLECOIN_BLACKLIST]
 
     print(f"--- Fetcher Started (Futures — {len(symbols)} symbols) ---", flush=True)
     # Ensure tables exist before trying to save
