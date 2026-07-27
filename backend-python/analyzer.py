@@ -1277,7 +1277,14 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
         # ── 5. Load portfolio state ──
         portfolio = load_portfolio(session, symbol)
-        in_position = portfolio['asset_balance'] is not None and portfolio['asset_balance'] > 0
+        if futures_client:
+            live_pos_start = get_position_info(futures_client, symbol)
+            if live_pos_start and live_pos_start.get('size', 0) > 0:
+                portfolio['asset_balance'] = live_pos_start['size']
+                portfolio['average_entry_price'] = live_pos_start['entry_price']
+                portfolio['position_direction'] = live_pos_start['direction']
+
+        in_position = portfolio['asset_balance'] is not None and float(portfolio['asset_balance']) > 0
         entry_price = portfolio.get('average_entry_price')
         highest_price = portfolio.get('highest_price_since_entry')
         lowest_price = portfolio.get('lowest_price_since_entry')
@@ -2375,6 +2382,76 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     print(f"  🔒 [{symbol}] Binance sync: {db_decision} | "
                           f"Entry=${db_entry_price:.2f} | "
                           f"uPnL=${db_unrealized_pnl:.2f}", flush=True)
+
+                    # ── Active Position Sync: Unconditional TP-MATH Log & Partial Scale-Out ──
+                    u_pnl = float(pos_info.get('unRealizedProfit') if 'unRealizedProfit' in pos_info else pos_info.get('unrealized_pnl', 0.0))
+                    pos_amt = abs(float(pos_info.get('positionAmt') if 'positionAmt' in pos_info else pos_info.get('size', 0.0)))
+                    entry_price = float(pos_info.get('entryPrice') if 'entryPrice' in pos_info else pos_info.get('entry_price', 0.0))
+
+                    position_value = pos_amt * entry_price
+                    unrealized_pct = abs(u_pnl) / position_value if position_value > 0 else 0.0
+
+                    logger.info(f"🔎 [TP-MATH] {symbol} | uPnL: ${u_pnl:.2f} | Value: ${position_value:.2f} | ROE: {unrealized_pct*100:.2f}% | Target: {PARTIAL_TP_PCT*100:.2f}% | Hit: {portfolio.get('partial_tp_hit', False)}")
+
+                    if not risk_exit_triggered and u_pnl > 0 and unrealized_pct >= PARTIAL_TP_PCT and not portfolio.get('partial_tp_hit', False):
+                        total_qty = pos_amt
+                        if total_qty > 0 and futures_client:
+                            tsl_trailing_dist = TSL_ATR_TRAIL_MULT * current_atr if current_atr else None
+                            tp_order, rem_qty = execute_partial_tp_scaleout(
+                                futures_client, symbol, db_pos_direction, total_qty, entry_price,
+                                trailing_distance=tsl_trailing_dist, atr_val=current_atr
+                            )
+                            if tp_order and rem_qty > 0:
+                                portfolio['partial_tp_hit'] = True
+                                closed_qty = total_qty - rem_qty
+                                portfolio['asset_balance'] = rem_qty
+                                if portfolio.get('total_cost'):
+                                    portfolio['total_cost'] = float(portfolio['total_cost']) * (rem_qty / total_qty)
+                                cp = float(current_price)
+                                if db_pos_direction == 'LONG':
+                                    portfolio['usdt_balance'] = float(portfolio.get('usdt_balance', 0)) + (closed_qty * cp)
+                                    pnl_realized_est = (cp - entry_price) * closed_qty
+                                else:
+                                    portfolio['usdt_balance'] = float(portfolio.get('usdt_balance', 0)) + (closed_qty * (2 * entry_price - cp))
+                                    pnl_realized_est = (entry_price - cp) * closed_qty
+
+                                msg = (f"🎯 [{symbol}] PARTIAL TAKE PROFIT EXECUTED ({db_pos_direction}) | "
+                                       f"Closed 50% size ({closed_qty} units) at ${cp:.4f} (+{unrealized_pct*100:.2f}%) | "
+                                       f"Est. Profit: +${pnl_realized_est:.2f} | Remaining Qty: {rem_qty} | Stop Loss locked at Entry ${entry_price:.4f}")
+                                print(msg, flush=True)
+                                logger.info(msg)
+                                log_to_db(session, symbol, "ENTRY", msg)
+
+                                history_record = TradeHistory(
+                                    symbol=symbol,
+                                    direction=db_pos_direction,
+                                    entry_price=entry_price,
+                                    exit_price=cp,
+                                    quantity=closed_qty,
+                                    pnl_usd=pnl_realized_est,
+                                    pnl_pct=unrealized_pct * 100,
+                                    outcome='WIN',
+                                    exit_reason='PARTIAL_TAKE_PROFIT',
+                                    closed_at=datetime.utcnow()
+                                )
+                                session.add(history_record)
+
+                                try:
+                                    latest_record = session.query(PortfolioState).filter(
+                                        PortfolioState.symbol == symbol,
+                                        PortfolioState.position_direction == db_pos_direction
+                                    ).order_by(PortfolioState.id.desc()).first()
+                                    if latest_record:
+                                        latest_record.partial_tp_hit = True
+                                        latest_record.asset_balance = rem_qty
+                                        latest_record.total_cost = portfolio['total_cost']
+                                        latest_record.usdt_balance = portfolio['usdt_balance']
+                                        latest_record.stop_loss_price = entry_price
+                                        latest_record.stop_loss = entry_price
+                                    session.commit()
+                                except Exception as e:
+                                    session.rollback()
+                                    print(f"Warning: Failed to persist partial TP state to DB: {e}", flush=True)
 
                     # Strict Trend Direction Enforcement
                     if (db_pos_direction == 'LONG' and macro_trend == 'DOWNTREND') or \
