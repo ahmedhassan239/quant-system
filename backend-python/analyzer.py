@@ -20,10 +20,11 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT,
                     MAX_GLOBAL_POSITIONS, TSL_ACTIVATION_PCT, TSL_TRAIL_PCT,
                     TRAILING_ACTIVATE_PCT, TRAILING_DISTANCE_PCT,
-                    ATR_PERIOD, TSL_ATR_ACTIVATION_MULT, TSL_ATR_TRAIL_MULT)
+                    ATR_PERIOD, TSL_ATR_ACTIVATION_MULT, TSL_ATR_TRAIL_MULT,
+                    PARTIAL_TP_PCT)
 from futures_executor import (open_position, close_position, get_futures_balance,
                               get_position_info, count_all_open_positions, set_stop_loss_order,
-                              update_stop_loss_price)
+                              update_stop_loss_price, execute_partial_tp_scaleout)
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -582,6 +583,7 @@ def evaluate_pyramid_scale_in(portfolio, current_price, symbol, session, futures
             stop_loss_price=new_stop_loss,
             stop_loss=new_stop_loss,
             trailing_active=True,
+            partial_tp_hit=portfolio.get('partial_tp_hit', False),
             dca_level=portfolio['dca_level'],
             total_portfolio_value=portfolio.get('total_portfolio_value', 1000.0)
         )
@@ -783,6 +785,7 @@ def load_portfolio(session, symbol):
             'stop_loss_price': float(sl_val) if sl_val is not None else None,
             'stop_loss': float(sl_val) if sl_val is not None else None,
             'trailing_active': getattr(last_state, 'trailing_active', False),
+            'partial_tp_hit': getattr(last_state, 'partial_tp_hit', False),
             'strategy': getattr(last_state, 'strategy', None),
         }
     return {
@@ -798,6 +801,7 @@ def load_portfolio(session, symbol):
         'stop_loss_price': None,
         'stop_loss': None,
         'trailing_active': False,
+        'partial_tp_hit': False,
         'strategy': None,
     }
 
@@ -1022,6 +1026,7 @@ def _save_tracking_update(portfolio, current_price, symbol, session, futures_cli
         stop_loss=float(portfolio['stop_loss_price']) if portfolio.get('stop_loss_price') is not None else None,
         strategy=portfolio.get('strategy'),
         trailing_active=portfolio.get('trailing_active', False),
+        partial_tp_hit=portfolio.get('partial_tp_hit', False),
         pnl_pct=None,
         pnl_usd=db_pnl_usd,
         total_portfolio_value=float(round(total_value, 2))
@@ -1305,6 +1310,65 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     portfolio['highest_price_since_entry'] = cp
                     highest_price = cp
 
+                # ── Partial Take Profit (Scale-Out 50%) & Auto Break-Even ──
+                if not risk_exit_triggered and unrealized_pct >= PARTIAL_TP_PCT and not portfolio.get('partial_tp_hit', False):
+                    total_qty = float(portfolio.get('asset_balance', 0) or 0)
+                    if total_qty > 0 and futures_client:
+                        tsl_trailing_dist = TSL_ATR_TRAIL_MULT * current_atr if current_atr else None
+                        tp_order, rem_qty = execute_partial_tp_scaleout(
+                            futures_client, symbol, 'LONG', total_qty, ep,
+                            trailing_distance=tsl_trailing_dist, atr_val=current_atr
+                        )
+                        if tp_order and rem_qty > 0:
+                            portfolio['partial_tp_hit'] = True
+                            closed_qty = total_qty - rem_qty
+                            portfolio['asset_balance'] = rem_qty
+                            if portfolio.get('total_cost'):
+                                portfolio['total_cost'] = float(portfolio['total_cost']) * (rem_qty / total_qty)
+                            portfolio['usdt_balance'] = float(portfolio.get('usdt_balance', 0)) + (closed_qty * cp)
+                            if stop_loss < ep:
+                                stop_loss = ep
+                                portfolio['stop_loss_price'] = ep
+                                portfolio['stop_loss'] = ep
+                            
+                            pnl_realized_est = (cp - ep) * closed_qty
+                            msg = (f"🎯 [{symbol}] PARTIAL TAKE PROFIT EXECUTED (LONG) | "
+                                   f"Closed 50% size ({closed_qty} units) at ${cp:.4f} (+{unrealized_pct*100:.2f}%) | "
+                                   f"Est. Profit: +${pnl_realized_est:.2f} | Remaining Qty: {rem_qty} | Stop Loss locked at Entry ${ep:.4f}")
+                            print(msg, flush=True)
+                            log_to_db(session, symbol, "ENTRY", msg)
+
+                            history_record = TradeHistory(
+                                symbol=symbol,
+                                direction='LONG',
+                                entry_price=ep,
+                                exit_price=cp,
+                                quantity=closed_qty,
+                                pnl_usd=pnl_realized_est,
+                                pnl_pct=unrealized_pct * 100,
+                                outcome='WIN',
+                                exit_reason='PARTIAL_TAKE_PROFIT',
+                                closed_at=datetime.utcnow()
+                            )
+                            session.add(history_record)
+
+                            try:
+                                latest_record = session.query(PortfolioState).filter(
+                                    PortfolioState.symbol == symbol,
+                                    PortfolioState.position_direction == 'LONG'
+                                ).order_by(PortfolioState.id.desc()).first()
+                                if latest_record:
+                                    latest_record.partial_tp_hit = True
+                                    latest_record.asset_balance = rem_qty
+                                    latest_record.total_cost = portfolio['total_cost']
+                                    latest_record.usdt_balance = portfolio['usdt_balance']
+                                    latest_record.stop_loss_price = stop_loss
+                                    latest_record.stop_loss = stop_loss
+                                session.commit()
+                            except Exception as e:
+                                session.rollback()
+                                print(f"Warning: Failed to persist partial TP state to DB: {e}", flush=True)
+
                 # ── Break-Even Trigger (+1.0%) ──
                 if not risk_exit_triggered and unrealized_pct >= 0.01:
                     if stop_loss < ep:
@@ -1432,6 +1496,65 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 if lowest_price is None or cp < float(lowest_price):
                     portfolio['lowest_price_since_entry'] = cp
                     lowest_price = cp
+
+                # ── Partial Take Profit (Scale-Out 50%) & Auto Break-Even ──
+                if not risk_exit_triggered and unrealized_pct >= PARTIAL_TP_PCT and not portfolio.get('partial_tp_hit', False):
+                    total_qty = float(portfolio.get('asset_balance', 0) or 0)
+                    if total_qty > 0 and futures_client:
+                        tsl_trailing_dist = TSL_ATR_TRAIL_MULT * current_atr if current_atr else None
+                        tp_order, rem_qty = execute_partial_tp_scaleout(
+                            futures_client, symbol, 'SHORT', total_qty, ep,
+                            trailing_distance=tsl_trailing_dist, atr_val=current_atr
+                        )
+                        if tp_order and rem_qty > 0:
+                            portfolio['partial_tp_hit'] = True
+                            closed_qty = total_qty - rem_qty
+                            portfolio['asset_balance'] = rem_qty
+                            if portfolio.get('total_cost'):
+                                portfolio['total_cost'] = float(portfolio['total_cost']) * (rem_qty / total_qty)
+                            portfolio['usdt_balance'] = float(portfolio.get('usdt_balance', 0)) + (closed_qty * (2 * ep - cp))
+                            if stop_loss > ep or stop_loss == 0:
+                                stop_loss = ep
+                                portfolio['stop_loss_price'] = ep
+                                portfolio['stop_loss'] = ep
+                            
+                            pnl_realized_est = (ep - cp) * closed_qty
+                            msg = (f"🎯 [{symbol}] PARTIAL TAKE PROFIT EXECUTED (SHORT) | "
+                                   f"Closed 50% size ({closed_qty} units) at ${cp:.4f} (+{unrealized_pct*100:.2f}%) | "
+                                   f"Est. Profit: +${pnl_realized_est:.2f} | Remaining Qty: {rem_qty} | Stop Loss locked at Entry ${ep:.4f}")
+                            print(msg, flush=True)
+                            log_to_db(session, symbol, "ENTRY", msg)
+
+                            history_record = TradeHistory(
+                                symbol=symbol,
+                                direction='SHORT',
+                                entry_price=ep,
+                                exit_price=cp,
+                                quantity=closed_qty,
+                                pnl_usd=pnl_realized_est,
+                                pnl_pct=unrealized_pct * 100,
+                                outcome='WIN',
+                                exit_reason='PARTIAL_TAKE_PROFIT',
+                                closed_at=datetime.utcnow()
+                            )
+                            session.add(history_record)
+
+                            try:
+                                latest_record = session.query(PortfolioState).filter(
+                                    PortfolioState.symbol == symbol,
+                                    PortfolioState.position_direction == 'SHORT'
+                                ).order_by(PortfolioState.id.desc()).first()
+                                if latest_record:
+                                    latest_record.partial_tp_hit = True
+                                    latest_record.asset_balance = rem_qty
+                                    latest_record.total_cost = portfolio['total_cost']
+                                    latest_record.usdt_balance = portfolio['usdt_balance']
+                                    latest_record.stop_loss_price = stop_loss
+                                    latest_record.stop_loss = stop_loss
+                                session.commit()
+                            except Exception as e:
+                                session.rollback()
+                                print(f"Warning: Failed to persist partial TP state to DB: {e}", flush=True)
 
                 # ── Break-Even Trigger (+1.0%) ──
                 if not risk_exit_triggered and unrealized_pct >= 0.01:
@@ -2382,7 +2505,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}% | Peak: ${hp:.2f}", flush=True)
                 tsl_act_str = f"+${TSL_ATR_ACTIVATION_MULT * current_atr:.4f} ({TSL_ATR_ACTIVATION_MULT}x ATR)" if current_atr else f"+{TRAILING_ACTIVATE_PCT*100:.1f}%"
                 tsl_trl_str = f"${TSL_ATR_TRAIL_MULT * current_atr:.4f} ({TSL_ATR_TRAIL_MULT}x ATR)" if current_atr else f"{TRAILING_DISTANCE_PCT*100:.1f}%"
-                print(f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} "
+                tp_status = "✅ HIT (50% Closed)" if portfolio.get('partial_tp_hit') else f"⚪ WAITING (+{PARTIAL_TP_PCT*100:.1f}%)"
+                print(f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} | Partial TP: {tp_status} "
                       f"(activates at {tsl_act_str}, trails {tsl_trl_str})", flush=True)
             elif pos_direction == 'SHORT':
                 lp = float(portfolio['lowest_price_since_entry']) if portfolio.get('lowest_price_since_entry') else cp
@@ -2390,11 +2514,12 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 unrealized = ((ep - cp) / ep) * 100
                 is_trailing = portfolio.get('trailing_active', False)
                 trailing_status = "🟢 ACTIVE" if is_trailing else "⚪ INACTIVE"
+                tp_status = "✅ HIT (50% Closed)" if portfolio.get('partial_tp_hit') else f"⚪ WAITING (+{PARTIAL_TP_PCT*100:.1f}%)"
                 print(f"\n--- Risk Management (SHORT) ---", flush=True)
                 print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}% | Trough: ${lp:.2f}", flush=True)
                 tsl_act_str = f"+${TSL_ATR_ACTIVATION_MULT * current_atr:.4f} ({TSL_ATR_ACTIVATION_MULT}x ATR)" if current_atr else f"+{TRAILING_ACTIVATE_PCT*100:.1f}%"
                 tsl_trl_str = f"${TSL_ATR_TRAIL_MULT * current_atr:.4f} ({TSL_ATR_TRAIL_MULT}x ATR)" if current_atr else f"{TRAILING_DISTANCE_PCT*100:.1f}%"
-                print(f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} "
+                print(f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} | Partial TP: {tp_status} "
                       f"(activates at {tsl_act_str}, trails {tsl_trl_str})", flush=True)
 
         if risk_exit_triggered:
