@@ -276,7 +276,69 @@ def close_position(client: Client, symbol: str, direction: str,
         return None
 
 
+def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
+                                total_quantity: float, entry_price: float,
+                                trailing_distance: float = None, atr_val: float = None) -> tuple[dict | None, float]:
+    """
+    Execute a 50% partial Take Profit (scale-out) market close and immediately
+    move the Stop Loss for the remaining position to Entry Price (Break-Even).
+    """
+    direction = direction.upper()
+    if direction not in ('LONG', 'SHORT'):
+        logger.error(f"[{symbol}] Invalid direction '{direction}' for partial TP")
+        return None, total_quantity
+
+    qty_to_close = _round_quantity(client, symbol, total_quantity * 0.5)
+    if qty_to_close <= 0:
+        logger.error(f"[{symbol}] 50% partial close quantity is 0 after rounding — cannot scale out")
+        return None, total_quantity
+
+    remaining_qty = _round_quantity(client, symbol, total_quantity - qty_to_close)
+    if remaining_qty <= 0:
+        logger.error(f"[{symbol}] Remaining quantity would be 0 after closing 50% — cannot scale out")
+        return None, total_quantity
+
+    side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
+    logger.info(f"[{symbol}] 🎯 EXECUTING PARTIAL TAKE PROFIT (50%) | Direction: {direction} | Closing Qty: {qty_to_close} | Remaining Qty: {remaining_qty}")
+
+    try:
+        order = client.futures_create_order(
+            symbol=symbol,
+            side=side,
+            type=Client.ORDER_TYPE_MARKET,
+            quantity=qty_to_close,
+            reduceOnly=True,
+        )
+    except BinanceAPIException as api_err:
+        if _check_api_exception_for_blacklist(symbol, api_err):
+            logger.warning(f"[{symbol}] Gracefully caught Partial TP API restriction [{api_err.code}]. Auto-blacklisted for session.")
+        else:
+            logger.error(f"[{symbol}] ❌ Binance API rejected Partial TP order (status {api_err.status_code}): [{api_err.code}] {api_err.message}")
+        return None, total_quantity
+    except Exception as exec_err:
+        logger.error(f"[{symbol}] ❌ Exception during Partial TP market order: {exec_err}")
+        return None, total_quantity
+
+    order_id = order.get('orderId') or order.get('algoId')
+    if not order or not isinstance(order, dict) or not order_id:
+        logger.error(f"[{symbol}] ❌ Partial TP market order failed or orderId missing: {order}")
+        return None, total_quantity
+
+    logger.info(f"[{symbol}] ✅ PARTIAL TP EXECUTED | OrderID: {order_id} | Status: {order.get('status', 'UNKNOWN')}")
+
+    # Auto Break-Even: immediately set stop loss for remaining position to entry_price
+    logger.info(f"[{symbol}] 🛡️ AUTO BREAK-EVEN: Moving Stop Loss for remaining {remaining_qty} to Entry Price ${entry_price:,.4f}")
+    sl_order = set_stop_loss_order(client, symbol, direction, entry_price, trailing_distance=trailing_distance, atr_val=atr_val)
+    if not sl_order:
+        logger.warning(f"[{symbol}] ⚠️ Note: Could not immediately set Break-Even stop loss order after partial TP.")
+    else:
+        logger.info(f"[{symbol}] ✅ BREAK-EVEN STOP LOSS LOCKED AT ${entry_price:,.4f}")
+
+    return order, remaining_qty
+
+
 # ──────────────────────────────────────────────────────────────────────
+
 #  POSITION & BALANCE QUERIES
 # ──────────────────────────────────────────────────────────────────────
 

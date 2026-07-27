@@ -102,6 +102,7 @@ class PortfolioState(Base):
     stop_loss = Column(Float, nullable=True)
     strategy = Column(String, nullable=True)
     trailing_active = Column(Boolean, nullable=True, default=False)
+    partial_tp_hit = Column(Boolean, nullable=True, default=False)
     pnl_pct = Column(Float, nullable=True)
     pnl_usd = Column(Float, nullable=True)
     total_portfolio_value = Column(Float, nullable=False)
@@ -385,6 +386,14 @@ def save_wallet_balance(balance: float):
 def init_db():
     """Create tables if they don't exist, drop/recreate positions for clean schema."""
     Base.metadata.create_all(bind=engine)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "ALTER TABLE positions ADD COLUMN IF NOT EXISTS partial_tp_hit BOOLEAN DEFAULT FALSE;"
+            ))
+            conn.commit()
+    except Exception:
+        pass
 
 def init_shared_db():
     """Create the MacroState / ActiveSymbol tables in the shared database.

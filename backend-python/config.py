@@ -136,6 +136,7 @@ TSL_ACTIVATION_PCT = float(os.environ.get("TSL_ACTIVATION_PCT", "0.008"))       
 TSL_TRAIL_PCT = float(os.environ.get("TSL_TRAIL_PCT", "0.004"))                   # Legacy fallback
 TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT                                        # Alias for backward compatibility
 TRAILING_DISTANCE_PCT = TSL_TRAIL_PCT                                             # Alias for backward compatibility
+PARTIAL_TP_PCT = float(os.environ.get("PARTIAL_TP_PCT", "0.015"))                   # +1.5% ROE threshold for 50% scale-out
 
 
 # Execution Engine (5m) — Z-Score thresholds for entry
