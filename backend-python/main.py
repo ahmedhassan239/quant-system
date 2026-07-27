@@ -3,7 +3,8 @@ import schedule
 import threading
 from scanner import scan, update_radar
 from data_fetcher import run_fetcher
-from analyzer import run_analyzer, run_macro_analyzer, send_telegram_alert, MAX_GLOBAL_POSITIONS
+from analyzer import (run_analyzer, run_macro_analyzer, send_telegram_alert,
+                      send_periodic_report, MAX_GLOBAL_POSITIONS)
 from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     ENV_TYPE, SCHEDULE_INTERVAL_MINUTES, BINANCE_FUTURES_BASE_URL,
                     FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE,
@@ -47,6 +48,10 @@ def job():
     print("\n" + "="*60, flush=True)
     print(f"{ALERT_PREFIX} Running scheduled job at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     print("="*60, flush=True)
+
+def periodic_report_job():
+    print(f"\n📊 [{ALERT_PREFIX}] Generating scheduled Telegram PNL report at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    send_periodic_report(futures_client=futures_client)
 
 def scanner_job():
     print("\n" + "="*60, flush=True)
@@ -169,8 +174,11 @@ def main():
         schedule.every(60).minutes.do(scanner_job)
     else:
         schedule.every(SCHEDULE_INTERVAL_MINUTES).minutes.do(scanner_job)
+        # Schedule Telegram PNL report twice daily (08:00 and 20:00)
+        schedule.every().day.at("08:00").do(periodic_report_job)
+        schedule.every().day.at("20:00").do(periodic_report_job)
 
-    print(f"{ALERT_PREFIX} Scheduled job to run every {SCHEDULE_INTERVAL_MINUTES} minutes. Daemon is active.", flush=True)
+    print(f"{ALERT_PREFIX} Scheduled scanner every {SCHEDULE_INTERVAL_MINUTES} min & PNL reports daily at 08:00 and 20:00. Daemon active.", flush=True)
 
     # Build environment-aware startup alert
     env_warning = ""

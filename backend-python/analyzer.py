@@ -265,6 +265,92 @@ def send_telegram_alert(message):
         traceback.print_exc()
 
 
+def send_periodic_report(futures_client=None):
+    """
+    Generate and send an automated periodic PNL and portfolio status report via Telegram.
+    Summarizes:
+      - Total Realized PNL (sum of trade_history.pnl_usd)
+      - Win Rate and Total Closed Trades Count
+      - Active Positions count and Total Unrealized PNL
+      - Available Wallet Balance
+    """
+    session = SessionLocal()
+    try:
+        # 1. Total Realized PNL from trade_history
+        realized_pnl_result = session.query(func.sum(TradeHistory.pnl_usd)).scalar()
+        realized_pnl = float(realized_pnl_result) if realized_pnl_result is not None else 0.0
+
+        # 2. Win Rate & Trade Counts
+        total_trades = session.query(TradeHistory).count()
+        winning_trades = session.query(TradeHistory).filter(TradeHistory.outcome == 'WIN').count()
+        win_rate = (winning_trades / total_trades * 100.0) if total_trades > 0 else 0.0
+
+        # 3. Active Positions & Unrealized PNL
+        active_db_positions = session.query(PortfolioState).filter(
+            PortfolioState.asset_balance > 0.000001,
+            PortfolioState.decision.in_(['LONG', 'SHORT'])
+        ).all()
+        active_count = len(active_db_positions)
+
+        unrealized_pnl = 0.0
+        wallet_balance = 0.0
+
+        if futures_client:
+            try:
+                # Query live account balance & positions from Binance Testnet
+                wallet_balance = get_futures_balance(futures_client)
+                pos_risk = futures_client.futures_position_information()
+                live_active = 0
+                for p in pos_risk:
+                    amt = float(p.get('positionAmt', 0))
+                    if amt != 0:
+                        mark_price = float(p.get('markPrice') or p.get('entryPrice') or 0)
+                        if abs(amt) * mark_price >= 2.0:
+                            live_active += 1
+                            unrealized_pnl += float(p.get('unRealizedProfit', 0))
+                if live_active > 0:
+                    active_count = live_active
+            except Exception as e:
+                print(f"⚠️ Warning querying live Binance account for report: {e}", flush=True)
+
+        if wallet_balance == 0.0 and active_db_positions:
+            wallet_balance = float(active_db_positions[0].usdt_balance or 0.0)
+
+        # 4. Format Telegram Report Message
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        realized_sign = "+" if realized_pnl >= 0 else ""
+        unrealized_sign = "+" if unrealized_pnl >= 0 else ""
+
+        report_msg = (
+            f"📊 *{ALERT_PREFIX} Periodic PNL Report* 📊\n"
+            f"──────────────────────────────\n"
+            f"💰 *Realized PNL:* `${realized_sign}{realized_pnl:,.2f}`\n"
+            f"📈 *Win Rate:* `{win_rate:.1f}%` ({winning_trades}/{total_trades} Trades)\n"
+            f"🟢 *Active Positions:* `{active_count}`\n"
+            f"🔄 *Unrealized PNL:* `${unrealized_sign}{unrealized_pnl:,.2f}`\n"
+            f"💵 *Wallet Balance:* `${wallet_balance:,.2f}`\n"
+            f"──────────────────────────────\n"
+            f"⏰ *Generated:* `{now_str}`"
+        )
+
+        print("=" * 60, flush=True)
+        print("📊 [PERIODIC REPORT] Sending Telegram Summary...", flush=True)
+        print(report_msg, flush=True)
+        print("=" * 60, flush=True)
+
+        send_telegram_alert(report_msg)
+        return report_msg
+
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error generating periodic report: {e}", flush=True)
+        traceback.print_exc()
+        return None
+    finally:
+        session.close()
+
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  STRATEGY C — WHALE HUNTER (VOLUME ANOMALY DETECTION)
 # ══════════════════════════════════════════════════════════════════════

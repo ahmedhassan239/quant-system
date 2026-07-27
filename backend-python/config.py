@@ -35,12 +35,22 @@ STABLECOIN_BLACKLIST = {
     'USDPUSDT', 'EURUSDT', 'GBPUSDT', 'AUDUSDT', 'JPYUSDT',
 }
 
-# Strict blacklist for known mock/testnet tokens as an extra layer of defense
+# VIP / Whitelisted priority symbols that ALWAYS bypass MIN_24H_VOLUME_USDT volume filter
+VIP_SYMBOLS = {'PAXGUSDT','BZUSDT'}
+
+# TradFi or restricted contracts that trigger Binance API errors (e.g. XAUUSDT -4411)
+RESTRICTED_TOKENS_BLACKLIST = {
+    'XAUUSDT', 'SKHYNIXUSDT', 'CLUSDT', 'SNDKUSDT', 'SOXLUSDT',
+    'XAGUSDT', 'MUUSDT', 'SPCXUSDT', 'SKHYUSDT',
+}
+
+# Strict blacklist for known mock/testnet tokens + restricted contracts
 MOCK_TOKENS_BLACKLIST = {
     'HANAUSDT', 'GWEIUSDT', 'ESPORTSUSDT', 'VELVETUSDT', 'PROMUSDT',
     'DEXEUSDT', 'AKEUSDT', 'ONUSDT', 'EULUSDT', 'FXSUSDT', 'BANKUSDT',
     'RIFUSDT',
-}
+}.union(RESTRICTED_TOKENS_BLACKLIST)
+
 
 # Default fallback list if Binance API fails during initial startup
 DEFAULT_SYMBOLS = [

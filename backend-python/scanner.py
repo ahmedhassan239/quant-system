@@ -17,7 +17,7 @@ import requests
 from config import (
     BINANCE_FUTURES_BASE_URL, TIMEFRAME, ALERT_PREFIX,
     MIN_24H_VOLUME_USDT, TOP_N, STABLECOIN_BLACKLIST, MOCK_TOKENS_BLACKLIST,
-    DEFAULT_SYMBOLS
+    VIP_SYMBOLS, DEFAULT_SYMBOLS
 )
 
 # ──────────────────────────────────────────────────────────────────────
@@ -39,10 +39,11 @@ def fetch_top_symbols():
     Pipeline:
       1. Fetch 24h ticker data from Binance Futures API.
       2. Filter for active USDT-margined perpetual pairs ending with 'USDT'.
-      3. Exclude stablecoin pairs (STABLECOIN_BLACKLIST) and mock tokens (MOCK_TOKENS_BLACKLIST).
-      4. Strictly filter out any symbol with 24h volume below MIN_24H_VOLUME_USDT ($150M USDT).
-      5. Sort candidates by 24h quoteVolume in descending order.
-      6. Return the Top N most liquid pairs dynamically.
+      3. Exclude stablecoin pairs (STABLECOIN_BLACKLIST) and mock/restricted tokens (MOCK_TOKENS_BLACKLIST, including XAUUSDT).
+      4. Always include VIP symbols (e.g. PAXGUSDT for Gold exposure) bypassing MIN_24H_VOLUME_USDT.
+      5. For non-VIP symbols, strictly filter out any symbol with 24h volume below MIN_24H_VOLUME_USDT ($150M USDT).
+      6. Sort candidates by 24h quoteVolume in descending order.
+      7. Return the Top N most liquid pairs dynamically.
     """
     tickers = None
     # Attempt to fetch real market tickers from Binance Futures
@@ -62,6 +63,7 @@ def fetch_top_symbols():
         return [{'symbol': s, 'price_change_pct': 0.0, 'quote_volume': 0.0, 'last_price': 0.0} for s in DEFAULT_SYMBOLS[:TOP_N]]
 
     candidates = []
+    vip_candidates = []
 
     for t in tickers:
         symbol = t.get('symbol', '')
@@ -70,7 +72,7 @@ def fetch_top_symbols():
         if not symbol.endswith('USDT'):
             continue
 
-        # 2. STRICT BLACKLIST: Exclude mock tokens
+        # 2. STRICT BLACKLIST: Exclude mock tokens & restricted TradFi contracts (e.g. XAUUSDT)
         if symbol in MOCK_TOKENS_BLACKLIST:
             continue
 
@@ -82,16 +84,23 @@ def fetch_top_symbols():
         price_change_pct = float(t.get('priceChangePercent', 0))
         last_price       = float(t.get('lastPrice', 0))
 
-        # 4. STRICT VOLUME FILTER: Must meet or exceed MIN_24H_VOLUME_USDT ($150,000,000.0)
-        if quote_volume < MIN_24H_VOLUME_USDT:
-            continue
-
-        candidates.append({
+        item = {
             'symbol':           symbol,
             'price_change_pct': price_change_pct,
             'quote_volume':     quote_volume,
             'last_price':       last_price,
-        })
+        }
+
+        # 4. VIP SYMBOLS (e.g. PAXGUSDT) ALWAYS BYPASS VOLUME FILTER
+        if symbol in VIP_SYMBOLS:
+            vip_candidates.append(item)
+            continue
+
+        # 5. STRICT VOLUME FILTER: Must meet or exceed MIN_24H_VOLUME_USDT ($150,000,000.0)
+        if quote_volume < MIN_24H_VOLUME_USDT:
+            continue
+
+        candidates.append(item)
 
     # If strict $150M filter yields fewer symbols (e.g. on testnet or off-peak), fallback to top quote_volume symbols
     if len(candidates) < 5:
@@ -99,7 +108,7 @@ def fetch_top_symbols():
         candidates = []
         for t in tickers:
             symbol = t.get('symbol', '')
-            if not symbol.endswith('USDT') or symbol in MOCK_TOKENS_BLACKLIST or symbol in STABLECOIN_BLACKLIST:
+            if not symbol.endswith('USDT') or symbol in MOCK_TOKENS_BLACKLIST or symbol in STABLECOIN_BLACKLIST or symbol in VIP_SYMBOLS:
                 continue
             candidates.append({
                 'symbol':           symbol,
@@ -108,10 +117,11 @@ def fetch_top_symbols():
                 'last_price':       float(t.get('lastPrice', 0)),
             })
 
-    # 5. Sort by 24h quoteVolume descending & take Top N
+    # 6. Sort by 24h quoteVolume descending & combine VIP symbols first
     candidates.sort(key=lambda x: x['quote_volume'], reverse=True)
+    combined = vip_candidates + candidates[:TOP_N]
 
-    return candidates[:TOP_N]
+    return combined
 
 
 def scan():
