@@ -1326,14 +1326,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         pass
                 position_value = abs(ep * position_size)
                 unrealized_pnl = (cp - ep) * position_size
-
-                if position_value > 0:
-                    if unrealized_pnl > 0:
-                        unrealized_pct = abs(unrealized_pnl) / position_value
-                    else:
-                        unrealized_pct = (cp - ep) / ep
-                else:
-                    unrealized_pct = (cp - ep) / ep
+                unrealized_pct = (abs(unrealized_pnl) / position_value) if (position_value > 0 and unrealized_pnl > 0) else (unrealized_pnl / position_value if position_value > 0 else 0.0)
 
                 # Track new peak price
                 if highest_price is None or cp > float(highest_price):
@@ -1342,7 +1335,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                 # ── Aggressive Debug Logging ──
                 if unrealized_pnl > 0:
-                    logger.info(f"🔎 [TP-MATH] {symbol} | uPnL: ${unrealized_pnl} | Value: ${position_value} | ROE: {unrealized_pct*100:.2f}% | Target: {PARTIAL_TP_PCT*100:.2f}%")
+                    logger.info(f"🔎 [TP-MATH] {symbol} | uPnL: ${unrealized_pnl:.2f} | Value: ${position_value:.2f} | ROE: {unrealized_pct*100:.2f}% | Target: {PARTIAL_TP_PCT*100:.2f}%")
 
                 # ── Partial Take Profit (Scale-Out 50%) & Auto Break-Even ──
                 if not risk_exit_triggered and unrealized_pct >= PARTIAL_TP_PCT and not portfolio.get('partial_tp_hit', False):
@@ -1534,14 +1527,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         pass
                 position_value = abs(ep * position_size)
                 unrealized_pnl = (ep - cp) * position_size
-
-                if position_value > 0:
-                    if unrealized_pnl > 0:
-                        unrealized_pct = abs(unrealized_pnl) / position_value
-                    else:
-                        unrealized_pct = (ep - cp) / ep
-                else:
-                    unrealized_pct = (ep - cp) / ep
+                unrealized_pct = (abs(unrealized_pnl) / position_value) if (position_value > 0 and unrealized_pnl > 0) else (unrealized_pnl / position_value if position_value > 0 else 0.0)
 
                 # Track new trough price
                 if lowest_price is None or cp < float(lowest_price):
@@ -1550,7 +1536,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                 # ── Aggressive Debug Logging ──
                 if unrealized_pnl > 0:
-                    logger.info(f"🔎 [TP-MATH] {symbol} | uPnL: ${unrealized_pnl} | Value: ${position_value} | ROE: {unrealized_pct*100:.2f}% | Target: {PARTIAL_TP_PCT*100:.2f}%")
+                    logger.info(f"🔎 [TP-MATH] {symbol} | uPnL: ${unrealized_pnl:.2f} | Value: ${position_value:.2f} | ROE: {unrealized_pct*100:.2f}% | Target: {PARTIAL_TP_PCT*100:.2f}%")
 
                 # ── Partial Take Profit (Scale-Out 50%) & Auto Break-Even ──
                 if not risk_exit_triggered and unrealized_pct >= PARTIAL_TP_PCT and not portfolio.get('partial_tp_hit', False):
@@ -1882,9 +1868,12 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 if in_position:
                     print(f"  [DEBUG] {symbol} | Skipping entry: Already in position.", flush=True)
                 else:
-                    if 45.0 <= current_rsi <= 55.0:
-                        print(f"  [DEBUG] {symbol} | Skipping trade: RSI in chop zone ({current_rsi:.1f}) [Req: >55 for LONG, <45 for SHORT].", flush=True)
-                    print(f"  [DEBUG] {symbol} | Z: {current_zscore:+.3f} (Req: > +1.2 for Breakout LONG/Pullback SHORT, < -1.2 for Pullback LONG/Breakout SHORT) | RSI: {current_rsi:.1f}", flush=True)
+                    z_str = f"{current_zscore:+.3f}" if current_zscore is not None else "N/A"
+                    rsi_str = f"{current_rsi:.1f}" if current_rsi is not None else "N/A"
+
+                    if current_rsi is not None and 45.0 <= current_rsi <= 55.0:
+                        print(f"  [DEBUG] {symbol} | Skipping trade: RSI in chop zone ({rsi_str}) [Req: >55 for LONG, <45 for SHORT].", flush=True)
+                    print(f"  [DEBUG] {symbol} | Z: {z_str} (Req: > +1.2 for Breakout LONG/Pullback SHORT, < -1.2 for Pullback LONG/Breakout SHORT) | RSI: {rsi_str}", flush=True)
                     
                     if bullish_ob:
                         print(f"  [DEBUG] {symbol} | Bullish OB detected. High=${bullish_ob['high']:.2f}, Price=${current_price:.2f} (Req: Price <= OB High)", flush=True)
