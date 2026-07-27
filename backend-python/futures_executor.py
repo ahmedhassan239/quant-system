@@ -33,6 +33,36 @@ if not logger.handlers:
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  SESSION IN-MEMORY BLACKLIST (Auto-blacklisting for API restrictions)
+# ──────────────────────────────────────────────────────────────────────
+SESSION_BLACKLIST: set[str] = set()
+
+def is_symbol_blacklisted(symbol: str) -> bool:
+    """Check if a symbol is in-memory blacklisted for this session."""
+    return symbol in SESSION_BLACKLIST
+
+def add_to_session_blacklist(symbol: str, reason: str = "") -> None:
+    """Add a symbol to the session blacklist and log a warning."""
+    if symbol not in SESSION_BLACKLIST:
+        SESSION_BLACKLIST.add(symbol)
+        logger.warning(f"🚫 [{symbol}] AUTO-BLACKLISTED for session ({reason}). Skipping further operations on this symbol.")
+
+def _check_api_exception_for_blacklist(symbol: str, e: BinanceAPIException) -> bool:
+    """
+    Check if a BinanceAPIException code indicates a symbol restriction (-4411, -2027)
+    and auto-blacklist it for the session.
+
+    Error Codes:
+      -4411: TradFi-Perps / region agreement required or restricted contract
+      -2027: Exceeds max allowable position for symbol / account
+    """
+    if e.code in (-4411, -2027):
+        add_to_session_blacklist(symbol, f"Binance error code {e.code}: {e.message}")
+        return True
+    return False
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  CLIENT CREATION
 # ──────────────────────────────────────────────────────────────────────
 
@@ -66,11 +96,15 @@ def setup_symbol(client: Client, symbol: str) -> None:
     """
     Ensure a symbol is configured for trading:
       1. Set margin type to ISOLATED (skip if already set)
-      2. Set leverage to 1x
+      2. Set leverage to FUTURES_LEVERAGE (1x default, easily configurable via ENV)
 
     Must be called before the first order on any symbol.
     Safe to call repeatedly — idempotent.
     """
+    if is_symbol_blacklisted(symbol):
+        logger.warning(f"[{symbol}] Skipping setup_symbol — symbol is in SESSION_BLACKLIST.")
+        return
+
     # ── 1. Margin type ──
     try:
         client.futures_change_margin_type(symbol=symbol,
@@ -80,6 +114,9 @@ def setup_symbol(client: Client, symbol: str) -> None:
         # Code -4046: "No need to change margin type."
         if e.code == -4046:
             logger.debug(f"[{symbol}] Margin type already {FUTURES_MARGIN_TYPE}")
+        elif _check_api_exception_for_blacklist(symbol, e):
+            logger.warning(f"[{symbol}] Margin setup restricted [{e.code}]. Auto-blacklisted for session.")
+            raise
         else:
             logger.error(f"[{symbol}] Failed to set margin type: {e}")
             raise
@@ -91,8 +128,12 @@ def setup_symbol(client: Client, symbol: str) -> None:
         actual = resp.get('leverage', FUTURES_LEVERAGE)
         logger.info(f"[{symbol}] Leverage set to {actual}x")
     except BinanceAPIException as e:
-        logger.error(f"[{symbol}] Failed to set leverage: {e}")
-        raise
+        if _check_api_exception_for_blacklist(symbol, e):
+            logger.warning(f"[{symbol}] Leverage setup restricted [{e.code}]. Auto-blacklisted for session.")
+            raise
+        else:
+            logger.error(f"[{symbol}] Failed to set leverage: {e}")
+            raise
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -117,6 +158,10 @@ def open_position(client: Client, symbol: str, direction: str,
         LONG  → SIDE_BUY   (market)
         SHORT → SIDE_SELL  (market)
     """
+    if is_symbol_blacklisted(symbol):
+        logger.warning(f"[{symbol}] Skipping open_position — symbol is in SESSION_BLACKLIST.")
+        return None
+
     direction = direction.upper()
     if direction not in ('LONG', 'SHORT'):
         logger.error(f"[{symbol}] Invalid direction '{direction}' — must be LONG or SHORT")
@@ -160,8 +205,10 @@ def open_position(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        logger.error(f"[{symbol}] ❌ Failed to open {direction}: "
-                     f"[{e.code}] {e.message}")
+        if _check_api_exception_for_blacklist(symbol, e):
+            logger.warning(f"[{symbol}] Gracefully caught API restriction [{e.code}] during open_position. Auto-blacklisted for session.")
+        else:
+            logger.error(f"[{symbol}] ❌ Failed to open {direction}: [{e.code}] {e.message}")
         return None
     except Exception as e:
         logger.error(f"[{symbol}] ❌ Unexpected error opening {direction}: {e}")
@@ -219,8 +266,10 @@ def close_position(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        logger.error(f"[{symbol}] ❌ Failed to close {direction}: "
-                     f"[{e.code}] {e.message}")
+        if _check_api_exception_for_blacklist(symbol, e):
+            logger.warning(f"[{symbol}] Gracefully caught API restriction [{e.code}] during close_position.")
+        else:
+            logger.error(f"[{symbol}] ❌ Failed to close {direction}: [{e.code}] {e.message}")
         return None
     except Exception as e:
         logger.error(f"[{symbol}] ❌ Unexpected error closing {direction}: {e}")
@@ -423,10 +472,13 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
                 closePosition='true'
             )
         except BinanceAPIException as api_err:
-            logger.error(
-                f"[{symbol}] ❌ Binance API rejected SL order (status {api_err.status_code}): "
-                f"[{api_err.code}] {api_err.message} | Raw Response: {getattr(api_err, 'response', 'N/A')}"
-            )
+            if _check_api_exception_for_blacklist(symbol, api_err):
+                logger.warning(f"[{symbol}] Gracefully caught SL API restriction [{api_err.code}]. Auto-blacklisted for session.")
+            else:
+                logger.error(
+                    f"[{symbol}] ❌ Binance API rejected SL order (status {api_err.status_code}): "
+                    f"[{api_err.code}] {api_err.message} | Raw Response: {getattr(api_err, 'response', 'N/A')}"
+                )
             return None
         except Exception as exec_err:
             logger.error(f"[{symbol}] ❌ Exception during SL futures_create_order: {type(exec_err).__name__} - {exec_err}")

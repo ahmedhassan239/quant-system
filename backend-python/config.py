@@ -118,6 +118,13 @@ HARD_STOP_LOSS_PCT = 0.05          # 5% absolute stop loss
 STOP_LOSS_PCT = 0.05               # 5% trailing/soft stop loss
 MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "10"))  # Max open positions limit
 
+# Execution Engine (5m) — Aggressive Trailing Stop Loss (TSL) Settings
+TSL_ACTIVATION_PCT = float(os.environ.get("TSL_ACTIVATION_PCT", "0.008"))   # Activate TSL at +0.8% profit
+TSL_TRAIL_PCT = float(os.environ.get("TSL_TRAIL_PCT", "0.004"))            # Trail price by 0.4% distance
+TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT                                 # Alias for backward compatibility
+TRAILING_DISTANCE_PCT = TSL_TRAIL_PCT                                      # Alias for backward compatibility
+
+
 # Execution Engine (5m) — Z-Score thresholds for entry
 ZSCORE_LONG_THRESHOLD = -1.2       # Z < -1.2 for Pullback LONG / Z > +1.2 for Breakout LONG
 ZSCORE_SHORT_THRESHOLD = 1.2       # Z > +1.2 for Pullback SHORT / Z < -1.2 for Breakout SHORT

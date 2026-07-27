@@ -8,12 +8,14 @@ from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     ENV_TYPE, SCHEDULE_INTERVAL_MINUTES, BINANCE_FUTURES_BASE_URL,
                     FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE,
                     MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
-                    STABLECOIN_BLACKLIST, MOCK_TOKENS_BLACKLIST)
+                    STABLECOIN_BLACKLIST, MOCK_TOKENS_BLACKLIST,
+                    TSL_ACTIVATION_PCT, TSL_TRAIL_PCT)
 
 from database import (SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS,
                       init_shared_db, get_active_symbols, save_wallet_balance,
                       SessionLocal, get_open_position_symbols, sync_missing_stop_losses)
-from futures_executor import create_futures_client, get_futures_balance, count_all_open_positions
+from futures_executor import (create_futures_client, get_futures_balance,
+                              count_all_open_positions, is_symbol_blacklisted)
 
 # ── Initialize Futures client once at module level ──
 futures_client = None
@@ -82,8 +84,8 @@ def scanner_job():
         if s not in all_symbols:
             all_symbols.append(s)
 
-    # STRICT SAFETY RULE: Filter out any mock tokens or stablecoins under all circumstances
-    all_symbols = [s for s in all_symbols if s not in MOCK_TOKENS_BLACKLIST and s not in STABLECOIN_BLACKLIST]
+    # STRICT SAFETY RULE: Filter out any mock tokens, stablecoins, or session-blacklisted symbols
+    all_symbols = [s for s in all_symbols if s not in MOCK_TOKENS_BLACKLIST and s not in STABLECOIN_BLACKLIST and not is_symbol_blacklisted(s)]
 
     print(f"Trading active symbols (Scanned: {len(radar_symbols)}, Open: {len(open_pos_symbols)}, Total Valid: {len(all_symbols)}): {all_symbols}", flush=True)
 
@@ -146,6 +148,8 @@ def main():
     else:
         print(f"  → Z-Score LONG:  < {ZSCORE_LONG_THRESHOLD}", flush=True)
         print(f"  → Z-Score SHORT: > +{ZSCORE_SHORT_THRESHOLD}", flush=True)
+        print(f"  → TSL Activate:  +{TSL_ACTIVATION_PCT*100:.1f}%", flush=True)
+        print(f"  → TSL Trail:     {TSL_TRAIL_PCT*100:.1f}%", flush=True)
         print(f"  → Mode:         Execution with MTF Confluence", flush=True)
 
     # Initialize shared DB for MTF communication

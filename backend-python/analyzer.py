@@ -18,7 +18,8 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     MAX_SCALE_INS, PYRAMID_TIER1_PNL, PYRAMID_TIER2_PNL,
                     PYRAMID_TIER1_SIZE_PCT, PYRAMID_TIER2_SIZE_PCT,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT,
-                    MAX_GLOBAL_POSITIONS)
+                    MAX_GLOBAL_POSITIONS, TSL_ACTIVATION_PCT, TSL_TRAIL_PCT,
+                    TRAILING_ACTIVATE_PCT, TRAILING_DISTANCE_PCT)
 from futures_executor import (open_position, close_position, get_futures_balance,
                               get_position_info, count_all_open_positions, set_stop_loss_order)
 
@@ -29,8 +30,10 @@ MAX_BUYS = 1
 ENTRY_WEIGHT = 1.0
 TRADING_FEE = 0.001                       # 0.1 % per side
 MIN_PROFIT_PCT = 0.01                     # +1.0 %
-TRAILING_ACTIVATE_PCT = 0.015             # +1.5 % unrealized PnL to activate TSL
-TRAILING_DISTANCE_PCT = 0.01              # 1.0 % trailing distance from peak/trough
+TSL_ACTIVATION_PCT = TSL_ACTIVATION_PCT   # +0.8 % unrealized PnL to activate TSL
+TSL_TRAIL_PCT = TSL_TRAIL_PCT             # 0.4 % trailing distance from peak/trough
+TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT # +0.8 % alias
+TRAILING_DISTANCE_PCT = TSL_TRAIL_PCT     # 0.4 % alias
 TRAILING_PULLBACK_PCT = 0.005             # -0.5 % (legacy, kept for compat)
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
@@ -2430,59 +2433,30 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         )
                     else:
                         try:
-                            # ── Fetch stepSize precision for this symbol ──
-                            info = futures_client.futures_exchange_info()
-                            step_size = 0.001  # Safe fallback
-                            for s in info['symbols']:
-                                if s['symbol'] == symbol:
-                                    for flt in s['filters']:
-                                        if flt['filterType'] == 'LOT_SIZE':
-                                            step_size = float(flt['stepSize'])
-                                            break
-                                    break
-
-                            precision = (
-                                len(str(step_size).rstrip('0').split('.')[-1])
-                                if '.' in str(step_size) else 0
-                            )
-
-                            # ── Calculate quantity with strict precision ──
-                            raw_qty = allocated_usdt / float(current_price)
-                            qty = round(raw_qty - (raw_qty % step_size), precision)
-
-                            if qty <= 0:
-                                _exec_logger.error(
-                                    f"❌ [{symbol}] Calculated qty is 0 after rounding "
-                                    f"(allocated=${allocated_usdt:.2f}, price=${current_price:.2f}, "
-                                    f"step={step_size}, precision={precision})"
-                                )
-                            else:
-                                side = 'BUY' if direction == 'LONG' else 'SELL'
-
-                                _exec_logger.info(
-                                    f"Placing {direction} order for {symbol} | "
-                                    f"Qty: {qty} | Allocated: ${allocated_usdt:.2f} | "
-                                    f"Balance: ${available_balance:.2f} | "
-                                    f"Tier: {_alloc_pct*100:.0f}%"
-                                )
-
-                                order = futures_client.futures_create_order(
-                                    symbol=symbol,
-                                    side=side,
-                                    type='MARKET',
-                                    quantity=qty,
-                                )
-
+                            order = open_position(futures_client, symbol, direction, allocated_usdt)
+                            if order:
                                 _exec_logger.info(
                                     f"✅ EXECUTED ON BINANCE: {direction} | "
-                                    f"Symbol: {symbol} | Qty: {qty} | "
-                                    f"OrderID: {order['orderId']} | "
+                                    f"Symbol: {symbol} | "
+                                    f"OrderID: {order.get('orderId')} | "
                                     f"Allocated: ${allocated_usdt:.2f}"
                                 )
                                 if new_stop_loss and float(new_stop_loss) > 0:
                                     set_stop_loss_order(futures_client, symbol, direction, float(new_stop_loss))
                                 return True
+                            else:
+                                _exec_logger.warning(
+                                    f"⚠️ [{symbol}] open_position returned None. Order blocked or restricted."
+                                )
+                                return False
 
+                        except BinanceAPIException as api_err:
+                            from futures_executor import _check_api_exception_for_blacklist
+                            _check_api_exception_for_blacklist(symbol, api_err)
+                            _exec_logger.warning(
+                                f"⚠️ BINANCE API EXCEPTION: {symbol} {direction} | "
+                                f"[{api_err.code}] {api_err.message}"
+                            )
                         except Exception as e:
                             _exec_logger.error(
                                 f"❌ BINANCE REJECTED ORDER: {symbol} {direction} | "
