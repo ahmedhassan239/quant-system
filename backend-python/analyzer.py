@@ -1,8 +1,21 @@
 import os
+import logging
 import requests
 import traceback
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger("Analyzer")
+logger.setLevel(logging.DEBUG)
+if not logger.handlers:
+    import sys
+    _ch = logging.StreamHandler(sys.stdout)
+    _ch.setLevel(logging.INFO)
+    _ch.setFormatter(logging.Formatter(
+        '%(asctime)s | %(levelname)-7s | %(name)s | %(message)s',
+        datefmt='%H:%M:%S',
+    ))
+    logger.addHandler(_ch)
 from datetime import datetime
 from sqlalchemy import func
 from database import (SessionLocal, MarketData, TradingSignal, PortfolioState, BotLog,
@@ -1303,12 +1316,33 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                 risk_exit_triggered = True
 
             if pos_direction == 'LONG' and not risk_exit_triggered:
-                unrealized_pct = (cp - ep) / ep
+                position_size = float(portfolio.get('asset_balance', 0) or 0)
+                if position_size <= 0 and futures_client:
+                    try:
+                        live_pos = get_position_info(futures_client, symbol)
+                        if live_pos and live_pos.get('size', 0) > 0:
+                            position_size = float(live_pos['size'])
+                    except Exception:
+                        pass
+                position_value = abs(ep * position_size)
+                unrealized_pnl = (cp - ep) * position_size
+
+                if position_value > 0:
+                    if unrealized_pnl > 0:
+                        unrealized_pct = abs(unrealized_pnl) / position_value
+                    else:
+                        unrealized_pct = (cp - ep) / ep
+                else:
+                    unrealized_pct = (cp - ep) / ep
 
                 # Track new peak price
                 if highest_price is None or cp > float(highest_price):
                     portfolio['highest_price_since_entry'] = cp
                     highest_price = cp
+
+                # ── Aggressive Debug Logging ──
+                if unrealized_pnl > 0:
+                    logger.info(f"🔎 [TP-MATH] {symbol} | uPnL: ${unrealized_pnl} | Value: ${position_value} | ROE: {unrealized_pct*100:.2f}% | Target: {PARTIAL_TP_PCT*100:.2f}%")
 
                 # ── Partial Take Profit (Scale-Out 50%) & Auto Break-Even ──
                 if not risk_exit_triggered and unrealized_pct >= PARTIAL_TP_PCT and not portfolio.get('partial_tp_hit', False):
@@ -1490,12 +1524,33 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
 
             elif pos_direction == 'SHORT' and not risk_exit_triggered:
-                unrealized_pct = (ep - cp) / ep
+                position_size = float(portfolio.get('asset_balance', 0) or 0)
+                if position_size <= 0 and futures_client:
+                    try:
+                        live_pos = get_position_info(futures_client, symbol)
+                        if live_pos and live_pos.get('size', 0) > 0:
+                            position_size = float(live_pos['size'])
+                    except Exception:
+                        pass
+                position_value = abs(ep * position_size)
+                unrealized_pnl = (ep - cp) * position_size
+
+                if position_value > 0:
+                    if unrealized_pnl > 0:
+                        unrealized_pct = abs(unrealized_pnl) / position_value
+                    else:
+                        unrealized_pct = (ep - cp) / ep
+                else:
+                    unrealized_pct = (ep - cp) / ep
 
                 # Track new trough price
                 if lowest_price is None or cp < float(lowest_price):
                     portfolio['lowest_price_since_entry'] = cp
                     lowest_price = cp
+
+                # ── Aggressive Debug Logging ──
+                if unrealized_pnl > 0:
+                    logger.info(f"🔎 [TP-MATH] {symbol} | uPnL: ${unrealized_pnl} | Value: ${position_value} | ROE: {unrealized_pct*100:.2f}% | Target: {PARTIAL_TP_PCT*100:.2f}%")
 
                 # ── Partial Take Profit (Scale-Out 50%) & Auto Break-Even ──
                 if not risk_exit_triggered and unrealized_pct >= PARTIAL_TP_PCT and not portfolio.get('partial_tp_hit', False):

@@ -288,6 +288,11 @@ def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
         logger.error(f"[{symbol}] Invalid direction '{direction}' for partial TP")
         return None, total_quantity
 
+    if (total_quantity <= 0 or not total_quantity) and client:
+        live_pos = get_position_info(client, symbol)
+        if live_pos and live_pos.get('size', 0) > 0:
+            total_quantity = float(live_pos['size'])
+
     qty_to_close = _round_quantity(client, symbol, total_quantity * 0.5)
     if qty_to_close <= 0:
         logger.error(f"[{symbol}] 50% partial close quantity is 0 after rounding — cannot scale out")
