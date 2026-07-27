@@ -2313,59 +2313,69 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                 cand_score = calculate_strength_score(current_zscore, cand_vol)
 
-                # Scan active open positions to find the weakest link
-                weak_sym, weak_score, weak_port, weak_stagnant = find_weakest_active_position(session, futures_client)
-                weak_score_val = float(weak_score) if weak_score is not None else 0.0
-
-                # Anti-churn upgrade threshold: candidate score >= weakest score + 1.5 (or weakest is stagnant)
-                if weak_sym and weak_sym != symbol and (weak_stagnant or (cand_score >= weak_score_val + 1.5)):
-                    upgrade_msg = (
-                        f"🔄 [POSITION UPGRADE] Max slots ({MAX_GLOBAL_POSITIONS}) reached! "
-                        f"Closing weak position '{weak_sym}' (Score={weak_score_val:.2f}, Stagnant={weak_stagnant}) "
-                        f"to enter superior signal '{symbol}' {direction} (Score={cand_score:.2f}, Z={current_zscore:+.2f})."
-                    )
-                    print(upgrade_msg, flush=True)
-                    log_to_db(session, symbol, "UPGRADE", upgrade_msg)
-                    send_telegram_alert(upgrade_msg)
-
-                    # Gracefully close weakest position
-                    weak_price = float(weak_port.get('average_entry_price') or current_price) if weak_port else current_price
-                    _close_position_handler(
-                        weak_port, weak_price, weak_sym, session, 'POSITION_UPGRADE',
-                        futures_client, bullish_ob, bearish_ob, current_rsi,
-                        current_zscore, macro_info
-                    )
-                    # ── ROTATION SYNC: Verify closure on Binance and DB before proceeding ──
-                    closed_confirmed = False
-                    if futures_client:
-                        for _attempt in range(5):
-                            import time
-                            time.sleep(0.5)
-                            check_pos = get_position_info(futures_client, weak_sym)
-                            if not check_pos or check_pos.get('size', 0.0) == 0.0:
-                                closed_confirmed = True
-                                break
-                    else:
-                        closed_confirmed = True
-
-                    if closed_confirmed:
-                        current_open_count = count_all_open_positions(futures_client)
-                        if current_open_count < MAX_GLOBAL_POSITIONS:
-                            can_proceed_with_entry = True
-                        else:
-                            _exec_logger.error(f"❌ [ROTATION SYNC] After closing {weak_sym}, open count ({current_open_count}) >= limit ({MAX_GLOBAL_POSITIONS}). Blocking new entry.")
-                            can_proceed_with_entry = False
-                    else:
-                        _exec_logger.error(f"❌ [ROTATION SYNC FAILED] Could not confirm closure of {weak_sym} on Binance after retries. Aborting upgrade entry for {symbol}.")
-                        can_proceed_with_entry = False
-                else:
+                # NEW RULE: Strictly forbid upgrading/replacing an active position with Strategy A or Strategy B signals.
+                # The ONLY condition allowed to trigger a POSITION_UPGRADE is if the incoming signal is a Whale Strike (Strategy C).
+                if not whale_strike:
                     _exec_logger.warning(
                         f"🛑 [SKIP UPGRADE] Max global positions ({MAX_GLOBAL_POSITIONS}) reached. "
-                        f"Candidate signal {symbol} (Score={cand_score:.2f}, Z={current_zscore:+.2f}) "
-                        f"is not strong enough to replace weakest position '{weak_sym or 'N/A'}' (Score={weak_score_val:.2f}). "
-                        f"Required gap: +1.5."
+                        f"Signal {symbol} is a standard Strategy A/B signal. Position upgrades are STRICTLY FORBIDDEN "
+                        f"unless triggered by a Whale Strike (Strategy C)."
                     )
                     can_proceed_with_entry = False
+                else:
+                    # Scan active open positions to find the weakest link
+                    weak_sym, weak_score, weak_port, weak_stagnant = find_weakest_active_position(session, futures_client)
+                    weak_score_val = float(weak_score) if weak_score is not None else 0.0
+
+                    # Anti-churn upgrade threshold: candidate score >= weakest score + 1.5 (or weakest is stagnant)
+                    if weak_sym and weak_sym != symbol and (weak_stagnant or (cand_score >= weak_score_val + 1.5)):
+                        upgrade_msg = (
+                            f"🔄 [POSITION UPGRADE] Max slots ({MAX_GLOBAL_POSITIONS}) reached! "
+                            f"Closing weak position '{weak_sym}' (Score={weak_score_val:.2f}, Stagnant={weak_stagnant}) "
+                            f"to enter Whale Strike signal '{symbol}' {direction} (Score={cand_score:.2f}, Z={current_zscore:+.2f})."
+                        )
+                        print(upgrade_msg, flush=True)
+                        log_to_db(session, symbol, "UPGRADE", upgrade_msg)
+                        send_telegram_alert(upgrade_msg)
+
+                        # Gracefully close weakest position
+                        weak_price = float(weak_port.get('average_entry_price') or current_price) if weak_port else current_price
+                        _close_position_handler(
+                            weak_port, weak_price, weak_sym, session, 'POSITION_UPGRADE',
+                            futures_client, bullish_ob, bearish_ob, current_rsi,
+                            current_zscore, macro_info
+                        )
+                        # ── ROTATION SYNC: Verify closure on Binance and DB before proceeding ──
+                        closed_confirmed = False
+                        if futures_client:
+                            for _attempt in range(5):
+                                import time
+                                time.sleep(0.5)
+                                check_pos = get_position_info(futures_client, weak_sym)
+                                if not check_pos or check_pos.get('size', 0.0) == 0.0:
+                                    closed_confirmed = True
+                                    break
+                        else:
+                            closed_confirmed = True
+
+                        if closed_confirmed:
+                            current_open_count = count_all_open_positions(futures_client)
+                            if current_open_count < MAX_GLOBAL_POSITIONS:
+                                can_proceed_with_entry = True
+                            else:
+                                _exec_logger.error(f"❌ [ROTATION SYNC] After closing {weak_sym}, open count ({current_open_count}) >= limit ({MAX_GLOBAL_POSITIONS}). Blocking new entry.")
+                                can_proceed_with_entry = False
+                        else:
+                            _exec_logger.error(f"❌ [ROTATION SYNC FAILED] Could not confirm closure of {weak_sym} on Binance after retries. Aborting upgrade entry for {symbol}.")
+                            can_proceed_with_entry = False
+                    else:
+                        _exec_logger.warning(
+                            f"🛑 [SKIP UPGRADE] Max global positions ({MAX_GLOBAL_POSITIONS}) reached. "
+                            f"Whale Strike candidate {symbol} (Score={cand_score:.2f}, Z={current_zscore:+.2f}) "
+                            f"is not strong enough to replace weakest position '{weak_sym or 'N/A'}' (Score={weak_score_val:.2f}). "
+                            f"Required gap: +1.5."
+                        )
+                        can_proceed_with_entry = False
 
             if can_proceed_with_entry:
                     # ── GUARD 2: Live Free Margin Check ──
