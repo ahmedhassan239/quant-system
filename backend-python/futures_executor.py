@@ -219,6 +219,22 @@ def open_position(client: Client, symbol: str, direction: str,
 #  CLOSE POSITION
 # ──────────────────────────────────────────────────────────────────────
 
+def _cancel_all_symbol_orders(client: Client, symbol: str) -> None:
+    """
+    Safely cancel all open normal and algo orders for a symbol.
+    Prevents Binance API error [-2022] ReduceOnly Order is rejected.
+    """
+    try:
+        client.futures_cancel_all_open_orders(symbol=symbol)
+    except Exception as err:
+        logger.debug(f"[{symbol}] Note canceling open orders: {err}")
+    try:
+        if hasattr(client, 'futures_cancel_all_algo_open_orders'):
+            client.futures_cancel_all_algo_open_orders(symbol=symbol)
+    except Exception as err:
+        logger.debug(f"[{symbol}] Note canceling algo open orders: {err}")
+
+
 def close_position(client: Client, symbol: str, direction: str,
                    quantity: float) -> dict | None:
     """
@@ -247,6 +263,9 @@ def close_position(client: Client, symbol: str, direction: str,
         if quantity <= 0:
             logger.error(f"[{symbol}] Quantity is 0 after rounding — nothing to close")
             return None
+
+        # ── Clear existing open orders (e.g. SL) to prevent -2022 ReduceOnly rejection ──
+        _cancel_all_symbol_orders(client, symbol)
 
         # Opposite side to close
         side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
@@ -305,6 +324,9 @@ def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
 
     side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
     logger.info(f"[{symbol}] 🎯 EXECUTING PARTIAL TAKE PROFIT (50%) | Direction: {direction} | Closing Qty: {qty_to_close} | Remaining Qty: {remaining_qty}")
+
+    # ── Clear existing open orders (e.g. SL covering 100% position) to prevent -2022 ReduceOnly rejection ──
+    _cancel_all_symbol_orders(client, symbol)
 
     try:
         order = client.futures_create_order(
@@ -513,15 +535,7 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
 
     try:
         # 1. Cancel existing orders (to clear old SLs, both normal and conditional algo orders)
-        try:
-            client.futures_cancel_all_open_orders(symbol=symbol)
-        except Exception as err:
-            logger.debug(f"[{symbol}] Note canceling normal open orders: {err}")
-        try:
-            if hasattr(client, 'futures_cancel_all_algo_open_orders'):
-                client.futures_cancel_all_algo_open_orders(symbol=symbol)
-        except Exception as err:
-            logger.debug(f"[{symbol}] Note canceling algo open orders: {err}")
+        _cancel_all_symbol_orders(client, symbol)
 
         # 2. Format the stop price strictly to symbol's tick size precision
         rounded_price = _round_price(client, symbol, stop_price)
