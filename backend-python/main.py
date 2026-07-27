@@ -18,7 +18,8 @@ from database import (SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS,
                       init_shared_db, get_active_symbols, save_wallet_balance,
                       SessionLocal, get_open_position_symbols, sync_missing_stop_losses)
 from futures_executor import (create_futures_client, get_futures_balance,
-                              count_all_open_positions, is_symbol_blacklisted)
+                              count_all_open_positions, is_symbol_blacklisted,
+                              send_telegram_daily_report)
 
 # ── Initialize Futures client once at module level ──
 futures_client = None
@@ -53,7 +54,10 @@ def job():
 
 def periodic_report_job():
     print(f"\n📊 [{ALERT_PREFIX}] Generating scheduled Telegram PNL report at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-    send_periodic_report(futures_client=futures_client)
+    if futures_client:
+        send_telegram_daily_report(futures_client)
+    else:
+        send_periodic_report(futures_client=futures_client)
 
 def scanner_job():
     print("\n" + "="*60, flush=True)

@@ -11,7 +11,10 @@ Used by analyzer.py and main.py.  Both the 5m and 15m engine
 containers share this module.
 """
 
+import os
+import requests
 import logging
+from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from config import (BINANCE_API_KEY, BINANCE_API_SECRET,
@@ -593,3 +596,76 @@ def update_stop_loss_price(client: Client, symbol: str, direction: str, stop_pri
     """
     return set_stop_loss_order(client, symbol, direction, stop_price,
                                trailing_distance=trailing_distance, atr_val=atr_val)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  AUTOMATED TELEGRAM PORTFOLIO REPORT (12-Hour Binance Direct)
+# ──────────────────────────────────────────────────────────────────────
+
+def send_telegram_daily_report(client: Client) -> None:
+    """
+    Generate and send an automated Telegram portfolio report directly from Binance Futures API.
+    Summarizes:
+      - Total Wallet Balance
+      - Total Realized PNL (calculated from futures_income_history)
+      - Total Unrealized PNL
+      - Active Open Positions count & detailed list with ROE %
+    """
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    
+    if not bot_token or not chat_id:
+        logger.warning("[WARNING] Telegram credentials missing. Cannot send report.")
+        return
+
+    try:
+        account_info = client.futures_account()
+        wallet_balance = float(account_info['totalWalletBalance'])
+        unrealized_pnl = float(account_info['totalUnrealizedProfit'])
+        
+        # Calculate Realized PNL from income history
+        income_history = client.futures_income_history(incomeType="REALIZED_PNL", limit=1000)
+        total_realized_pnl = sum(float(item['income']) for item in income_history)
+        
+        positions = account_info['positions']
+        open_positions = [p for p in positions if float(p['positionAmt']) != 0]
+        
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msg = f"📊 **تقرير المحفظة الآلي - Quant Bot** 🤖\n"
+        msg += f"🕒 `{now_str}`\n"
+        msg += "━━━━━━━━━━━━━━━━━━\n"
+        msg += f"💰 **رصيد المحفظة:** `${wallet_balance:.2f}`\n"
+        
+        realized_icon = "🟢" if total_realized_pnl > 0 else ("🔴" if total_realized_pnl < 0 else "⚪")
+        unrealized_icon = "🟢" if unrealized_pnl > 0 else ("🔴" if unrealized_pnl < 0 else "⚪")
+        
+        msg += f"💸 **الأرباح المحققة (Realized):** {realized_icon} `${total_realized_pnl:.2f}`\n"
+        msg += f"📈 **الأرباح العائمة (Unrealized):** {unrealized_icon} `${unrealized_pnl:.2f}`\n"
+        msg += f"📝 **الصفقات المفتوحة:** `{len(open_positions)}`\n"
+        msg += "━━━━━━━━━━━━━━━━━━\n"
+        
+        if open_positions:
+            for pos in open_positions:
+                symbol = pos['symbol']
+                amt = float(pos['positionAmt'])
+                pnl = float(pos['unrealizedProfit'])
+                entry = float(pos['entryPrice'])
+                
+                direction = "🟢 LONG" if amt > 0 else "🔴 SHORT"
+                pos_value = abs(amt) * entry
+                roe = (pnl / pos_value * 100) if pos_value > 0 else 0
+                
+                msg += f"{direction} - {symbol} | PNL: `${pnl:+.2f}` | ROE: `{roe:+.2f}%`\n"
+        else:
+            msg += "لا توجد صفقات مفتوحة حالياً 💤\n"
+            
+        msg += "━━━━━━━━━━━━━━━━━━\n"
+        msg += "⚡ *تم التحديث تلقائياً بواسطة محرك التنفيذ*"
+
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+        
+        requests.post(url, data=payload)
+            
+    except Exception as e:
+        logger.error(f"[ERROR] Executing daily Telegram report failed: {e}")
