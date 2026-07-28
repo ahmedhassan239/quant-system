@@ -19,6 +19,7 @@ from config import (
     MIN_24H_VOLUME_USDT, TOP_N, STABLECOIN_BLACKLIST, MOCK_TOKENS_BLACKLIST,
     VIP_SYMBOLS, DEFAULT_SYMBOLS
 )
+from data_fetcher import BLACKLISTED_SYMBOLS
 
 # ──────────────────────────────────────────────────────────────────────
 #  CONFIGURATION
@@ -39,11 +40,11 @@ def fetch_top_symbols():
     Pipeline:
       1. Fetch 24h ticker data from Binance Futures API.
       2. Filter for active USDT-margined perpetual pairs ending with 'USDT'.
-      3. Exclude stablecoin pairs (STABLECOIN_BLACKLIST) and mock/restricted tokens (MOCK_TOKENS_BLACKLIST, including XAUUSDT).
-      4. Always include VIP symbols (e.g. PAXGUSDT for Gold exposure) bypassing MIN_24H_VOLUME_USDT.
+      3. Exclude stablecoin pairs (STABLECOIN_BLACKLIST), mock/restricted tokens (MOCK_TOKENS_BLACKLIST), and API error auto-blacklisted symbols (BLACKLISTED_SYMBOLS).
+      4. Always include VIP symbols (e.g. PAXGUSDT for Gold exposure) bypassing MIN_24H_VOLUME_USDT (unless blacklisted).
       5. For non-VIP symbols, strictly filter out any symbol with 24h volume below MIN_24H_VOLUME_USDT ($150M USDT).
       6. Sort candidates by 24h quoteVolume in descending order.
-      7. Return the Top N most liquid pairs dynamically.
+      7. Return the Top N most liquid pairs dynamically, excluding any BLACKLISTED_SYMBOLS.
     """
     tickers = None
     # Attempt to fetch real market tickers from Binance Futures
@@ -60,7 +61,7 @@ def fetch_top_symbols():
 
     if not tickers:
         print("⚠️ Warning: Failed to fetch tickers from Binance API. Returning default fallback symbols.", flush=True)
-        return [{'symbol': s, 'price_change_pct': 0.0, 'quote_volume': 0.0, 'last_price': 0.0} for s in DEFAULT_SYMBOLS[:TOP_N]]
+        return [{'symbol': s, 'price_change_pct': 0.0, 'quote_volume': 0.0, 'last_price': 0.0} for s in DEFAULT_SYMBOLS[:TOP_N] if s not in BLACKLISTED_SYMBOLS]
 
     candidates = []
     vip_candidates = []
@@ -72,8 +73,8 @@ def fetch_top_symbols():
         if not symbol.endswith('USDT'):
             continue
 
-        # 2. STRICT BLACKLIST: Exclude mock tokens & restricted TradFi contracts (e.g. XAUUSDT)
-        if symbol in MOCK_TOKENS_BLACKLIST:
+        # 2. AUTO-BLACKLIST & STATIC BLACKLISTS: Exclude mock tokens, restricted contracts, & API error symbols
+        if symbol in BLACKLISTED_SYMBOLS or symbol in MOCK_TOKENS_BLACKLIST:
             continue
 
         # 3. Exclude stablecoin / fiat-pegged pairs
@@ -108,7 +109,7 @@ def fetch_top_symbols():
         candidates = []
         for t in tickers:
             symbol = t.get('symbol', '')
-            if not symbol.endswith('USDT') or symbol in MOCK_TOKENS_BLACKLIST or symbol in STABLECOIN_BLACKLIST or symbol in VIP_SYMBOLS:
+            if not symbol.endswith('USDT') or symbol in MOCK_TOKENS_BLACKLIST or symbol in STABLECOIN_BLACKLIST or symbol in VIP_SYMBOLS or symbol in BLACKLISTED_SYMBOLS:
                 continue
             candidates.append({
                 'symbol':           symbol,
@@ -120,6 +121,9 @@ def fetch_top_symbols():
     # 6. Sort by 24h quoteVolume descending & combine VIP symbols first
     candidates.sort(key=lambda x: x['quote_volume'], reverse=True)
     combined = vip_candidates + candidates[:TOP_N]
+
+    # Filter out any auto-blacklisted symbols from final combined list
+    combined = [c for c in combined if c['symbol'] not in BLACKLISTED_SYMBOLS]
 
     return combined
 

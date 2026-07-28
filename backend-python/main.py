@@ -2,7 +2,7 @@ import time
 import schedule
 import threading
 from scanner import scan, update_radar
-from data_fetcher import run_fetcher
+from data_fetcher import run_fetcher, BLACKLISTED_SYMBOLS
 from analyzer import (run_analyzer, run_macro_analyzer, send_telegram_alert,
                       send_periodic_report, MAX_GLOBAL_POSITIONS)
 from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
@@ -95,8 +95,8 @@ def scanner_job():
         if s not in all_symbols:
             all_symbols.append(s)
 
-    # STRICT SAFETY RULE: Filter out any mock tokens, stablecoins, or session-blacklisted symbols
-    all_symbols = [s for s in all_symbols if s not in MOCK_TOKENS_BLACKLIST and s not in STABLECOIN_BLACKLIST and not is_symbol_blacklisted(s)]
+    # STRICT SAFETY RULE: Filter out any mock tokens, stablecoins, session-blacklisted, or auto-blacklisted symbols
+    all_symbols = [s for s in all_symbols if s not in MOCK_TOKENS_BLACKLIST and s not in STABLECOIN_BLACKLIST and not is_symbol_blacklisted(s) and s not in BLACKLISTED_SYMBOLS]
 
     print(f"Trading active symbols (Scanned: {len(radar_symbols)}, Open: {len(open_pos_symbols)}, Total Valid: {len(all_symbols)}): {all_symbols}", flush=True)
 
