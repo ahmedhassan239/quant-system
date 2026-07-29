@@ -106,6 +106,11 @@ class PortfolioState(Base):
     pnl_pct = Column(Float, nullable=True)
     pnl_usd = Column(Float, nullable=True)
     total_portfolio_value = Column(Float, nullable=False)
+    # ── Market Regime Detection ──────────────────────────────────────────
+    # Stores the active trading mode at the time of the last portfolio write.
+    # ENUM values: 'TREND' | 'RANGE' | 'STORM'
+    # Nullable: NULL on rows written before this migration or in WAIT cycles.
+    active_mode = Column(String, nullable=True)
 
 class BotLog(Base):
     __tablename__ = "bot_logs"
@@ -386,11 +391,21 @@ def save_wallet_balance(balance: float):
 def init_db():
     """Create tables if they don't exist, drop/recreate positions for clean schema."""
     Base.metadata.create_all(bind=engine)
+
+    # Safe idempotent migrations — ADD COLUMN IF NOT EXISTS is a no-op if the column exists.
+    _safe_migrations = [
+        "ALTER TABLE positions ADD COLUMN IF NOT EXISTS partial_tp_hit BOOLEAN DEFAULT FALSE;",
+        # Migration: Market Regime Detection (2026-07-29)
+        # Stores the active mode ('TREND' | 'RANGE' | 'STORM') at the time of the DB write.
+        "ALTER TABLE positions ADD COLUMN IF NOT EXISTS active_mode VARCHAR(10) DEFAULT NULL;",
+    ]
     try:
         with engine.connect() as conn:
-            conn.execute(text(
-                "ALTER TABLE positions ADD COLUMN IF NOT EXISTS partial_tp_hit BOOLEAN DEFAULT FALSE;"
-            ))
+            for migration_sql in _safe_migrations:
+                try:
+                    conn.execute(text(migration_sql))
+                except Exception:
+                    pass  # Column already exists — idempotent
             conn.commit()
     except Exception:
         pass

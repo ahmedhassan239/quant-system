@@ -129,6 +129,9 @@ class DashboardController extends Controller
                                 'stop_loss' => $actualStopLoss,
                                 'stop_loss_price' => $actualStopLoss,
                                 'strategy' => $localRecord->strategy ?? 'N/A',
+                                // Market Regime Detection: active trading mode at time of entry.
+                                // Values: 'TREND' | 'RANGE' | 'STORM' | null (pre-migration rows)
+                                'active_mode' => $localRecord->active_mode ?? null,
                             ];
                         })->values();
                     }

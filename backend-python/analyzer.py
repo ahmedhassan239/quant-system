@@ -38,6 +38,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
 from futures_executor import (open_position, close_position, get_futures_balance,
                               get_position_info, count_all_open_positions, set_stop_loss_order,
                               update_stop_loss_price, execute_partial_tp_scaleout)
+from market_regime import MarketRegime, strategy_router
 
 # ──────────────────────────────────────────────────────────────────────
 #  RISK MANAGEMENT CONFIGURATION
@@ -1732,17 +1733,21 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         whale_strike = detect_whale_strike(df)
 
         # ──────────────────────────────────────────────────────────
-        #  SIGNAL LOGIC — MTF Confluence & Multi-Strategy
+        #  REGIME DETECTION & STRATEGY ROUTING (Middleware / Brain)
+        #  ─ Detects TREND / RANGE / STORM using ADX + ATR + Z-Score
+        #  ─ Routes to the correct TradingStrategy implementation
+        #  ─ Risk management exits above run BEFORE this block
         # ──────────────────────────────────────────────────────────
         decision = 'WAIT'
         strategy_type = None
         new_stop_loss = 0.0
+        active_mode_value = MarketRegime.RANGE.value  # conservative default
 
         if not risk_exit_triggered:
             active_count = count_active_positions(session)
 
             # ── STRATEGY C: Whale Hunter (Volume Anomaly Spike > 10x) ──
-            # Bypasses Z-Score & RSI chop zone constraints (volume creates momentum)
+            # Bypasses regime detection — volume creates its own regime.
             if whale_strike and not in_position:
                 w_direction = whale_strike['direction']
                 w_vol_ratio = whale_strike['vol_ratio']
@@ -1759,6 +1764,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     else:
                         decision = w_direction
                         strategy_type = 'WHALE_STRIKE'
+                        active_mode_value = MarketRegime.TREND.value  # Whale = momentum = TREND
                         if w_direction == 'LONG':
                             new_stop_loss = whale_strike['candle_low'] * 0.999
                         else:
@@ -1770,80 +1776,70 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         log_to_db(session, symbol, "ENTRY", msg)
                         send_telegram_alert(msg)
 
-            # ── STRATEGY A & B: Pullback & Breakout (Standard MTF Confluence) ──
-            if decision == 'WAIT' and current_zscore is not None and current_rsi is not None:
-                # ── LONG Confluence ──
-                if macro_trend == 'UPTREND' and not in_position and current_rsi > 55.0:
-                    # Strategy A: Aggressive Pullback (Z < -1.2 into Bullish OB)
-                    if (bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.2):
-                        if active_count >= MAX_CONCURRENT_POSITIONS:
-                            print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
-                        else:
-                            decision = 'LONG'
-                            strategy_type = 'PULLBACK'
-                            new_stop_loss = bullish_ob['low'] * 0.999 # Strictly below OB
-                            msg = f"✨ [{symbol}] LONG Strategy A (PULLBACK): Macro={macro_trend} + Bullish OB + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
-                            print(msg, flush=True)
-                            log_to_db(session, symbol, "ENTRY", msg)
-                    
-                    # Strategy B: Momentum Breakout (Z > +1.2 + Bullish Breakout)
-                    elif bullish_breakout and current_zscore > 1.2:
-                        if active_count >= MAX_CONCURRENT_POSITIONS:
-                            print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
-                        else:
-                            decision = 'LONG'
-                            strategy_type = 'BREAKOUT'
-                            new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999 # Below breakout candle
-                            msg = f"⚡ [{symbol}] LONG Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bullish_breakout['vol_ratio']:.1f}x) + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
-                            print(msg, flush=True)
-                            log_to_db(session, symbol, "ENTRY", msg)
+            # ── STRATEGY ROUTER: Regime-Aware Entry Logic ──
+            if decision == 'WAIT':
+                regime, routed_decision, routed_strategy_type, routed_stop_loss, regime_meta = strategy_router.route(
+                    symbol=symbol,
+                    df=df,
+                    portfolio=portfolio,
+                    current_price=current_price,
+                    current_rsi=current_rsi,
+                    current_zscore=current_zscore,
+                    current_atr=current_atr,
+                    bullish_ob=bullish_ob,
+                    bearish_ob=bearish_ob,
+                    bullish_breakout=bullish_breakout,
+                    bearish_breakout=bearish_breakout,
+                    macro_trend=macro_trend,
+                    in_position=in_position,
+                    active_count=active_count,
+                    max_positions=MAX_CONCURRENT_POSITIONS,
+                    futures_client=futures_client,
+                    session=session,
+                )
+                active_mode_value = regime.value
 
-                    # Strategy C: Testnet — Pure Trend Alignment (force trades)
-                    elif TESTNET_FORCE_TRADES and current_sma and current_price > current_sma and current_rsi > 55.0 and current_zscore > 1.2:
-                        if active_count >= MAX_CONCURRENT_POSITIONS:
-                            print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
-                        else:
-                            decision = 'LONG'
-                            strategy_type = 'TREND_ALIGN'
-                            new_stop_loss = current_sma * 0.995  # SL just below the SMA
-                            msg = f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro={macro_trend} + Price > SMA-50"
-                            print(msg, flush=True)
-                            log_to_db(session, symbol, "ENTRY", msg)
+                if routed_decision in ('LONG', 'SHORT'):
+                    decision      = routed_decision
+                    strategy_type = routed_strategy_type
+                    new_stop_loss = routed_stop_loss
+                    # Log per spec: [MODE: X] Symbol: Y | ADX: ... | RSI: ...
+                    adx_str    = f"{regime_meta['adx']:.1f}" if regime_meta.get('adx') is not None else "N/A"
+                    rsi_log    = f"{current_rsi:.1f}" if current_rsi is not None else "N/A"
+                    zscore_log = f"{current_zscore:+.3f}" if current_zscore is not None else "N/A"
+                    print(
+                        f"[MODE: {regime.value}] Symbol: {symbol} | ADX: {adx_str} | "
+                        f"RSI: {rsi_log} | Z: {zscore_log} | "
+                        f"Strategy: {strategy_type}",
+                        flush=True,
+                    )
+                elif routed_strategy_type == 'STORM_LIMIT_PENDING':
+                    # Storm strategy placed a limit order async — log only
+                    adx_str = f"{regime_meta['adx']:.1f}" if regime_meta.get('adx') is not None else "N/A"
+                    print(
+                        f"[🌪️ STORM PENDING] {symbol} | ADX: {adx_str} | "
+                        f"Limit order placed — awaiting fill (TTL: 15 min)",
+                        flush=True,
+                    )
 
-            # ── SHORT Confluence ──
-            if decision == 'WAIT' and macro_trend == 'DOWNTREND' and not in_position and current_rsi < 45.0:
-                # Strategy A: Aggressive Pullback (Z > +1.2 into Bearish OB)
-                if (bearish_ob and current_price <= bearish_ob['high'] and current_zscore > 1.2):
-                    if active_count >= MAX_CONCURRENT_POSITIONS:
-                        print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
-                    else:
-                        decision = 'SHORT'
-                        strategy_type = 'PULLBACK'
-                        new_stop_loss = bearish_ob['high'] * 1.001 # Strictly above OB
-                        msg = f"✨ [{symbol}] SHORT Strategy A (PULLBACK): Macro={macro_trend} + Bearish OB + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
+            # ── TESTNET FORCE TRADES (override — kept for backward compat) ──
+            if decision == 'WAIT' and TESTNET_FORCE_TRADES and current_zscore is not None and current_rsi is not None:
+                current_sma_val = float(last_row[f'SMA_{ZSCORE_SMA_PERIOD}']) if pd.notna(last_row.get(f'SMA_{ZSCORE_SMA_PERIOD}')) else None
+                if current_sma_val and macro_trend == 'UPTREND' and current_price > current_sma_val and current_rsi > 55.0 and current_zscore > 1.2:
+                    if active_count < MAX_CONCURRENT_POSITIONS and not in_position:
+                        decision = 'LONG'
+                        strategy_type = 'TREND_ALIGN'
+                        active_mode_value = MarketRegime.TREND.value
+                        new_stop_loss = current_sma_val * 0.995
+                        msg = f"🧪 [{symbol}] LONG Strategy C (TREND_ALIGN): Macro={macro_trend} + Price > SMA-50"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
-                
-                # Strategy B: Momentum Breakout (Z < -1.2 + Bearish Breakout)
-                elif bearish_breakout and current_zscore < -1.2:
-                    if active_count >= MAX_CONCURRENT_POSITIONS:
-                        print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
-                    else:
-                        decision = 'SHORT'
-                        strategy_type = 'BREAKOUT'
-                        new_stop_loss = bearish_breakout['breakout_candle_high'] * 1.001 # Above breakout candle
-                        msg = f"⚡ [{symbol}] SHORT Strategy B (BREAKOUT): Macro={macro_trend} + Breakout Confirmed (Vol {bearish_breakout['vol_ratio']:.1f}x) + Z={current_zscore:+.2f} + RSI={current_rsi:.1f}"
-                        print(msg, flush=True)
-                        log_to_db(session, symbol, "ENTRY", msg)
-
-                # Strategy C: Testnet — Pure Trend Alignment (force trades)
-                elif TESTNET_FORCE_TRADES and current_sma and current_price < current_sma and current_rsi < 45.0 and current_zscore < -1.2:
-                    if active_count >= MAX_CONCURRENT_POSITIONS:
-                        print(f"⏸️ [{symbol}] WAIT (Max Slots Reached: {active_count}/{MAX_CONCURRENT_POSITIONS})", flush=True)
-                    else:
+                elif current_sma_val and macro_trend == 'DOWNTREND' and current_price < current_sma_val and current_rsi < 45.0 and current_zscore < -1.2:
+                    if active_count < MAX_CONCURRENT_POSITIONS and not in_position:
                         decision = 'SHORT'
                         strategy_type = 'TREND_ALIGN'
-                        new_stop_loss = current_sma * 1.005  # SL just above the SMA
+                        active_mode_value = MarketRegime.TREND.value
+                        new_stop_loss = current_sma_val * 1.005
                         msg = f"🧪 [{symbol}] SHORT Strategy C (TREND_ALIGN): Macro={macro_trend} + Price < SMA-50"
                         print(msg, flush=True)
                         log_to_db(session, symbol, "ENTRY", msg)
@@ -1870,29 +1866,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     log_to_db(session, symbol, "SKIP", msg)
                     decision = 'WAIT'
 
-            # ── 🚨 DEBUG LOGGER: Why is the bot skipping? ──
-            if decision == 'WAIT' and not risk_exit_triggered:
-                if in_position:
-                    print(f"  [DEBUG] {symbol} | Skipping entry: Already in position.", flush=True)
-                else:
-                    z_str = f"{current_zscore:+.3f}" if current_zscore is not None else "N/A"
-                    rsi_str = f"{current_rsi:.1f}" if current_rsi is not None else "N/A"
-
-                    if current_rsi is not None and 45.0 <= current_rsi <= 55.0:
-                        print(f"  [DEBUG] {symbol} | Skipping trade: RSI in chop zone ({rsi_str}) [Req: >55 for LONG, <45 for SHORT].", flush=True)
-                    print(f"  [DEBUG] {symbol} | Z: {z_str} (Req: > +1.2 for Breakout LONG/Pullback SHORT, < -1.2 for Pullback LONG/Breakout SHORT) | RSI: {rsi_str}", flush=True)
-                    
-                    if bullish_ob:
-                        print(f"  [DEBUG] {symbol} | Bullish OB detected. High=${bullish_ob['high']:.2f}, Price=${current_price:.2f} (Req: Price <= OB High)", flush=True)
-                    if bearish_ob:
-                        print(f"  [DEBUG] {symbol} | Bearish OB detected. Low=${bearish_ob['low']:.2f}, Price=${current_price:.2f} (Req: Price >= OB Low)", flush=True)
-                    
-                    if not bullish_ob and not bearish_ob and not bullish_breakout and not bearish_breakout:
-                        print(f"  [DEBUG] {symbol} | Skipping trade: No Order Block or Breakout detected on 5m chart.", flush=True)
-                    elif active_count >= MAX_CONCURRENT_POSITIONS:
-                        print(f"  [DEBUG] {symbol} | Skipping trade: Max concurrent slots reached ({active_count}/{MAX_CONCURRENT_POSITIONS}).", flush=True)
-                    else:
-                        print(f"  [DEBUG] {symbol} | Skipping trade: Signal does not match all criteria (|Z|>=1.2, RSI outside 45-55 chop zone, and OB/Breakout touch).", flush=True)
+            # ── DEBUG LOGGER: Why is the bot skipping? ──
+            if decision == 'WAIT' and not risk_exit_triggered and not in_position:
+                z_str   = f"{current_zscore:+.3f}" if current_zscore is not None else "N/A"
+                rsi_str = f"{current_rsi:.1f}"    if current_rsi  is not None else "N/A"
+                print(f"  [DEBUG] {symbol} | [MODE: {active_mode_value}] Z: {z_str} | RSI: {rsi_str} | No entry signal.", flush=True)
 
         # ── 6. Save signal to Database ──
         # Build db_decision from live Binance state WITHOUT mutating `decision`.
@@ -2095,7 +2073,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             pnl_pct=None,
                             pnl_usd=None,
                             total_portfolio_value=float(round(total_value, 2)),
-                            entry_reason=reason_msg
+                            entry_reason=reason_msg,
+                            active_mode=active_mode_value,
                         )
                         for attempt in range(3):
                             try:
@@ -2112,9 +2091,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
 
 
-                        # Telegram alert
+                        # ── Telegram alert with Active Mode badge ──
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
-                        
+                        mode_label = MarketRegime(active_mode_value).telegram_label if active_mode_value else '[TREND 🚀]'
+
                         if strategy_type == 'PULLBACK':
                             alert_reason = (f"- Strategy: A (Pullback)\n"
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
@@ -2131,12 +2111,17 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                           f"- Price: ${current_price:.2f} > SMA-50: ${current_sma:.2f}\n"
                                           f"- ⚠️ TESTNET ONLY — No OB/Volume confirmation")
+                        elif strategy_type == 'RANGE_MEAN_REVERSION':
+                            alert_reason = (f"- Strategy: Mean Reversion (Range)\n"
+                                          f"- RSI: {current_rsi:.1f} (oversold <35)\n"
+                                          f"- Bullish OB touch: ${bullish_ob['low']:.2f}–${bullish_ob['high']:.2f}")
                         else:
                             alert_reason = f"- Strategy: Unknown"
 
                         alert_msg = (
                             f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: {'SCALE-UP LONG' if dca_level > 0 else 'OPEN LONG'}* \U0001f6a8\n"
                             f"\n"
+                            f"🤖 Active Mode: {mode_label}\n"
                             f"*Symbol:* {symbol}\n"
                             f"*Price:* ${float(current_price):.2f}\n"
                             f"*Time:* {alert_time}\n"
@@ -2266,7 +2251,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             pnl_pct=None,
                             pnl_usd=None,
                             total_portfolio_value=float(round(total_value, 2)),
-                            entry_reason=reason_msg
+                            entry_reason=reason_msg,
+                            active_mode=active_mode_value,
                         )
                         for attempt in range(3):
                             try:
@@ -2283,9 +2269,10 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
 
 
-                        # Telegram alert
+                        # ── Telegram alert with Active Mode badge ──
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
-                        
+                        mode_label = MarketRegime(active_mode_value).telegram_label if active_mode_value else '[TREND 🚀]'
+
                         if strategy_type == 'PULLBACK':
                             alert_reason = (f"- Strategy: A (Pullback)\n"
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
@@ -2302,12 +2289,17 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                           f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                           f"- Price: ${current_price:.2f} < SMA-50: ${current_sma:.2f}\n"
                                           f"- ⚠️ TESTNET ONLY — No OB/Volume confirmation")
+                        elif strategy_type == 'RANGE_MEAN_REVERSION':
+                            alert_reason = (f"- Strategy: Mean Reversion (Range)\n"
+                                          f"- RSI: {current_rsi:.1f} (overbought >65)\n"
+                                          f"- Bearish OB touch: ${bearish_ob['low']:.2f}–${bearish_ob['high']:.2f}")
                         else:
                             alert_reason = f"- Strategy: Unknown"
 
                         alert_msg = (
                             f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: {'SCALE-UP SHORT' if dca_level > 0 else 'OPEN SHORT'}* \U0001f6a8\n"
                             f"\n"
+                            f"🤖 Active Mode: {mode_label}\n"
                             f"*Symbol:* {symbol}\n"
                             f"*Price:* ${float(current_price):.2f}\n"
                             f"*Time:* {alert_time}\n"
@@ -2554,7 +2546,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     trailing_active=portfolio.get('trailing_active', False),
                     pnl_pct=None,
                     pnl_usd=None,
-                    total_portfolio_value=float(round(total_value, 2))
+                    total_portfolio_value=float(round(total_value, 2)),
+                    active_mode=active_mode_value,
                 )
                 for attempt in range(3):
                     try:

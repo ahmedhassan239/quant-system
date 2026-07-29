@@ -96,6 +96,7 @@
                   <input type="checkbox" :checked="isAllSelected" @change="toggleSelectAll" class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-gray-900">
                 </th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Symbol</th>
+                <th class="py-4 px-5 font-semibold uppercase tracking-wide">Mode</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Direction</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Entry Price</th>
                 <th class="py-4 px-5 font-semibold uppercase tracking-wide">Current Price</th>
@@ -115,6 +116,17 @@
                   <div class="text-xs text-gray-400 mt-1 max-w-[200px] sm:max-w-xs truncate cursor-help" :title="pos.entry_reason">
                     {{ pos.entry_reason || pos.strategy || 'Manual / Undefined' }}
                   </div>
+                </td>
+                <!-- Mode Badge Column -->
+                <td class="py-4 px-5">
+                  <span
+                    :class="getModeBadge(pos.active_mode).classes"
+                    class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold tracking-wider border"
+                    :style="pos.active_mode === 'STORM' ? 'animation: pulse 1.5s cubic-bezier(0.4,0,0.6,1) infinite' : ''"
+                  >
+                    {{ getModeBadge(pos.active_mode).emoji }}
+                    {{ getModeBadge(pos.active_mode).label }}
+                  </span>
                 </td>
                 <td class="py-4 px-5">
                   <span :class="pos.direction === 'LONG' ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'" class="px-3 py-1 rounded-full text-xs font-bold tracking-wider border">
@@ -157,9 +169,20 @@
                   </div>
                 </div>
               </div>
-              <span :class="pos.direction === 'LONG' ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'" class="px-3 py-1 rounded-full text-xs font-bold tracking-wider border">
-                {{ pos.direction }}
-              </span>
+              <div class="flex flex-col items-end gap-1.5">
+                <!-- Regime Mode Badge (mobile) -->
+                <span
+                  :class="getModeBadge(pos.active_mode).classes"
+                  class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold tracking-wider border"
+                  :style="pos.active_mode === 'STORM' ? 'animation: pulse 1.5s cubic-bezier(0.4,0,0.6,1) infinite' : ''"
+                >
+                  {{ getModeBadge(pos.active_mode).emoji }}
+                  {{ getModeBadge(pos.active_mode).label }}
+                </span>
+                <span :class="pos.direction === 'LONG' ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'" class="px-3 py-1 rounded-full text-xs font-bold tracking-wider border">
+                  {{ pos.direction }}
+                </span>
+              </div>
             </div>
             
             <div class="grid grid-cols-2 gap-2 text-sm mt-1">
@@ -266,6 +289,34 @@ const getPnlColor = (val) => {
   const num = parseFloat(val)
   if (isNaN(num) || num === 0) return 'text-white'
   return num > 0 ? 'text-green-400' : 'text-red-400'
+}
+
+/**
+ * Market Regime badge config.
+ * Returns { label, emoji, classes } for the given active_mode string.
+ * Null-safe: defaults to TREND styling for pre-migration rows.
+ */
+const getModeBadge = (mode) => {
+  const m = (mode || 'TREND').toUpperCase()
+  const CONFIG = {
+    TREND: {
+      label: 'TREND',
+      emoji: '🚀',
+      classes: 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30',
+    },
+    RANGE: {
+      label: 'RANGE',
+      emoji: '⚖️',
+      classes: 'text-amber-400 bg-amber-500/20 border-amber-500/30',
+    },
+    STORM: {
+      label: 'STORM',
+      emoji: '🌪️',
+      // Pulse animation applied inline via :style on the element
+      classes: 'text-red-400 bg-red-500/20 border-red-500/30',
+    },
+  }
+  return CONFIG[m] || CONFIG.TREND
 }
 
 const fetchMetrics = () => {
