@@ -124,14 +124,14 @@ MACRO_SMA_PERIOD = 50              # SMA window for macro trend
 MACRO_SDC_MULTIPLIER = 2.0         # ±2σ Standard Deviation Channel
 
 # Execution Engine (5m) — Risk & Position Limits
-HARD_STOP_LOSS_PCT = 0.05          # 5% absolute stop loss
-STOP_LOSS_PCT = 0.05               # 5% trailing/soft stop loss
+HARD_STOP_LOSS_PCT = 0.07          # 7% absolute stop loss
+STOP_LOSS_PCT = 0.07               # 7% trailing/soft stop loss
 MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "10"))  # Max open positions limit
 
 # Execution Engine (5m) — Dynamic ATR Trailing Stop Loss (TSL) Settings
 ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                               # 14-period ATR
-TSL_ATR_ACTIVATION_MULT = float(os.environ.get("TSL_ATR_ACTIVATION_MULT", "2.0"))  # Activate TSL at 2.0 * ATR profit distance
-TSL_ATR_TRAIL_MULT = float(os.environ.get("TSL_ATR_TRAIL_MULT", "1.5"))            # Trail price strictly by 1.5 * ATR distance
+TSL_ATR_ACTIVATION_MULT = float(os.environ.get("TSL_ATR_ACTIVATION_MULT", "3.0"))  # Activate TSL at 3.0 * ATR profit distance
+TSL_ATR_TRAIL_MULT = float(os.environ.get("TSL_ATR_TRAIL_MULT", "2.0"))            # Trail price strictly by 2.0 * ATR distance
 TSL_ACTIVATION_PCT = float(os.environ.get("TSL_ACTIVATION_PCT", "0.008"))          # Legacy fallback
 TSL_TRAIL_PCT = float(os.environ.get("TSL_TRAIL_PCT", "0.004"))                   # Legacy fallback
 TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT                                        # Alias for backward compatibility

@@ -288,7 +288,10 @@ def close_position(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        if _check_api_exception_for_blacklist(symbol, e):
+        if e.code == -2022:
+            logger.warning(f"[{symbol}] Position already closed by Binance Stop-Loss (ReduceOnly rejected). Handling gracefully.")
+            return True
+        elif _check_api_exception_for_blacklist(symbol, e):
             logger.warning(f"[{symbol}] Gracefully caught API restriction [{e.code}] during close_position.")
         else:
             logger.error(f"[{symbol}] ❌ Failed to close {direction}: [{e.code}] {e.message}")

@@ -99,7 +99,7 @@ class RegimeDetector:
     RANGE_ADX_MAX    = 25.0   # ADX below this = no meaningful trend
     RANGE_ZSCORE_MAX = 1.0    # |Z-Score| must be inside ±1.0 for RANGE
     TREND_ADX_MIN    = 25.0   # ADX at/above this = established trend
-    TREND_ZSCORE_MIN = 1.2    # |Z-Score| must be ≥ 1.2 for TREND
+    TREND_ZSCORE_MIN = 1.5    # |Z-Score| must be ≥ 1.5 for TREND
     ATR_MA_PERIOD    = 50     # Window for ATR moving average (STORM detection)
     ADX_PERIOD       = 14     # ADX smoothing period
 
