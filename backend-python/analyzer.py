@@ -1303,26 +1303,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             stop_loss = float(portfolio.get('stop_loss_price', 0) or 0)
             trailing_active = portfolio.get('trailing_active', False)
 
-            # ── 1. Trend Invalidation Exit ──
-            if pos_direction == 'LONG' and macro_trend == 'DOWNTREND':
-                msg = f"🚨 [{symbol}] TREND INVALIDATION: Macro flipped to DOWNTREND. Closing LONG immediately."
-                print(msg, flush=True)
-                log_to_db(session, symbol, "EXIT", msg)
-                portfolio = _close_position_handler(
-                    portfolio, current_price, symbol, session, 'TREND_INVALIDATION',
-                    futures_client, bullish_ob, bearish_ob, current_rsi,
-                    current_zscore, macro_info)
-                risk_exit_triggered = True
-
-            elif pos_direction == 'SHORT' and macro_trend == 'UPTREND':
-                msg = f"🚨 [{symbol}] TREND INVALIDATION: Macro flipped to UPTREND. Closing SHORT immediately."
-                print(msg, flush=True)
-                log_to_db(session, symbol, "EXIT", msg)
-                portfolio = _close_position_handler(
-                    portfolio, current_price, symbol, session, 'TREND_INVALIDATION',
-                    futures_client, bullish_ob, bearish_ob, current_rsi,
-                    current_zscore, macro_info)
-                risk_exit_triggered = True
+            # ── 1. Trend Invalidation Exit (DISABLED) ──
+            # The Macro Trend should strictly act as an entry filter.
+            # Once a trade is open, its exit is managed exclusively by SL/TP/Liquidation.
 
             if pos_direction == 'LONG' and not risk_exit_triggered:
                 position_size = float(portfolio.get('asset_balance', 0) or 0)
