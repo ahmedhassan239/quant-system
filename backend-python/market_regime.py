@@ -236,8 +236,11 @@ class RegimeDetector:
             return MarketRegime.TREND, meta
 
         # ── Fallback: RANGE (conservative, no trade in ambiguous zones) ──
+        # Pre-compute adx_str so the format specifier always receives a plain float,
+        # never an inline conditional (which raises ValueError in Python's formatter).
+        adx_str = f"{adx:.1f}" if (adx is not None and pd.notna(adx) and adx > 0) else "N/A"
         meta['regime_reason'] = (
-            f"RANGE (fallback): ADX={adx:.1f if adx else 'N/A'} / "
+            f"RANGE (fallback): ADX={adx_str} / "
             f"|Z|={abs_z:.2f} — no regime rule matched"
         )
         return MarketRegime.RANGE, meta
