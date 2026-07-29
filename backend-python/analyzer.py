@@ -890,7 +890,8 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
         )
         order = close_position(futures_client, symbol, direction, close_qty)
         if order:
-            print(f"✅ [{symbol}] Futures CLOSE {direction} executed | OrderID: {order['orderId']} | Qty: {close_qty}", flush=True)
+            order_id = order.get('orderId', 'ALREADY_CLOSED') if isinstance(order, dict) else 'ALREADY_CLOSED'
+            print(f"✅ [{symbol}] Futures CLOSE {direction} executed | OrderID: {order_id} | Qty: {close_qty}", flush=True)
         else:
             print(f"⚠️ [{symbol}] Futures CLOSE {direction} order failed — portfolio updated virtually", flush=True)
 

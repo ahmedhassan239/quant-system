@@ -132,7 +132,10 @@ def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250, chunk_size=10):
 
     for chunk_idx, chunk in enumerate(chunks):
         with ThreadPoolExecutor(max_workers=len(chunk)) as executor:
-            futures = [executor.submit(_fetch_and_save_symbol, sym, interval, limit) for sym in chunk]
+            futures = []
+            for sym in chunk:
+                futures.append(executor.submit(_fetch_and_save_symbol, sym, interval, limit))
+                time.sleep(0.1)  # Stagger requests to avoid breaching Binance rate limits
             for future in as_completed(futures):
                 sym, success, err = future.result()
                 if success:

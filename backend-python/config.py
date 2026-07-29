@@ -23,11 +23,11 @@ ENGINE_ROLE = os.environ.get("ENGINE_ROLE", "EXECUTION")  # "MACRO" or "EXECUTIO
 # ──────────────────────────────────────────────────────────────────────
 #  DYNAMIC SCANNER RADAR SETTINGS
 # ──────────────────────────────────────────────────────────────────────
-# Minimum 24h quote volume threshold in USDT ($150,000,000.0)
-MIN_24H_VOLUME_USDT = float(os.environ.get("MIN_24H_VOLUME_USDT", "150000000.0"))
+# Minimum 24h quote volume threshold in USDT ($75,000,000.0)
+MIN_24H_VOLUME_USDT = float(os.environ.get("MIN_24H_VOLUME_USDT", "75000000.0"))
 
-# Max number of top volume-ranked symbols to scan dynamically (e.g. 40)
-TOP_N = int(os.environ.get("TOP_N", "40"))
+# Max number of top volume-ranked symbols to scan dynamically (e.g. 45)
+TOP_N = int(os.environ.get("TOP_N", "45"))
 
 # Stablecoin / fiat-pegged quote pairs to exclude from trading
 STABLECOIN_BLACKLIST = {
