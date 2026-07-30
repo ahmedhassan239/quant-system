@@ -959,6 +959,7 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
         'SIGNAL': '📉 Technical Signal (MTF Confluence)',
         'STOP_LOSS': f'🛑 Hard Stop-Loss (-{0:.1f}%)',
         'TRAILING_STOP': '📐 Trailing Stop (pulled back from extreme)',
+        'TREND_REVERSAL_EJECT': '🚨 TREND REVERSAL EJECT — Macro thesis broken',
     }
     reason_text = reason_labels.get(exit_reason, exit_reason)
 
@@ -1312,9 +1313,35 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             stop_loss = float(portfolio.get('stop_loss_price', 0) or 0)
             trailing_active = portfolio.get('trailing_active', False)
 
-            # ── 1. Trend Invalidation Exit (DISABLED) ──
-            # The Macro Trend should strictly act as an entry filter.
-            # Once a trade is open, its exit is managed exclusively by SL/TP/Liquidation.
+            # ── 1. Trend Invalidation / Emergency Eject ──
+            # ABSOLUTE OVERRIDE: If the macro trend has reversed against our
+            # open position, the core thesis is broken. Exit immediately at
+            # market price — do NOT wait for TSL/SL to be hit.
+            if pos_direction == 'LONG' and macro_trend == 'DOWNTREND':
+                msg = (f"🚨🔴 [{symbol}] TREND REVERSAL EJECT — LONG position vs "
+                       f"DOWNTREND macro. Thesis invalidated. CLOSING IMMEDIATELY "
+                       f"at ${cp:.2f} (Entry: ${ep:.2f})")
+                print(msg, flush=True)
+                log_to_db(session, symbol, "EXIT", msg)
+                portfolio = _close_position_handler(
+                    portfolio, current_price, symbol, session,
+                    'TREND_REVERSAL_EJECT',
+                    futures_client, bullish_ob, bearish_ob,
+                    current_rsi, current_zscore, macro_info)
+                risk_exit_triggered = True
+
+            elif pos_direction == 'SHORT' and macro_trend == 'UPTREND':
+                msg = (f"🚨🟢 [{symbol}] TREND REVERSAL EJECT — SHORT position vs "
+                       f"UPTREND macro. Thesis invalidated. CLOSING IMMEDIATELY "
+                       f"at ${cp:.2f} (Entry: ${ep:.2f})")
+                print(msg, flush=True)
+                log_to_db(session, symbol, "EXIT", msg)
+                portfolio = _close_position_handler(
+                    portfolio, current_price, symbol, session,
+                    'TREND_REVERSAL_EJECT',
+                    futures_client, bullish_ob, bearish_ob,
+                    current_rsi, current_zscore, macro_info)
+                risk_exit_triggered = True
 
             if pos_direction == 'LONG' and not risk_exit_triggered:
                 position_size = float(portfolio.get('asset_balance', 0) or 0)
