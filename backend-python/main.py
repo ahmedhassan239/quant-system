@@ -11,8 +11,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ALERT_EMOJI, ENGINE_ROLE,
                     MACRO_SMA_PERIOD, ZSCORE_LONG_THRESHOLD, ZSCORE_SHORT_THRESHOLD,
                     STABLECOIN_BLACKLIST, MOCK_TOKENS_BLACKLIST,
                     TSL_ACTIVATION_PCT, TSL_TRAIL_PCT,
-                    ATR_PERIOD, TSL_ATR_ACTIVATION_MULT, TSL_ATR_TRAIL_MULT,
-                    PARTIAL_TP_PCT)
+                    ATR_PERIOD, REGIME_RISK_PARAMS)
 
 from database import (SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS,
                       init_shared_db, get_active_symbols, save_wallet_balance,
@@ -159,9 +158,9 @@ def main():
     else:
         print(f"  → Z-Score LONG:  < {ZSCORE_LONG_THRESHOLD}", flush=True)
         print(f"  → Z-Score SHORT: > +{ZSCORE_SHORT_THRESHOLD}", flush=True)
-        print(f"  → TSL Activate:  {TSL_ATR_ACTIVATION_MULT}x ATR ({ATR_PERIOD}-period)", flush=True)
-        print(f"  → TSL Trail:     {TSL_ATR_TRAIL_MULT}x ATR", flush=True)
-        print(f"  → Partial TP:    +{PARTIAL_TP_PCT*100:.1f}% ROE (50% scale-out + Break-Even)", flush=True)
+        print(f"  → TSL Activate:  Dynamic by Regime ({ATR_PERIOD}-period)", flush=True)
+        print(f"  → TSL Trail:     Dynamic by Regime", flush=True)
+        print(f"  → Partial TP:    Dynamic by Regime (50% scale-out + Break-Even)", flush=True)
         print(f"  → Mode:         Execution with MTF Confluence", flush=True)
 
     # Initialize shared DB for MTF communication
