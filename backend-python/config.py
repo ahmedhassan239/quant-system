@@ -81,7 +81,7 @@ BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
 # ──────────────────────────────────────────────────────────────────────
 #  FUTURES POSITION DEFAULTS
 # ──────────────────────────────────────────────────────────────────────
-FUTURES_LEVERAGE = int(os.environ.get("FUTURES_LEVERAGE", "1"))
+FUTURES_LEVERAGE = int(os.environ.get("FUTURES_LEVERAGE", "3"))
 FUTURES_MARGIN_TYPE = os.environ.get("FUTURES_MARGIN_TYPE", "ISOLATED")
 
 # ──────────────────────────────────────────────────────────────────────
@@ -134,10 +134,10 @@ ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                            
 # ── Dynamic Regime-Based Risk Parameters ──
 REGIME_RISK_PARAMS = {
     'RANGE': {
-        'SL_ATR_MULT': 2.0,
+        'SL_ATR_MULT': 2.5,
         'PARTIAL_TP_PCT': 0.006,
-        'TSL_ATR_ACTIVATION_MULT': 1.0,
-        'TSL_ATR_TRAIL_MULT': 0.5,
+        'TSL_ATR_ACTIVATION_MULT': 2.0,
+        'TSL_ATR_TRAIL_MULT': 1.5,
     },
     'TREND': {
         'SL_ATR_MULT': 1.5,
