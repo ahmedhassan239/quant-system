@@ -33,7 +33,7 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT,
                     MAX_GLOBAL_POSITIONS, TSL_ACTIVATION_PCT, TSL_TRAIL_PCT,
                     TRAILING_ACTIVATE_PCT, TRAILING_DISTANCE_PCT,
-                    ATR_PERIOD, TSL_ATR_ACTIVATION_MULT, TSL_ATR_TRAIL_MULT,
+                    ATR_PERIOD, SL_ATR_MULT, TSL_ATR_ACTIVATION_MULT, TSL_ATR_TRAIL_MULT,
                     PARTIAL_TP_PCT)
 from futures_executor import (open_position, close_position, get_futures_balance,
                               get_position_info, count_all_open_positions, set_stop_loss_order,
@@ -52,8 +52,9 @@ TSL_TRAIL_PCT = TSL_TRAIL_PCT             # 0.4 % trailing distance from peak/tr
 TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT # +0.8 % alias
 TRAILING_DISTANCE_PCT = TSL_TRAIL_PCT     # 0.4 % alias
 ATR_PERIOD = ATR_PERIOD                           # 14-period ATR
-TSL_ATR_ACTIVATION_MULT = TSL_ATR_ACTIVATION_MULT # 2.0x ATR activation distance
-TSL_ATR_TRAIL_MULT = TSL_ATR_TRAIL_MULT           # 1.5x ATR trailing distance
+SL_ATR_MULT = SL_ATR_MULT                         # 1.5x ATR initial stop loss
+TSL_ATR_ACTIVATION_MULT = TSL_ATR_ACTIVATION_MULT # 1.0x ATR activation distance
+TSL_ATR_TRAIL_MULT = TSL_ATR_TRAIL_MULT           # 0.5x ATR trailing distance
 TRAILING_PULLBACK_PCT = 0.005             # -0.5 % (legacy, kept for compat)
 HARD_STOP_LOSS_PCT = 0.05                 # 5.0 % absolute stop loss
 STOP_LOSS_PCT = 0.05                      # 5.0 % trailing/soft stop loss
