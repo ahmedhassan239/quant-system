@@ -130,14 +130,33 @@ MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "10"))  # Max 
 
 # Execution Engine (5m) — Dynamic ATR Trailing Stop Loss (TSL) Settings
 ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                               # 14-period ATR
-SL_ATR_MULT = float(os.environ.get("SL_ATR_MULT", "1.5"))                          # Initial Stop Loss at 1.5 * ATR distance
-TSL_ATR_ACTIVATION_MULT = float(os.environ.get("TSL_ATR_ACTIVATION_MULT", "1.0"))  # Activate TSL at 1.0 * ATR profit distance
-TSL_ATR_TRAIL_MULT = float(os.environ.get("TSL_ATR_TRAIL_MULT", "0.5"))            # Trail price strictly by 0.5 * ATR distance
+
+# ── Dynamic Regime-Based Risk Parameters ──
+REGIME_RISK_PARAMS = {
+    'RANGE': {
+        'SL_ATR_MULT': 2.0,
+        'PARTIAL_TP_PCT': 0.006,
+        'TSL_ATR_ACTIVATION_MULT': 1.0,
+        'TSL_ATR_TRAIL_MULT': 0.5,
+    },
+    'TREND': {
+        'SL_ATR_MULT': 1.5,
+        'PARTIAL_TP_PCT': 0.020,
+        'TSL_ATR_ACTIVATION_MULT': 2.0,
+        'TSL_ATR_TRAIL_MULT': 1.5,
+    },
+    'STORM': {
+        'SL_ATR_MULT': 1.5,      # Fallback for limits
+        'PARTIAL_TP_PCT': 0.005, # Eject very quickly
+        'TSL_ATR_ACTIVATION_MULT': 0.5,
+        'TSL_ATR_TRAIL_MULT': 0.3, # Immediate choke
+    }
+}
+
 TSL_ACTIVATION_PCT = float(os.environ.get("TSL_ACTIVATION_PCT", "0.008"))          # Legacy fallback
 TSL_TRAIL_PCT = float(os.environ.get("TSL_TRAIL_PCT", "0.004"))                   # Legacy fallback
 TRAILING_ACTIVATE_PCT = TSL_ACTIVATION_PCT                                        # Alias for backward compatibility
 TRAILING_DISTANCE_PCT = TSL_TRAIL_PCT                                             # Alias for backward compatibility
-PARTIAL_TP_PCT = float(os.environ.get("PARTIAL_TP_PCT", "0.006"))                   # +0.6% ROE threshold for 50% scale-out
 
 
 # Execution Engine (5m) — Z-Score thresholds for entry

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 from binance.exceptions import BinanceAPIException
+from config import REGIME_RISK_PARAMS
 
 if TYPE_CHECKING:
     from binance.client import Client
@@ -387,7 +388,6 @@ class RangeStrategy(TradingStrategy):
 
     RSI_LONG_THRESHOLD  = 35.0   # Oversold — look for longs
     RSI_SHORT_THRESHOLD = 65.0   # Overbought — look for shorts
-    STOP_LOSS_PCT       = 0.005  # 0.5% hard stop from entry
 
     @property
     def regime(self) -> MarketRegime:
@@ -415,13 +415,15 @@ class RangeStrategy(TradingStrategy):
         decision = 'WAIT'
         strategy_type = None
         new_stop_loss = 0.0
+        
+        sl_dist = REGIME_RISK_PARAMS['RANGE']['SL_ATR_MULT'] * (current_atr if current_atr else current_price * 0.005)
 
         # ── LONG: RSI oversold + Bullish Order Block touch ──
         if current_rsi < self.RSI_LONG_THRESHOLD and bullish_ob:
             if bullish_ob['low'] <= current_price <= bullish_ob['high']:
                 decision = 'LONG'
                 strategy_type = 'RANGE_MEAN_REVERSION'
-                new_stop_loss = current_price * (1.0 - self.STOP_LOSS_PCT)
+                new_stop_loss = current_price - sl_dist
                 logger.info(
                     f"[RANGE] {symbol} LONG MR — RSI {current_rsi:.1f} "
                     f"(oversold) + Bullish OB touch ${bullish_ob['low']:.2f}–${bullish_ob['high']:.2f}"
@@ -432,7 +434,7 @@ class RangeStrategy(TradingStrategy):
             if bearish_ob['low'] <= current_price <= bearish_ob['high']:
                 decision = 'SHORT'
                 strategy_type = 'RANGE_MEAN_REVERSION'
-                new_stop_loss = current_price * (1.0 + self.STOP_LOSS_PCT)
+                new_stop_loss = current_price + sl_dist
                 logger.info(
                     f"[RANGE] {symbol} SHORT MR — RSI {current_rsi:.1f} "
                     f"(overbought) + Bearish OB touch ${bearish_ob['low']:.2f}–${bearish_ob['high']:.2f}"
@@ -681,6 +683,8 @@ class StrategyRouter:
         max_positions: int,
         futures_client,
         session,
+        precomputed_regime: MarketRegime | None = None,
+        precomputed_meta: dict | None = None,
     ) -> tuple[MarketRegime, str, str | None, float, dict]:
         """
         Detect regime → select strategy → execute.
@@ -688,8 +692,11 @@ class StrategyRouter:
         Returns:
             (regime, decision, strategy_type, new_stop_loss, regime_meta)
         """
-        # 1. Detect regime
-        regime, regime_meta = RegimeDetector.detect(df)
+        # 1. Detect regime (or use precomputed)
+        if precomputed_regime is not None and precomputed_meta is not None:
+            regime, regime_meta = precomputed_regime, precomputed_meta
+        else:
+            regime, regime_meta = RegimeDetector.detect(df)
 
         # 2. Build the prominent log line required by spec
         adx_str     = f"{regime_meta['adx']:.1f}"    if regime_meta.get('adx')     is not None else "N/A"
