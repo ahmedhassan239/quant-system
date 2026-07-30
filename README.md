@@ -1,75 +1,42 @@
-# Algorithmic Crypto Trading System 📈🤖
-
-![Status](https://img.shields.io/badge/Status-Stable-brightgreen)
-![Environment](https://img.shields.io/badge/Environment-Mainnet%20%7C%20Testnet-blue)
-![Execution](https://img.shields.io/badge/Execution-Binance%20Futures-F3BA2F)
+# Quant Trading Engine 📈🤖
 
 ## Overview
-A fully automated, stateful, enterprise-grade quantitative trading engine designed for cryptocurrency perpetual futures. After extensive iterations, the bot has transitioned from a highly sensitive, whipsaw-prone state to a robust, self-healing, sniper-like execution engine. 
+A fully automated, stateful algorithmic trading engine designed to monitor cryptocurrency markets (currently tailored for PAXGUSDT). The system fetches live market data, performs technical analysis using RSI and Order Blocks, executes paper trades via a Virtual Portfolio, and sends real-time intelligent alerts via Telegram. 
 
-It actively scans the entire Binance Futures market dynamically, executing trades using Isolated Margin at 1x Leverage (configurable) based strictly on confluence between macro trends, market regimes, and highly optimized technical parameters.
+All metrics, signals, and portfolio states are persisted in a PostgreSQL database and visualized in real-time using a Metabase dashboard.
 
-## Core Architecture & Logic
-The engine is built on a highly modular architecture that segregates market data ingestion, dynamic universe selection, signal generation, and isolated risk execution.
+## Core Features
+*   **Automated Market Fetcher:** Scheduled job pulling live 15-minute candlestick data from Binance API.
+*   **Technical Analyzer:** Evaluates market conditions using Relative Strength Index (RSI) and detects Bullish/Bearish Order Blocks (OB).
+*   **Signal State Management:** A stateful logic system that prevents consecutive duplicate signals (e.g., ignoring 'SELL' signals if the current position is already 'SOLD').
+*   **Virtual Portfolio (Paper Trading):** Simulates real trades starting with a base USDT balance, calculates PnL per trade, and updates the portfolio state in the database.
+*   **Intelligent Telegram Alerts:** Notifies the user of 'BUY' or 'SELL' actions, including the current price, RSI value, Order Block conditions, and the Virtual Portfolio balance.
+*   **Real-time Dashboard:** Seamless integration with Metabase for tracking `Market Data`, `Trading Signals`, and `Portfolio State`.
 
-### Timeframe & Confluence
-- **Execution Timeframe:** 5m candles. All exact trade entries and exits trigger off the 5m timeframe for precision.
-- **Macro Trend Timeframe:** 1h candles. The 1h macro trend (governed by Z-Score and SMA-50) is used **strictly as an Entry Filter**. It dictates the overarching directional bias (LONG or SHORT) but never forces an early exit.
+## Tech Stack
+*   **Language:** Python 3
+*   **Database:** PostgreSQL
+*   **Containerization:** Docker & Docker Compose
+*   **Visualization:** Metabase
+*   **Integrations:** Binance API, Telegram Bot API
 
-### Dynamic Radar & Universe Selection
-- **Deep Market Scanning:** The dynamic scanner autonomously evaluates 40+ top-volume symbols.
-- **Strict Validation:** The scanner validates symbols directly against Binance's `exchangeInfo` endpoint. It strictly filters for actively trading `PERPETUAL` contracts, instantly eliminating `400 Bad Request` errors caused by unsupported assets (e.g., Stock tokens, delisted coins) and keeping our auto-blacklist clean.
+## System Architecture
+1.  **Fetcher Module:** Queries Binance and stores raw candlestick data.
+2.  **Analyzer Module:** Processes data, checks against trading conditions, and generates 'BUY', 'SELL', or 'WAIT' signals.
+3.  **State Manager:** Validates the generated signal against the last executed trade to prevent alert spam.
+4.  **Portfolio Manager:** Updates `portfolio_state` table with simulated USDT/PAXG balances.
+5.  **Notifier:** Dispatches formatted Telegram messages containing trade reasoning and wallet updates.
 
-## Market Regimes
-The bot utilizes adaptive, regime-aware logic to define when to enter trades.
-
-- **TREND:** 
-  - Activated when ADX >= 25 and strict Z-Score >= 1.5. 
-  - Employs aggressive Breakout logic to catch heavy momentum waves.
-- **RANGE:** 
-  - Activated when the market lacks clear directional momentum.
-  - Relies on Mean Reversion tactics (RSI overbought/oversold levels combined with Order Block touches).
-- **STORM:** 
-  - A capital protection state activated during extreme Z-Scores (> 3.0) or massive ATR volatility spikes. 
-  - Suspends new entries and focuses entirely on managing risk for open positions.
-
-## Risk & Trade Management Rules (The Holy Grail)
-Exits are purely mathematical and managed by Dynamic ATR trailing logic. The legacy "Kill-Switch" which preemptively closed positions on minor Macro Trend flips (`TREND_INVALIDATION` / `TREND_REVERSAL`) has been completely removed to avoid death-by-a-thousand-cuts (whipsaw losses).
-
-- **Dynamic ATR Trailing Stop (TSL):** 
-  - **Activation:** The TSL becomes active only once the trade reaches a profit cushion of **3.0x ATR**.
-  - **Trailing Distance:** Once activated, the Stop-Loss trails the peak price tightly at **2.0x ATR**.
-- **Smart Partial Take Profit (TP):** 
-  - Executes a **50% Partial Take Profit** automatically when the position reaches +1.5% ROE.
-  - Immediately moves the remaining position's Stop-Loss to **Break-Even**.
-  - Allows **Pyramiding** (scaling in) on winning trades without exposing the initial capital to risk.
-
-## Self-Healing Mechanics
-The execution engine is highly fault-tolerant and recovers autonomously from API rejections and desynchronization:
-- **Graceful Error Handling:** Safely catches the dreaded Binance `[-2022] ReduceOnly Order is rejected` exception (which occurs when Binance liquidates/closes the position before the bot can). 
-- **State Reconciliation:** Syncs the database silently and clears closed positions without crashing the main loop or throwing `TypeError: 'bool' object is not subscriptable`.
-- **Slot Management:** Accurate local state management prevents ghost positions and fake "Max slots reached" blocking.
-
-## Setup & Deployment (Docker Compose)
-The system is fully containerized for isolated deployment alongside PostgreSQL and Metabase.
-
-### 1. Environment Configuration
-Create a `.env` file in the root directory:
-```env
-ENV_TYPE="TESTNET" # or "LIVE"
-BINANCE_API_KEY="your_api_key"
-BINANCE_API_SECRET="your_api_secret"
-TELEGRAM_BOT_TOKEN="your_bot_token"
-TELEGRAM_CHAT_ID="your_chat_id"
+## Environment Variables (.env)
+To run this project locally or on a production server, the following variables must be configured in a `.env` file:
+TELEGRAM_BOT_TOKEN="your_bot_token_here"
+TELEGRAM_CHAT_ID="your_chat_id_here"
 DB_USER="your_db_user"
 DB_PASSWORD="your_db_password"
 DB_NAME="quant_system"
-MIN_24H_VOLUME_USDT="75000000.0"
-TOP_N="45"
-```
 
-### 2. Launching the Engine
-Build and deploy the containers in detached mode:
+## Deployment
+The system is fully containerized. To build and run the engine alongside the database and Metabase:
 ```bash
 docker compose up -d --build
 ```
