@@ -1,8 +1,16 @@
 # Quant System — Production Documentation
 
-> **Version:** 2.0 (Market Regime Detection)  
-> **Last Updated:** 2026-07-29  
+> **Version:** 2.1 (Stability & Self-Healing)  
+> **Last Updated:** 2026-07-30  
 > **Environment:** Binance Futures (Testnet / Live)
+
+---
+
+### Recent Stable Updates (V2.1)
+- **Timeframe & Confluence:** Execution on 5m candles. Macro Trend (1h Z-Score & SMA-50) is used strictly as an Entry Filter.
+- **Dynamic Radar & Universe Selection:** Scans 40+ top-volume symbols. Strictly validates against Binance `exchangeInfo` for `PERPETUAL` and `TRADING` contracts to eliminate `400 Bad Request` errors.
+- **Risk Management & Exits (The Holy Grail):** Exits are purely managed by Dynamic ATR Trailing Stops (activate at 3.0x ATR, trail at 2.0x ATR) and Smart Partial Take Profits (+1.5% ROE with auto Break-Even SL). The legacy Macro Trend "Kill-Switch" (`TREND_INVALIDATION`) has been completely removed to prevent whipsaw losses.
+- **Self-Healing Mechanics:** Gracefully handles Binance API exceptions like `[-2022] ReduceOnly Order is rejected` without crashing, preventing ghost positions and fake "Max slots reached" errors.
 
 ---
 
