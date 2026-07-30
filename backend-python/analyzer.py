@@ -1300,9 +1300,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         # ── Fetch Regime-Specific Risk Parameters ──
         rp = REGIME_RISK_PARAMS.get(active_mode_value, REGIME_RISK_PARAMS['RANGE'])
         sl_atr_mult = rp['SL_ATR_MULT']
-        partial_tp_pct = rp['partial_tp_pct']
-        tsl_atr_activation_mult = rp['tsl_atr_activation_mult']
-        tsl_atr_trail_mult = rp['tsl_atr_trail_mult']
+        partial_tp_pct = rp['PARTIAL_TP_PCT']
+        tsl_atr_activation_mult = rp['TSL_ATR_ACTIVATION_MULT']
+        tsl_atr_trail_mult = rp['TSL_ATR_TRAIL_MULT']
 
         risk_exit_triggered = False
 
