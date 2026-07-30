@@ -66,8 +66,26 @@ def fetch_top_symbols():
     candidates = []
     vip_candidates = []
 
+    # ── Fetch Valid Symbols from exchangeInfo ──
+    valid_symbols = set()
+    try:
+        resp = requests.get(BINANCE_EXCHANGE_INFO_URL, timeout=12)
+        if resp.status_code == 200:
+            info = resp.json()
+            for s in info.get('symbols', []):
+                if s.get('contractType') == 'PERPETUAL' and s.get('status') == 'TRADING':
+                    valid_symbols.add(s.get('symbol'))
+        else:
+            print(f"⚠️ Warning: exchangeInfo returned status {resp.status_code}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Warning: Could not fetch exchangeInfo from {BINANCE_EXCHANGE_INFO_URL}: {e}", flush=True)
+
     for t in tickers:
         symbol = t.get('symbol', '')
+
+        # 0. Check if symbol is actually a valid TRADING perpetual contract in this environment
+        if valid_symbols and symbol not in valid_symbols:
+            continue
 
         # 1. Must be a USDT perpetual pair
         if not symbol.endswith('USDT'):
@@ -109,6 +127,8 @@ def fetch_top_symbols():
         candidates = []
         for t in tickers:
             symbol = t.get('symbol', '')
+            if valid_symbols and symbol not in valid_symbols:
+                continue
             if not symbol.endswith('USDT') or symbol in MOCK_TOKENS_BLACKLIST or symbol in STABLECOIN_BLACKLIST or symbol in VIP_SYMBOLS or symbol in BLACKLISTED_SYMBOLS:
                 continue
             candidates.append({

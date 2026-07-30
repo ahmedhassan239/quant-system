@@ -2429,19 +2429,6 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                     session.rollback()
                                     print(f"Warning: Failed to persist partial TP state to DB: {e}", flush=True)
 
-                    # Strict Trend Direction Enforcement
-                    if (db_pos_direction == 'LONG' and macro_trend == 'DOWNTREND') or \
-                       (db_pos_direction == 'SHORT' and macro_trend == 'UPTREND'):
-                        print(f"🚨 [{symbol}] Counter-trend position detected (Direction: {db_pos_direction}, Macro: {macro_trend}). Closing immediately.", flush=True)
-                        portfolio['position_direction'] = db_pos_direction
-                        portfolio['asset_balance'] = pos_info['size']
-                        portfolio['average_entry_price'] = db_entry_price
-                        _close_position_handler(
-                            portfolio, current_price, symbol, session, 'TREND_REVERSAL',
-                            futures_client, bullish_ob, bearish_ob, current_rsi,
-                            current_zscore, macro_info
-                        )
-                        return False # Early return since position is closed
 
                     # Preserve existing local SL, or only calculate new SL if it's a completely new execution
                     sl_val = portfolio.get('stop_loss_price')
