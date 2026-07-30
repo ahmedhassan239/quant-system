@@ -742,6 +742,15 @@ class StrategyRouter:
             regime_meta=regime_meta,
         )
 
+        # 4. HARD FILTER: Strict Macro-Trend Alignment
+        if decision in ('LONG', 'SHORT'):
+            if macro_trend == 'UPTREND' and decision != 'LONG':
+                logger.info(f"[{symbol}] HARD FILTER: Dropping {decision} signal (Macro Trend is UPTREND)")
+                decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
+            elif macro_trend == 'DOWNTREND' and decision != 'SHORT':
+                logger.info(f"[{symbol}] HARD FILTER: Dropping {decision} signal (Macro Trend is DOWNTREND)")
+                decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
+
         return regime, decision, strategy_type, new_stop_loss, regime_meta
 
 
