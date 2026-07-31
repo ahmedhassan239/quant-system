@@ -81,7 +81,7 @@ BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
 # ──────────────────────────────────────────────────────────────────────
 #  FUTURES POSITION DEFAULTS
 # ──────────────────────────────────────────────────────────────────────
-FUTURES_LEVERAGE = int(os.environ.get("FUTURES_LEVERAGE", "3"))
+FUTURES_LEVERAGE = int(os.environ.get("FUTURES_LEVERAGE", "1"))
 FUTURES_MARGIN_TYPE = os.environ.get("FUTURES_MARGIN_TYPE", "ISOLATED")
 
 # ──────────────────────────────────────────────────────────────────────
