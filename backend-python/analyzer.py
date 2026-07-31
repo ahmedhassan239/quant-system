@@ -33,7 +33,13 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     TESTNET_FORCE_TRADES, HARD_STOP_LOSS_PCT, STOP_LOSS_PCT,
                     MAX_GLOBAL_POSITIONS, TSL_ACTIVATION_PCT, TSL_TRAIL_PCT,
                     TRAILING_ACTIVATE_PCT, TRAILING_DISTANCE_PCT,
-                    ATR_PERIOD, REGIME_RISK_PARAMS)
+                    ATR_PERIOD, REGIME_RISK_PARAMS,
+                    # Strategy D — Crash Catcher (Extreme Mean Reversion Engine)
+                    CRASH_CATCHER_ZSCORE_LONG, CRASH_CATCHER_ZSCORE_SHORT,
+                    CRASH_CATCHER_RSI_LONG, CRASH_CATCHER_RSI_SHORT,
+                    CRASH_CATCHER_VOL_MULT, CRASH_CATCHER_VOL_MA_PERIOD,
+                    CRASH_CATCHER_WICK_RATIO, CRASH_CATCHER_SL_BUFFER_PCT,
+                    CRASH_CATCHER_TSL_ATR_MULT, CRASH_CATCHER_ALLOC_PCT)
 from futures_executor import (open_position, close_position, get_futures_balance,
                               get_position_info, count_all_open_positions, set_stop_loss_order,
                               update_stop_loss_price, execute_partial_tp_scaleout)
@@ -448,8 +454,223 @@ def detect_whale_strike(df, threshold=None):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  PYRAMIDING (SCALING INTO WINNERS) HELPERS
+#  STRATEGY D — CRASH CATCHER (EXTREME MEAN REVERSION ENGINE)
 # ══════════════════════════════════════════════════════════════════════
+
+def evaluate_extreme_reversion(
+    df: pd.DataFrame,
+    current_price: float,
+    current_rsi: float | None,
+    current_zscore: float | None,
+    current_atr: float,
+    in_position: bool,
+    active_count: int,
+    max_positions: int,
+) -> dict | None:
+    """
+    Strategy D: Crash Catcher — Extreme Mean Reversion Engine.
+
+    Activates ONLY during statistically extreme anomalies — events so
+    rare that the primary trend-following engine is explicitly frozen
+    (STORM regime, Z-Score < -3.0). This module is the second, concurrent
+    execution logic that capitalises on the capitulation wicks and short
+    squeezes that *follow* those crashes.
+
+    ── Trigger Conditions (The Anomaly) ──────────────────────────────
+      LONG  reversion: Z-Score < -3.5  AND  RSI < 25
+      SHORT reversion: Z-Score > +3.5  AND  RSI > 75
+
+    ── Confirmation (Catching the Bounce, not the Knife) ─────────────
+      Gate 1 — Volume Anomaly:
+        Current candle volume > CRASH_CATCHER_VOL_MULT (5x) times the
+        CRASH_CATCHER_VOL_MA_PERIOD (20-period) volume moving average.
+        Indicates Whale absorption or forced capitulation prints.
+
+      Gate 2 — Pin Bar / Reversal Wick:
+        LONG  → lower wick ratio > CRASH_CATCHER_WICK_RATIO (60%)
+                i.e.  (open/close_min − low) / (high − low) > 0.6
+                      The bottom is being aggressively defended.
+        SHORT → upper wick ratio > CRASH_CATCHER_WICK_RATIO (60%)
+                i.e.  (high − open/close_max) / (high − low) > 0.6
+                      The top is being aggressively rejected.
+
+    ── Risk Management (Hit and Run) ─────────────────────────────────
+      Stop-Loss : wick tip ± CRASH_CATCHER_SL_BUFFER_PCT (0.1% buffer).
+                  LONG  SL = candle_low  * (1 - 0.001)
+                  SHORT SL = candle_high * (1 + 0.001)
+                  If price pierces the wick, the thesis is wrong. Exit.
+
+      TSL        : CRASH_CATCHER_TSL_ATR_MULT (0.5x ATR) activation —
+                  activates much earlier than the primary engine (2x ATR)
+                  to lock in the rubber-band bounce aggressively.
+
+    ── Bypass Permissions (ONLY for this module) ─────────────────────
+      ✅ Bypasses the STORM Freeze restriction — by running BEFORE the
+         STORM override check in run_analyzer().
+      ✅ Bypasses the Macro Hard Filter — by never passing through
+         StrategyRouter.route(), which is where the filter lives.
+
+    ── Architecture note ─────────────────────────────────────────────
+      Pure function — no side effects, no DB access, no Telegram calls.
+      The caller (run_analyzer) is responsible for execution and logging.
+
+    Args:
+        df            : 15m DataFrame with 'open','high','low','close','volume'
+                        already populated. Must have at least 21 rows.
+        current_price : Latest close price.
+        current_rsi   : Pre-computed 14-period RSI for the current candle.
+        current_zscore: Pre-computed Z-Score (50-period SMA based).
+        current_atr   : Pre-computed 14-period ATR.
+        in_position   : True if this symbol already has an open position.
+        active_count  : Number of currently active positions across all symbols.
+        max_positions : Hard cap on concurrent open positions.
+
+    Returns:
+        dict | None:
+          On success:  {
+            'direction'    : 'LONG' | 'SHORT',
+            'strategy_type': 'CRASH_CATCHER_LONG' | 'CRASH_CATCHER_SHORT',
+            'stop_loss'    : float,    # wick-based SL with buffer
+            'wick_ratio'   : float,    # diagnostic (for logs/alerts)
+            'vol_ratio'    : float,    # diagnostic (for logs/alerts)
+            'candle_low'   : float,
+            'candle_high'  : float,
+            'candle_open'  : float,
+            'candle_close' : float,
+          }
+          On failure: None
+    """
+    # ── Pre-flight checks ──────────────────────────────────────────────
+    if in_position:
+        return None  # Never enter on a symbol that already has an open slot
+
+    if active_count >= max_positions:
+        return None  # No free slots
+
+    if current_rsi is None or current_zscore is None:
+        return None  # Indicators not yet warm (insufficient history)
+
+    min_rows = CRASH_CATCHER_VOL_MA_PERIOD + 1
+    if len(df) < min_rows:
+        return None  # Not enough candles to compute volume MA
+
+    # ── Gate 0: Z-Score + RSI Anomaly (The Trigger) ───────────────────
+    long_trigger  = (current_zscore <= CRASH_CATCHER_ZSCORE_LONG  and
+                     current_rsi    <  CRASH_CATCHER_RSI_LONG)
+    short_trigger = (current_zscore >= CRASH_CATCHER_ZSCORE_SHORT and
+                     current_rsi    >  CRASH_CATCHER_RSI_SHORT)
+
+    if not long_trigger and not short_trigger:
+        return None  # No anomaly — primary engine handles this cycle
+
+    direction = 'LONG' if long_trigger else 'SHORT'
+
+    # ── Gate 1: Volume Anomaly — Whale Absorption / Capitulation Print ─
+    # Use prior candles (shift(1)) as the baseline to avoid look-ahead
+    # bias on the current candle being evaluated.
+    vol_ma_series = df['volume'].shift(1).rolling(CRASH_CATCHER_VOL_MA_PERIOD).mean()
+    baseline_vol  = vol_ma_series.iloc[-1]
+    current_vol   = float(df['volume'].iloc[-1])
+
+    if pd.isna(baseline_vol) or baseline_vol <= 0:
+        logger.debug(
+            f"[CRASH CATCHER] Volume MA not yet available "
+            f"(need {CRASH_CATCHER_VOL_MA_PERIOD} prior candles). Skipping."
+        )
+        return None
+
+    vol_ratio = current_vol / baseline_vol
+
+    if vol_ratio < CRASH_CATCHER_VOL_MULT:
+        logger.debug(
+            f"[CRASH CATCHER] {direction} anomaly detected "
+            f"(Z={current_zscore:+.2f}, RSI={current_rsi:.1f}) but "
+            f"volume gate FAILED: {vol_ratio:.2f}x < {CRASH_CATCHER_VOL_MULT}x required."
+        )
+        return None
+
+    # ── Gate 2: Reversal Candlestick Pattern (Pin Bar / Capitulation Wick) ─
+    last_candle  = df.iloc[-1]
+    candle_open  = float(last_candle['open'])
+    candle_close = float(last_candle['close'])
+    candle_high  = float(last_candle['high'])
+    candle_low   = float(last_candle['low'])
+
+    candle_range = candle_high - candle_low
+
+    if candle_range <= 0:
+        # Doji with zero range — cannot compute wick ratios reliably
+        logger.debug(f"[CRASH CATCHER] Zero candle range detected for {direction}. Skipping.")
+        return None
+
+    if direction == 'LONG':
+        # Lower wick = distance from candle_low to the body bottom
+        body_bottom = min(candle_open, candle_close)
+        lower_wick  = body_bottom - candle_low
+        wick_ratio  = lower_wick / candle_range
+
+        if wick_ratio < CRASH_CATCHER_WICK_RATIO:
+            logger.debug(
+                f"[CRASH CATCHER] LONG anomaly + volume gate PASSED "
+                f"(Z={current_zscore:+.2f}, Vol={vol_ratio:.1f}x) but "
+                f"Pin Bar gate FAILED: lower wick ratio {wick_ratio:.2f} "
+                f"< {CRASH_CATCHER_WICK_RATIO} required. Bottom not yet defended."
+            )
+            return None
+
+        # SL: just below the wick low with a 0.1% buffer — if we breach this, thesis is dead
+        stop_loss = candle_low * (1.0 - CRASH_CATCHER_SL_BUFFER_PCT)
+
+    else:  # direction == 'SHORT'
+        # Upper wick = distance from the body top to candle_high
+        body_top   = max(candle_open, candle_close)
+        upper_wick = candle_high - body_top
+        wick_ratio = upper_wick / candle_range
+
+        if wick_ratio < CRASH_CATCHER_WICK_RATIO:
+            logger.debug(
+                f"[CRASH CATCHER] SHORT anomaly + volume gate PASSED "
+                f"(Z={current_zscore:+.2f}, Vol={vol_ratio:.1f}x) but "
+                f"Pin Bar gate FAILED: upper wick ratio {wick_ratio:.2f} "
+                f"< {CRASH_CATCHER_WICK_RATIO} required. Top not yet rejected."
+            )
+            return None
+
+        # SL: just above the wick high with a 0.1% buffer
+        stop_loss = candle_high * (1.0 + CRASH_CATCHER_SL_BUFFER_PCT)
+
+    # ── All three gates passed — signal confirmed ──────────────────────
+    strategy_type = f'CRASH_CATCHER_{direction}'
+
+    logger.warning(
+        f"🚨 [CRASH CATCHER] {direction} triggered via Extreme Mean Reversion | "
+        f"Z-Score: {current_zscore:+.3f} | RSI: {current_rsi:.1f} | "
+        f"Volume: {vol_ratio:.1f}x MA | Wick ratio: {wick_ratio:.2f} | "
+        f"SL: ${stop_loss:.4f} (wick {'low' if direction == 'LONG' else 'high'} "
+        f"± {CRASH_CATCHER_SL_BUFFER_PCT*100:.1f}%)"
+    )
+    print(
+        f"🚨 [CRASH CATCHER] {direction} triggered via Extreme Mean Reversion | "
+        f"Z: {current_zscore:+.3f} | RSI: {current_rsi:.1f} | "
+        f"Vol: {vol_ratio:.1f}x | Wick: {wick_ratio:.2f} | "
+        f"SL: ${stop_loss:.4f}",
+        flush=True,
+    )
+
+    return {
+        'direction'    : direction,
+        'strategy_type': strategy_type,
+        'stop_loss'    : stop_loss,
+        'wick_ratio'   : round(wick_ratio, 3),
+        'vol_ratio'    : round(vol_ratio, 2),
+        'candle_low'   : candle_low,
+        'candle_high'  : candle_high,
+        'candle_open'  : candle_open,
+        'candle_close' : candle_close,
+    }
+
+
+
 
 def evaluate_pyramid_scale_in(portfolio, current_price, symbol, session, futures_client=None):
     """
@@ -1796,10 +2017,51 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         log_to_db(session, symbol, "ENTRY", msg)
                         send_telegram_alert(msg)
 
-            # ── STORM OVERRIDE: Freeze all new entries ──
-            if active_regime.value == 'STORM':
-                decision = 'WAIT'
-                print(f"⏸️ [{symbol}] STORM Regime Active — Freezing New Entries", flush=True)
+            # ── STRATEGY D: Crash Catcher (Extreme Mean Reversion Engine) ──────
+            # ⚡ BYPASS PERMISSIONS: This block runs BEFORE the STORM freeze and
+            #    BEFORE the StrategyRouter (which contains the Macro Hard Filter).
+            #    It is the ONLY module authorised to place market orders during a
+            #    STORM regime and to take counter-trend positions.
+            # ────────────────────────────────────────────────────────────────────
+            if decision == 'WAIT':
+                cc_signal = evaluate_extreme_reversion(
+                    df=df,
+                    current_price=current_price,
+                    current_rsi=current_rsi,
+                    current_zscore=current_zscore,
+                    current_atr=current_atr,
+                    in_position=in_position,
+                    active_count=active_count,
+                    max_positions=MAX_CONCURRENT_POSITIONS,
+                )
+
+                if cc_signal:
+                    decision          = cc_signal['direction']
+                    strategy_type     = cc_signal['strategy_type']
+                    new_stop_loss     = cc_signal['stop_loss']
+                    active_mode_value = 'CRASH_CATCHER'
+
+                    # Override TSL parameters with Crash Catcher's aggressive profile
+                    # (early activation at 0.5x ATR, tight trail at 0.3x ATR)
+                    tsl_atr_activation_mult = CRASH_CATCHER_TSL_ATR_MULT
+                    tsl_atr_trail_mult      = REGIME_RISK_PARAMS['CRASH_CATCHER']['TSL_ATR_TRAIL_MULT']
+                    partial_tp_pct          = REGIME_RISK_PARAMS['CRASH_CATCHER']['PARTIAL_TP_PCT']
+
+                    storm_bypass_msg = (
+                        f"⚡ [CRASH CATCHER] STORM Freeze BYPASSED for {symbol} {decision} "
+                        f"(counter-trend override authorised) | "
+                        f"Z: {current_zscore:+.3f} | RSI: {current_rsi:.1f} | "
+                        f"Vol: {cc_signal['vol_ratio']:.1f}x | Wick: {cc_signal['wick_ratio']:.2f} | "
+                        f"SL: ${new_stop_loss:.4f} | Regime: {active_regime.value}"
+                    )
+                    print(storm_bypass_msg, flush=True)
+                    log_to_db(session, symbol, "ENTRY", storm_bypass_msg)
+
+            # ── STORM OVERRIDE: Freeze all new entries (primary engine only) ──
+            # NOTE: Crash Catcher (Strategy D) already set decision above if it
+            # fired. If decision is still 'WAIT', the STORM freeze applies.
+            if active_regime.value == 'STORM' and decision == 'WAIT':
+                print(f"⏸️ [{symbol}] STORM Regime Active — Freezing New Entries (primary engine)", flush=True)
 
             # ── STRATEGY ROUTER: Regime-Aware Entry Logic ──
             if decision == 'WAIT' and active_regime.value != 'STORM':
@@ -2048,7 +2310,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                 new_stop_loss = float(current_price) * 0.985
                         elif dca_level > 0:
                             new_stop_loss = max(float(new_stop_loss), portfolio['average_entry_price'])
-                        
+
                         portfolio['stop_loss_price'] = float(new_stop_loss)
                         portfolio['stop_loss'] = float(new_stop_loss)
                         if dca_level == 0:
@@ -2059,7 +2321,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
 
-                        # Generate reason_msg before DB insertion
+                        # Generate reason_msg and strategy_name before DB insertion
                         if strategy_type == 'PULLBACK':
                             strategy_name = f"{tier_str} [Z:{abs_z:.1f}, OB:{vol_ratio:.1f}x] - Pullback"
                             ob_low = bullish_ob['low'] if bullish_ob else 0
@@ -2073,10 +2335,15 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             strategy_name = f"{tier_str} - Trend Align"
                             reason_msg = (f"{strategy_name} | Macro: {macro_trend} | "
                                           f"Price ${current_price:.2f} > SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY")
+                        elif strategy_type in ('CRASH_CATCHER_LONG', 'CRASH_CATCHER_SHORT'):
+                            _cc = cc_signal if cc_signal else {}
+                            strategy_name = f"CRASH_CATCHER [Z:{abs_z:.1f}, Vol:{_cc.get('vol_ratio',0):.1f}x, Wick:{_cc.get('wick_ratio',0):.2f}] - Extreme MR"
+                            reason_msg = (f"{strategy_name} | SL: wick_low=${new_stop_loss:.4f} | "
+                                          f"TSL: {CRASH_CATCHER_TSL_ATR_MULT}x ATR | Counter-trend bypass active")
                         else:
                             strategy_name = f"{tier_str} - Unknown"
                             reason_msg = f"Strategy: Unknown"
-                        
+
                         portfolio['strategy'] = strategy_name
 
                         portfolio_record = PortfolioState(
@@ -2120,7 +2387,8 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         # ── Telegram alert with Active Mode badge ──
                         alert_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
-                        mode_label = MarketRegime(active_mode_value).telegram_label if active_mode_value else '[TREND 🚀]'
+                        _valid_regimes = [r.value for r in MarketRegime]
+                        mode_label = MarketRegime(active_mode_value).telegram_label if active_mode_value in _valid_regimes else '[CRASH CATCHER 🚨]'
 
                         if strategy_type == 'PULLBACK':
                             alert_reason = (f"- Strategy: A (Pullback)\n"
@@ -2142,26 +2410,37 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             alert_reason = (f"- Strategy: Mean Reversion (Range)\n"
                                           f"- RSI: {current_rsi:.1f} (oversold <35)\n"
                                           f"- Bullish OB touch: ${bullish_ob['low']:.2f}–${bullish_ob['high']:.2f}")
+                        elif strategy_type in ('CRASH_CATCHER_LONG', 'CRASH_CATCHER_SHORT'):
+                            _cc = cc_signal if cc_signal else {}
+                            alert_reason = (
+                                f"- Strategy: 🚨 CRASH CATCHER (Extreme Mean Reversion)\n"
+                                f"- Trigger: Z-Score {current_zscore:+.3f} (≤{CRASH_CATCHER_ZSCORE_LONG}) + RSI {current_rsi:.1f} (<{CRASH_CATCHER_RSI_LONG})\n"
+                                f"- Volume Anomaly: {_cc.get('vol_ratio', 0):.1f}x MA ({CRASH_CATCHER_VOL_MULT}x threshold) — Whale absorption detected\n"
+                                f"- Pin Bar: Lower wick ratio {_cc.get('wick_ratio', 0):.2f} (>{CRASH_CATCHER_WICK_RATIO}) — Bottom defended\n"
+                                f"- SL: ${new_stop_loss:.4f} (wick low −0.1% buffer) — WICK BREACH = EXIT\n"
+                                f"- TSL: Activates at {CRASH_CATCHER_TSL_ATR_MULT}x ATR (rubber-band lock-in)\n"
+                                f"- ⚡ STORM Freeze BYPASSED — Counter-trend override active"
+                            )
                         else:
                             alert_reason = f"- Strategy: Unknown"
 
                         alert_msg = (
-                            f"{ALERT_PREFIX} \U0001f6a8 *QUANT ALERT: {'SCALE-UP LONG' if dca_level > 0 else 'OPEN LONG'}* \U0001f6a8\n"
+                            f"{ALERT_PREFIX} 🚨 *QUANT ALERT: {'SCALE-UP LONG' if dca_level > 0 else 'OPEN LONG'}* 🚨\n"
                             f"\n"
                             f"🤖 Active Mode: {mode_label}\n"
                             f"*Symbol:* {symbol}\n"
                             f"*Price:* ${float(current_price):.2f}\n"
                             f"*Time:* {alert_time}\n"
                             f"\n"
-                            f"\U0001f4a1 *MTF Confluence:*\n"
+                            f"💡 *MTF Confluence:*\n"
                             f"{alert_reason}\n"
                             f"\n"
-                            f"\U0001f6e1 *Risk Management:*\n"
+                            f"🛡 *Risk Management:*\n"
                             f"- Entry Price: ${float(portfolio['average_entry_price']):.2f}\n"
                             f"- Stop-Loss: ${new_stop_loss:.2f} (Dynamic)\n"
                             f"- Trailing Stop: {tsl_atr_activation_mult}x ATR act / {tsl_atr_trail_mult}x ATR trail\n"
                             f"\n"
-                            f"\U0001f4bc *Virtual Portfolio:*\n"
+                            f"💼 *Virtual Portfolio:*\n"
                             f"- Slot Budget: ${SLOT_BUDGET:,.0f}\n"
                             f"- USDT Balance: ${portfolio['usdt_balance']:.2f}\n"
                             f"- Asset Balance: {portfolio['asset_balance']:.6f}\n"
@@ -2170,74 +2449,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         )
                         if not futures_client or order:
                             send_telegram_alert(alert_msg)
-
-                # ── Execute SHORT (open new short position or Scale-Up) ──
-                elif decision == 'SHORT':
-                    # Determine Conviction Tier
-                    vol_ratio = 0.0
-                    if strategy_type == 'PULLBACK' and bearish_ob and 'vol_ratio' in bearish_ob:
-                        vol_ratio = bearish_ob['vol_ratio']
-                    elif strategy_type == 'BREAKOUT' and bearish_breakout and 'vol_ratio' in bearish_breakout:
-                        vol_ratio = bearish_breakout['vol_ratio']
-
-                    abs_z = abs(current_zscore) if current_zscore else 0.0
-
-                    allocation_pct = 0.05
-                    tier_str = "Tier 3"
-                    if abs_z >= 2.0 and vol_ratio >= 4.0:
-                        allocation_pct = 0.20
-                        tier_str = "Tier 1"
-                    elif abs_z >= 1.0 and vol_ratio >= 2.0:
-                        allocation_pct = 0.10
-                        tier_str = "Tier 2"
-
-                    if futures_client:
-                        actual_balance = get_futures_balance(futures_client)
-                    else:
-                        actual_balance = portfolio.get('usdt_balance', 0.0)
-
-                    spend = actual_balance * allocation_pct
-
-                    if actual_balance < spend or actual_balance <= 0:
-                        print(f"⚠️ Skipping execution: Insufficient USDT balance ({actual_balance:.2f} USDT available)", flush=True)
-                        return
-
-                    if portfolio['usdt_balance'] >= spend:
-                        effective_usdt = spend * (1 - TRADING_FEE)
-                        asset_shorted = effective_usdt / float(current_price)
-
-                        old_asset = float(portfolio.get('asset_balance', 0) or 0)
-                        old_avg = float(portfolio.get('average_entry_price', 0) or 0)
-                        old_val = old_asset * old_avg
-                        new_val = asset_shorted * float(current_price)
-
-                        portfolio['asset_balance'] = round(old_asset + asset_shorted, 6)
-                        portfolio['average_entry_price'] = (old_val + new_val) / portfolio['asset_balance']
-                        portfolio['dca_level'] = dca_level + 1
-                        portfolio['last_exec_price'] = float(current_price)
-                        portfolio['total_cost'] = float(portfolio.get('total_cost', 0)) + effective_usdt
-                        portfolio['usdt_balance'] -= spend
-                        portfolio['position_direction'] = 'SHORT'
-                        
-                        # Set SL to min(old SL, new average entry price) to cover the scale-up cost
-                        if dca_level == 0:
-                            if not new_stop_loss or float(new_stop_loss) <= 0.0:
-                                new_stop_loss = float(current_price) * 1.015
-                        elif dca_level > 0:
-                            new_stop_loss = min(float(new_stop_loss), portfolio['average_entry_price'])
-                            
-                        portfolio['stop_loss_price'] = float(new_stop_loss)
-                        portfolio['stop_loss'] = float(new_stop_loss)
-                        
-                        if dca_level == 0:
-                            portfolio['lowest_price_since_entry'] = float(current_price)
-                            portfolio['highest_price_since_entry'] = None
-
-                        order = None
-
-                        total_value = portfolio['usdt_balance'] + (float(portfolio['asset_balance']) * float(current_price))
-
-                        # Generate reason_msg before DB insertion
+                        # Generate reason_msg and strategy_name before DB insertion
                         if strategy_type == 'PULLBACK':
                             strategy_name = f"{tier_str} [Z:{abs_z:.1f}, OB:{vol_ratio:.1f}x] - Pullback"
                             ob_low = bearish_ob['low'] if bearish_ob else 0
@@ -2251,6 +2463,11 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             strategy_name = f"{tier_str} - Trend Align"
                             reason_msg = (f"{strategy_name} | Macro: {macro_trend} | "
                                           f"Price ${current_price:.2f} < SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY")
+                        elif strategy_type in ('CRASH_CATCHER_LONG', 'CRASH_CATCHER_SHORT'):
+                            _cc = cc_signal if cc_signal else {}
+                            strategy_name = f"CRASH_CATCHER [Z:{abs_z:.1f}, Vol:{_cc.get('vol_ratio',0):.1f}x, Wick:{_cc.get('wick_ratio',0):.2f}] - Extreme MR"
+                            reason_msg = (f"{strategy_name} | SL: wick_high=${new_stop_loss:.4f} | "
+                                          f"TSL: {CRASH_CATCHER_TSL_ATR_MULT}x ATR | Counter-trend bypass active")
                         else:
                             strategy_name = f"{tier_str} - Unknown"
                             reason_msg = f"Strategy: Unknown"
@@ -2320,6 +2537,17 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             alert_reason = (f"- Strategy: Mean Reversion (Range)\n"
                                           f"- RSI: {current_rsi:.1f} (overbought >65)\n"
                                           f"- Bearish OB touch: ${bearish_ob['low']:.2f}–${bearish_ob['high']:.2f}")
+                        elif strategy_type in ('CRASH_CATCHER_LONG', 'CRASH_CATCHER_SHORT'):
+                            _cc = cc_signal if cc_signal else {}
+                            alert_reason = (
+                                f"- Strategy: \U0001f6a8 CRASH CATCHER (Extreme Mean Reversion)\n"
+                                f"- Trigger: Z-Score {current_zscore:+.3f} (\u2265+{CRASH_CATCHER_ZSCORE_SHORT}) + RSI {current_rsi:.1f} (>{CRASH_CATCHER_RSI_SHORT})\n"
+                                f"- Volume Anomaly: {_cc.get('vol_ratio', 0):.1f}x MA ({CRASH_CATCHER_VOL_MULT}x threshold) \u2014 Forced short squeeze detected\n"
+                                f"- Pin Bar: Upper wick ratio {_cc.get('wick_ratio', 0):.2f} (>{CRASH_CATCHER_WICK_RATIO}) \u2014 Top actively rejected\n"
+                                f"- SL: ${new_stop_loss:.4f} (wick high +0.1% buffer) \u2014 WICK BREACH = EXIT\n"
+                                f"- TSL: Activates at {CRASH_CATCHER_TSL_ATR_MULT}x ATR (rubber-band lock-in)\n"
+                                f"- \u26a1 Macro Hard Filter BYPASSED \u2014 Counter-trend override active"
+                            )
                         else:
                             alert_reason = f"- Strategy: Unknown"
 

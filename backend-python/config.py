@@ -150,6 +150,16 @@ REGIME_RISK_PARAMS = {
         'PARTIAL_TP_PCT': 0.005, # Eject very quickly
         'TSL_ATR_ACTIVATION_MULT': 0.5,
         'TSL_ATR_TRAIL_MULT': 0.3, # Immediate choke
+    },
+    'CRASH_CATCHER': {
+        # SL is wick-based (not ATR-based) — SL_ATR_MULT intentionally 0
+        'SL_ATR_MULT': 0.0,
+        # Aggressive first TP: exit 50% at 0.5% profit to secure the bounce
+        'PARTIAL_TP_PCT': 0.005,
+        # Activate TSL very early (0.5x ATR) to lock in the rubber-band pop
+        'TSL_ATR_ACTIVATION_MULT': 0.5,
+        # Trail tightly (0.3x ATR) — this is a hit-and-run strategy
+        'TSL_ATR_TRAIL_MULT': 0.3,
     }
 }
 
@@ -174,6 +184,25 @@ BREAKOUT_CONSOLIDATION_PERIOD = 20 # Lookback for consolidation zone
 
 # Strategy C — Whale Hunter (Volume Anomaly Detection)
 WHALE_VOLUME_MULTIPLIER = float(os.environ.get("WHALE_VOLUME_MULTIPLIER", "10.0")) # Volume spike > 10.0x 50-period volume SMA
+
+# ──────────────────────────────────────────────────────────────────────
+#  STRATEGY D — CRASH CATCHER (EXTREME MEAN REVERSION ENGINE)
+# ──────────────────────────────────────────────────────────────────────
+# Trigger thresholds (the anomaly gate)
+CRASH_CATCHER_ZSCORE_LONG   = float(os.environ.get("CC_ZSCORE_LONG",  "-3.5"))  # 15m Z-Score < -3.5 for LONG reversion
+CRASH_CATCHER_ZSCORE_SHORT  = float(os.environ.get("CC_ZSCORE_SHORT", "3.5"))   # 15m Z-Score > +3.5 for SHORT reversion
+CRASH_CATCHER_RSI_LONG      = float(os.environ.get("CC_RSI_LONG",     "25.0"))  # RSI < 25 (extreme oversold)
+CRASH_CATCHER_RSI_SHORT     = float(os.environ.get("CC_RSI_SHORT",    "75.0"))  # RSI > 75 (extreme overbought)
+
+# Confirmation gates (catching the bounce, not the knife)
+CRASH_CATCHER_VOL_MULT      = float(os.environ.get("CC_VOL_MULT",      "5.0"))  # Candle volume > 5x MA (whale absorption)
+CRASH_CATCHER_VOL_MA_PERIOD = int(os.environ.get(  "CC_VOL_MA_PERIOD", "20"))   # Volume MA lookback period
+CRASH_CATCHER_WICK_RATIO    = float(os.environ.get("CC_WICK_RATIO",    "0.6"))  # Pin Bar: wick > 60% of total candle range
+
+# Risk management (tight SL at wick, aggressive TSL)
+CRASH_CATCHER_SL_BUFFER_PCT = float(os.environ.get("CC_SL_BUFFER",     "0.001")) # 0.1% buffer beyond wick tip for SL
+CRASH_CATCHER_TSL_ATR_MULT  = float(os.environ.get("CC_TSL_ATR_MULT",  "0.5"))  # TSL activates at 0.5x ATR (early lock-in)
+CRASH_CATCHER_ALLOC_PCT     = float(os.environ.get("CC_ALLOC_PCT",     "0.05")) # 5% wallet allocation (fixed, counter-trend prudence)
 
 # Pyramiding Strategy (Scaling Into Winners)
 MAX_SCALE_INS = 2                      # Max 2 scale-ins per winning position
