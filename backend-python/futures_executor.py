@@ -190,6 +190,12 @@ def open_position(client: Client, symbol: str, direction: str,
             logger.error(f"[{symbol}] Calculated quantity is 0 after rounding")
             return None
 
+        # Pre-validation for Pyramiding/Scale-In: Check if notional value is >= $5
+        notional_value = quantity * mark_price
+        if notional_value < 5.0:
+            logger.warning(f"[{symbol}] Pyramid order skipped: Notional value < $5 (Calculated: ${notional_value:.2f})")
+            return None
+
         side = Client.SIDE_BUY if direction == 'LONG' else Client.SIDE_SELL
 
         logger.info(f"[{symbol}] OPENING {direction} | Side: {side} | "
@@ -334,6 +340,10 @@ def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
     # ── Clear existing open orders (e.g. SL covering 100% position) to prevent -2022 ReduceOnly rejection ──
     _cancel_all_symbol_orders(client, symbol)
 
+    # Add a small delay to ensure Binance matching engine clears the order quota
+    import time
+    time.sleep(0.5)
+
     try:
         order = client.futures_create_order(
             symbol=symbol,
@@ -361,7 +371,7 @@ def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
 
     # Auto Break-Even: immediately set stop loss for remaining position to entry_price
     logger.info(f"[{symbol}] 🛡️ AUTO BREAK-EVEN: Moving Stop Loss for remaining {remaining_qty} to Entry Price ${entry_price:,.4f}")
-    sl_order = set_stop_loss_order(client, symbol, direction, entry_price, trailing_distance=trailing_distance, atr_val=atr_val)
+    sl_order = set_stop_loss_order(client, symbol, direction, entry_price, trailing_distance=trailing_distance, atr_val=atr_val, quantity=remaining_qty)
     if not sl_order:
         logger.warning(f"[{symbol}] ⚠️ Note: Could not immediately set Break-Even stop loss order after partial TP.")
     else:
@@ -483,6 +493,7 @@ def _round_quantity(client: Client, symbol: str, raw_qty: float) -> float:
     """
     Round a quantity strictly to the exchange-allowed step size (precision)
     for a given Futures symbol without floating-point modulo artifacts.
+    Also ensures the quantity is bounded by minQty and maxQty limits.
     """
     try:
         info = client.futures_exchange_info()
@@ -491,10 +502,14 @@ def _round_quantity(client: Client, symbol: str, raw_qty: float) -> float:
                 for f in s['filters']:
                     if f['filterType'] == 'LOT_SIZE':
                         step_size = float(f['stepSize'])
+                        min_qty = float(f['minQty'])
+                        max_qty = float(f['maxQty'])
                         if step_size > 0:
-                            precision = len(f['stepSize'].rstrip('0').split('.')[-1]) if '.' in f['stepSize'] else 0
                             import math
-                            steps = math.floor(round(raw_qty / step_size, 8))
+                            # Bound the quantity to Binance minimum and maximum limits
+                            bounded_qty = max(min_qty, min(raw_qty, max_qty))
+                            precision = len(f['stepSize'].rstrip('0').split('.')[-1]) if '.' in f['stepSize'] else 0
+                            steps = math.floor(round(bounded_qty / step_size, 8))
                             rounded = round(steps * step_size, precision)
                             return float(rounded)
         # Fallback: 5 decimal places
@@ -529,7 +544,8 @@ def _round_price(client: Client, symbol: str, raw_price: float) -> float:
 
 
 def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price: float,
-                        trailing_distance: float = None, atr_val: float = None) -> dict | None:
+                        trailing_distance: float = None, atr_val: float = None,
+                        quantity: float = None) -> dict | None:
     """
     Cancel existing open orders (e.g. old SL) and place a new STOP_MARKET reduce-only order.
     Supports dynamic ATR trailing stop loss tracking.
@@ -556,13 +572,20 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
 
         # 4. Place order wrapped in try-except with safe error handling
         try:
-            order = client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type='STOP_MARKET',
-                stopPrice=rounded_price,
-                closePosition='true'
-            )
+            order_params = {
+                'symbol': symbol,
+                'side': side,
+                'type': 'STOP_MARKET',
+                'stopPrice': rounded_price,
+                'timeInForce': 'GTC'
+            }
+            if quantity:
+                order_params['quantity'] = quantity
+                order_params['reduceOnly'] = True
+            else:
+                order_params['closePosition'] = 'true'
+
+            order = client.futures_create_order(**order_params)
         except BinanceAPIException as api_err:
             if _check_api_exception_for_blacklist(symbol, api_err):
                 logger.warning(f"[{symbol}] Gracefully caught SL API restriction [{api_err.code}]. Auto-blacklisted for session.")
@@ -592,13 +615,15 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
 
 
 def update_stop_loss_price(client: Client, symbol: str, direction: str, stop_price: float,
-                           trailing_distance: float = None, atr_val: float = None) -> dict | None:
+                           trailing_distance: float = None, atr_val: float = None,
+                           quantity: float = None) -> dict | None:
     """
     Real-time adjustment of Stop Loss order when dynamic ATR changes or price moves.
     Delegates directly to set_stop_loss_order.
     """
     return set_stop_loss_order(client, symbol, direction, stop_price,
-                               trailing_distance=trailing_distance, atr_val=atr_val)
+                               trailing_distance=trailing_distance, atr_val=atr_val,
+                               quantity=quantity)
 
 
 # ──────────────────────────────────────────────────────────────────────
