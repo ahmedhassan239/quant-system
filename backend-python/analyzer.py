@@ -34,6 +34,8 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     MAX_GLOBAL_POSITIONS, TSL_ACTIVATION_PCT, TSL_TRAIL_PCT,
                     TRAILING_ACTIVATE_PCT, TRAILING_DISTANCE_PCT,
                     ATR_PERIOD, REGIME_RISK_PARAMS,
+                    # Alpha Mode — Micro-Management Kill Switches
+                    DISABLE_STAGNANT_EXIT, DISABLE_TREND_REVERSAL_EJECT,
                     # Strategy D — Crash Catcher (Extreme Mean Reversion Engine)
                     CRASH_CATCHER_ZSCORE_LONG, CRASH_CATCHER_ZSCORE_SHORT,
                     CRASH_CATCHER_RSI_LONG, CRASH_CATCHER_RSI_SHORT,
@@ -1535,34 +1537,41 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
             trailing_active = portfolio.get('trailing_active', False)
 
             # ── 1. Trend Invalidation / Emergency Eject ──
-            # ABSOLUTE OVERRIDE: If the macro trend has reversed against our
-            # open position, the core thesis is broken. Exit immediately at
-            # market price — do NOT wait for TSL/SL to be hit.
-            if pos_direction == 'LONG' and macro_trend == 'DOWNTREND':
-                msg = (f"🚨🔴 [{symbol}] TREND REVERSAL EJECT — LONG position vs "
-                       f"DOWNTREND macro. Thesis invalidated. CLOSING IMMEDIATELY "
-                       f"at ${cp:.2f} (Entry: ${ep:.2f})")
-                print(msg, flush=True)
-                log_to_db(session, symbol, "EXIT", msg)
-                portfolio = _close_position_handler(
-                    portfolio, current_price, symbol, session,
-                    'TREND_REVERSAL_EJECT',
-                    futures_client, bullish_ob, bearish_ob,
-                    current_rsi, current_zscore, macro_info)
-                risk_exit_triggered = True
+            # ALPHA MODE: When DISABLE_TREND_REVERSAL_EJECT is True, the immediate
+            # macro-flip eject is bypassed. The Dynamic ATR TSL handles exits organically.
+            if not DISABLE_TREND_REVERSAL_EJECT:
+                if pos_direction == 'LONG' and macro_trend == 'DOWNTREND':
+                    msg = (f"🚨🔴 [{symbol}] TREND REVERSAL EJECT — LONG position vs "
+                           f"DOWNTREND macro. Thesis invalidated. CLOSING IMMEDIATELY "
+                           f"at ${cp:.2f} (Entry: ${ep:.2f})")
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "EXIT", msg)
+                    portfolio = _close_position_handler(
+                        portfolio, current_price, symbol, session,
+                        'TREND_REVERSAL_EJECT',
+                        futures_client, bullish_ob, bearish_ob,
+                        current_rsi, current_zscore, macro_info)
+                    risk_exit_triggered = True
 
-            elif pos_direction == 'SHORT' and macro_trend == 'UPTREND':
-                msg = (f"🚨🟢 [{symbol}] TREND REVERSAL EJECT — SHORT position vs "
-                       f"UPTREND macro. Thesis invalidated. CLOSING IMMEDIATELY "
-                       f"at ${cp:.2f} (Entry: ${ep:.2f})")
-                print(msg, flush=True)
-                log_to_db(session, symbol, "EXIT", msg)
-                portfolio = _close_position_handler(
-                    portfolio, current_price, symbol, session,
-                    'TREND_REVERSAL_EJECT',
-                    futures_client, bullish_ob, bearish_ob,
-                    current_rsi, current_zscore, macro_info)
-                risk_exit_triggered = True
+                elif pos_direction == 'SHORT' and macro_trend == 'UPTREND':
+                    msg = (f"🚨🟢 [{symbol}] TREND REVERSAL EJECT — SHORT position vs "
+                           f"UPTREND macro. Thesis invalidated. CLOSING IMMEDIATELY "
+                           f"at ${cp:.2f} (Entry: ${ep:.2f})")
+                    print(msg, flush=True)
+                    log_to_db(session, symbol, "EXIT", msg)
+                    portfolio = _close_position_handler(
+                        portfolio, current_price, symbol, session,
+                        'TREND_REVERSAL_EJECT',
+                        futures_client, bullish_ob, bearish_ob,
+                        current_rsi, current_zscore, macro_info)
+                    risk_exit_triggered = True
+            else:
+                if pos_direction == 'LONG' and macro_trend == 'DOWNTREND':
+                    print(f"⏸️ [{symbol}] TREND REVERSAL EJECT DISABLED (Alpha Mode) — "
+                          f"LONG vs DOWNTREND. ATR TSL will protect.", flush=True)
+                elif pos_direction == 'SHORT' and macro_trend == 'UPTREND':
+                    print(f"⏸️ [{symbol}] TREND REVERSAL EJECT DISABLED (Alpha Mode) — "
+                          f"SHORT vs UPTREND. ATR TSL will protect.", flush=True)
 
             if pos_direction == 'LONG' and not risk_exit_triggered:
                 position_size = float(portfolio.get('asset_balance', 0) or 0)
@@ -1738,8 +1747,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     risk_exit_triggered = True
 
                 # ── Stagnant Trade Closer (>2h open, flat PnL) ──
-                # Frees frozen capital slots when a position goes sideways.
-                if not risk_exit_triggered and in_position:
+                # ALPHA MODE: When DISABLE_STAGNANT_EXIT is True, trades are NOT
+                # closed for being sideways. Give the setup time to play out.
+                if not risk_exit_triggered and in_position and not DISABLE_STAGNANT_EXIT:
                     first_entry_row = (
                         session.query(PortfolioState)
                         .filter(
@@ -1939,8 +1949,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     risk_exit_triggered = True
 
                 # ── Stagnant Trade Closer (>2h open, flat PnL) ──
-                # Frees frozen capital slots when a position goes sideways.
-                if not risk_exit_triggered and in_position:
+                # ALPHA MODE: When DISABLE_STAGNANT_EXIT is True, trades are NOT
+                # closed for being sideways. Give the setup time to play out.
+                if not risk_exit_triggered and in_position and not DISABLE_STAGNANT_EXIT:
                     first_entry_row = (
                         session.query(PortfolioState)
                         .filter(

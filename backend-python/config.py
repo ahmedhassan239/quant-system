@@ -23,8 +23,9 @@ ENGINE_ROLE = os.environ.get("ENGINE_ROLE", "EXECUTION")  # "MACRO" or "EXECUTIO
 # ──────────────────────────────────────────────────────────────────────
 #  DYNAMIC SCANNER RADAR SETTINGS
 # ──────────────────────────────────────────────────────────────────────
-# Minimum 24h quote volume threshold in USDT ($75,000,000.0)
-MIN_24H_VOLUME_USDT = float(os.environ.get("MIN_24H_VOLUME_USDT", "75000000.0"))
+# Minimum 24h quote volume threshold in USDT ($30,000,000.0)
+# ── ALPHA MODE: Lowered from $75M → $30M to broaden scanner radar
+MIN_24H_VOLUME_USDT = float(os.environ.get("MIN_24H_VOLUME_USDT", "30000000.0"))
 
 # Max number of top volume-ranked symbols to scan dynamically (e.g. 45)
 TOP_N = int(os.environ.get("TOP_N", "45"))
@@ -81,7 +82,8 @@ BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
 # ──────────────────────────────────────────────────────────────────────
 #  FUTURES POSITION DEFAULTS
 # ──────────────────────────────────────────────────────────────────────
-FUTURES_LEVERAGE = int(os.environ.get("FUTURES_LEVERAGE", "1"))
+# ── ALPHA MODE: 5x leverage for all trend trades (was 1x)
+FUTURES_LEVERAGE = int(os.environ.get("FUTURES_LEVERAGE", "5"))
 FUTURES_MARGIN_TYPE = os.environ.get("FUTURES_MARGIN_TYPE", "ISOLATED")
 
 # ──────────────────────────────────────────────────────────────────────
@@ -117,6 +119,18 @@ MACRO_DB_NAME = os.environ.get("MACRO_DB_NAME", "quant_shared_db")
 TESTNET_FORCE_TRADES = False
 
 # ──────────────────────────────────────────────────────────────────────
+#  ALPHA MODE — MICRO-MANAGEMENT KILL SWITCHES
+# ──────────────────────────────────────────────────────────────────────
+# DISABLE_STAGNANT_EXIT: When True, trades are NOT closed just because
+# they've been sideways for >2 hours. Give the setup time to play out.
+DISABLE_STAGNANT_EXIT = True
+
+# DISABLE_TREND_REVERSAL_EJECT: When True, positions are NOT force-closed
+# when the 1h Macro trend flips. Instead, the Dynamic ATR Trailing Stop
+# Loss handles the exit organically.
+DISABLE_TREND_REVERSAL_EJECT = True
+
+# ──────────────────────────────────────────────────────────────────────
 #  STATISTICAL ANALYSIS CONSTANTS
 # ──────────────────────────────────────────────────────────────────────
 # Macro Engine (1h)
@@ -132,24 +146,25 @@ MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "10"))  # Max 
 ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                               # 14-period ATR
 
 # ── Dynamic Regime-Based Risk Parameters ──
+# ── ALPHA MODE: TP raised to 3.0%, TSL widened to 2.5x/2.0x ATR across all primary regimes
 REGIME_RISK_PARAMS = {
     'RANGE': {
         'SL_ATR_MULT': 2.5,
-        'PARTIAL_TP_PCT': 0.006,
-        'TSL_ATR_ACTIVATION_MULT': 2.0,
-        'TSL_ATR_TRAIL_MULT': 1.5,
+        'PARTIAL_TP_PCT': 0.030,                # 3.0% (was 0.6%) — let winners run
+        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR (was 2.0x) — room to breathe
+        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR (was 1.5x) — wider trail
     },
     'TREND': {
         'SL_ATR_MULT': 1.5,
-        'PARTIAL_TP_PCT': 0.020,
-        'TSL_ATR_ACTIVATION_MULT': 2.0,
-        'TSL_ATR_TRAIL_MULT': 1.5,
+        'PARTIAL_TP_PCT': 0.030,                # 3.0% (was 2.0%) — let winners run
+        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR (was 2.0x) — room to breathe
+        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR (was 1.5x) — wider trail
     },
     'STORM': {
-        'SL_ATR_MULT': 1.5,      # Fallback for limits
-        'PARTIAL_TP_PCT': 0.005, # Eject very quickly
-        'TSL_ATR_ACTIVATION_MULT': 0.5,
-        'TSL_ATR_TRAIL_MULT': 0.3, # Immediate choke
+        'SL_ATR_MULT': 1.5,
+        'PARTIAL_TP_PCT': 0.030,                # 3.0% (was 0.5%) — no more penny exits
+        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR (was 0.5x) — match primary
+        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR (was 0.3x) — match primary
     },
     'CRASH_CATCHER': {
         # SL is wick-based (not ATR-based) — SL_ATR_MULT intentionally 0
