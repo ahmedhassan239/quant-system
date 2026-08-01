@@ -2357,6 +2357,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                         portfolio['strategy'] = strategy_name
 
+                        highest_price = portfolio.get('highest_price_since_entry')
+                        hp_since_entry = float(highest_price) if highest_price is not None else float(current_price)
+
                         portfolio_record = PortfolioState(
                             timestamp=datetime.now(),
                             symbol=symbol,
@@ -2369,7 +2372,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             dca_level=int(portfolio['dca_level']),
                             last_exec_price=float(portfolio['last_exec_price']),
                             total_cost=float(portfolio['total_cost']),
-                            highest_price_since_entry=float(portfolio['highest_price_since_entry']),
+                            highest_price_since_entry=hp_since_entry,
                             stop_loss_price=float(new_stop_loss),
                             stop_loss=float(new_stop_loss),
                             strategy=strategy_name,
@@ -2485,6 +2488,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         
                         portfolio['strategy'] = strategy_name
 
+                        lowest_price = portfolio.get('lowest_price_since_entry')
+                        lp_since_entry = float(lowest_price) if lowest_price is not None else float(current_price)
+
                         portfolio_record = PortfolioState(
                             timestamp=datetime.now(),
                             symbol=symbol,
@@ -2498,7 +2504,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                             last_exec_price=float(portfolio['last_exec_price']),
                             total_cost=float(portfolio['total_cost']),
                             highest_price_since_entry=None,
-                            lowest_price_since_entry=float(portfolio['lowest_price_since_entry']),
+                            lowest_price_since_entry=lp_since_entry,
                             stop_loss_price=float(new_stop_loss),
                             stop_loss=float(new_stop_loss),
                             strategy=strategy_name,
