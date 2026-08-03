@@ -140,6 +140,61 @@ def setup_symbol(client: Client, symbol: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  EXECUTION ENGINE HELPER
+# ──────────────────────────────────────────────────────────────────────
+
+def execute_safe_market_order(client: Client, symbol: str, side: str, quantity: float, reduce_only: bool = False) -> dict:
+    """
+    Slippage-protected execution. Checks the order book spread.
+    If expected slippage > 0.5%, it places a GTC LIMIT order instead of MARKET.
+    """
+    try:
+        ticker = client.futures_symbol_ticker(symbol=symbol)
+        current_price = float(ticker['price'])
+        
+        ob = client.futures_order_book(symbol=symbol, limit=5)
+        best_bid = float(ob['bids'][0][0])
+        best_ask = float(ob['asks'][0][0])
+        
+        if side == Client.SIDE_SELL:
+            expected_slippage = (current_price - best_bid) / current_price
+            limit_price = best_ask
+        else:
+            expected_slippage = (best_ask - current_price) / current_price
+            limit_price = best_bid
+
+        if expected_slippage > 0.005:
+            logger.warning(f"[{symbol}] ⚠️ Slippage protection triggered! Expected: {expected_slippage:.2%} > 0.5%. Falling back to LIMIT order at {limit_price}.")
+            return client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type=Client.ORDER_TYPE_LIMIT,
+                timeInForce='GTC',
+                price=limit_price,
+                quantity=quantity,
+                reduceOnly=reduce_only,
+            )
+        else:
+            return client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type=Client.ORDER_TYPE_MARKET,
+                quantity=quantity,
+                reduceOnly=reduce_only,
+            )
+    except BinanceAPIException:
+        raise
+    except Exception as slip_err:
+        logger.error(f"[{symbol}] Error calculating slippage, defaulting to MARKET: {slip_err}")
+        return client.futures_create_order(
+            symbol=symbol,
+            side=side,
+            type=Client.ORDER_TYPE_MARKET,
+            quantity=quantity,
+            reduceOnly=reduce_only,
+        )
+
+# ──────────────────────────────────────────────────────────────────────
 #  OPEN POSITION
 # ──────────────────────────────────────────────────────────────────────
 
@@ -202,11 +257,12 @@ def open_position(client: Client, symbol: str, direction: str,
                     f"Qty: {quantity} | Mark: ${mark_price:,.2f} | "
                     f"Notional: ~${usdt_amount:,.2f}")
 
-        order = client.futures_create_order(
+        order = execute_safe_market_order(
+            client=client,
             symbol=symbol,
             side=side,
-            type='MARKET',
             quantity=quantity,
+            reduce_only=False
         )
 
         logger.info(f"[{symbol}] ✅ {direction} OPENED | OrderID: {order['orderId']} | "
@@ -281,12 +337,12 @@ def close_position(client: Client, symbol: str, direction: str,
 
         logger.info(f"[{symbol}] CLOSING {direction} | Side: {side} | Qty: {quantity}")
 
-        order = client.futures_create_order(
+        order = execute_safe_market_order(
+            client=client,
             symbol=symbol,
             side=side,
-            type=Client.ORDER_TYPE_MARKET,
             quantity=quantity,
-            reduceOnly=True,
+            reduce_only=True
         )
 
         logger.info(f"[{symbol}] ✅ {direction} CLOSED | OrderID: {order['orderId']} | "
@@ -294,8 +350,8 @@ def close_position(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        if e.code == -2022:
-            logger.warning(f"[{symbol}] Position already closed by Binance Stop-Loss (ReduceOnly rejected). Handling gracefully.")
+        if e.code in (-2022, -4509):
+            logger.warning(f"[{symbol}] Position already closed by Binance (ghost position). Handling gracefully.")
             return True
         elif _check_api_exception_for_blacklist(symbol, e):
             logger.warning(f"[{symbol}] Gracefully caught API restriction [{e.code}] during close_position.")
@@ -345,15 +401,18 @@ def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
     time.sleep(0.5)
 
     try:
-        order = client.futures_create_order(
+        order = execute_safe_market_order(
+            client=client,
             symbol=symbol,
             side=side,
-            type=Client.ORDER_TYPE_MARKET,
             quantity=qty_to_close,
-            reduceOnly=True,
+            reduce_only=True
         )
     except BinanceAPIException as api_err:
-        if _check_api_exception_for_blacklist(symbol, api_err):
+        if api_err.code in (-2022, -4509):
+            logger.warning(f"[{symbol}] TP rejected — Position already closed by Binance (ghost position). Handling gracefully.")
+            return True, remaining_qty
+        elif _check_api_exception_for_blacklist(symbol, api_err):
             logger.warning(f"[{symbol}] Gracefully caught Partial TP API restriction [{api_err.code}]. Auto-blacklisted for session.")
         else:
             logger.error(f"[{symbol}] ❌ Binance API rejected Partial TP order (status {api_err.status_code}): [{api_err.code}] {api_err.message}")

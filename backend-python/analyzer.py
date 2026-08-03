@@ -1113,7 +1113,8 @@ def _close_position_handler(portfolio, current_price, symbol, session, exit_reas
             order_id = order.get('orderId', 'ALREADY_CLOSED') if isinstance(order, dict) else 'ALREADY_CLOSED'
             print(f"✅ [{symbol}] Futures CLOSE {direction} executed | OrderID: {order_id} | Qty: {close_qty}", flush=True)
         else:
-            print(f"⚠️ [{symbol}] Futures CLOSE {direction} order failed — portfolio updated virtually", flush=True)
+            print(f"⚠️ [{symbol}] Futures CLOSE {direction} order failed. Aborting local DB update so it can retry.", flush=True)
+            return portfolio
 
     # ── Reset portfolio ──
     close_label = f"CLOSE_{direction}"
