@@ -2754,7 +2754,78 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
 
                 elif pos_info and pos_info['size'] == 0.0:
                     if in_position and db_pos_direction in ('LONG', 'SHORT'):
-                        print(f"🧹 [{symbol}] Binance reports no position. Clearing DB slot (MANUAL_CLOSE).", flush=True)
+                        print(f"🧹 [{symbol}] Binance reports no position. Fetching true realized PNL and archiving (MANUAL_CLOSE)...", flush=True)
+                        
+                        realized_pnl_usd = 0.0
+                        if futures_client:
+                            try:
+                                income_hist = futures_client.futures_income(symbol=symbol, incomeType="REALIZED_PNL", limit=10)
+                                if income_hist:
+                                    # income_hist is ascending by time; last element is the newest
+                                    latest_time = income_hist[-1]['time']
+                                    # Sum income from events within 60 seconds of the most recent closure
+                                    recent_income = [float(x['income']) for x in income_hist if latest_time - x['time'] <= 60000]
+                                    realized_pnl_usd = sum(recent_income)
+                                    print(f"  💸 Fetched Realized PNL from Binance: ${realized_pnl_usd:.4f}", flush=True)
+                            except Exception as e:
+                                print(f"  ⚠️ Could not fetch realized PNL for {symbol}: {e}", flush=True)
+
+                        ep = float(db_entry_price) if db_entry_price and float(db_entry_price) > 0 else float(current_price)
+                        asset_bal = float(portfolio.get('asset_balance') or 0.0)
+                        
+                        pnl_pct_val = 0.0
+                        if ep > 0 and asset_bal > 0:
+                            pnl_pct_val = (realized_pnl_usd / (asset_bal * ep)) * 100
+
+                        outcome = 'WIN' if realized_pnl_usd > 0 else 'LOSS'
+                        history_record = TradeHistory(
+                            symbol=symbol,
+                            direction=db_pos_direction,
+                            entry_price=ep,
+                            exit_price=float(current_price),
+                            quantity=asset_bal,
+                            pnl_usd=realized_pnl_usd,
+                            pnl_pct=pnl_pct_val,
+                            outcome=outcome,
+                            exit_reason='MANUAL_CLOSE',
+                            closed_at=datetime.utcnow()
+                        )
+                        
+                        try:
+                            session.add(history_record)
+                            session.query(PortfolioState).filter(PortfolioState.symbol == symbol).delete(synchronize_session=False)
+                            
+                            new_usdt_bal = float(portfolio.get('usdt_balance') or 0.0) + (asset_bal * float(current_price)) + realized_pnl_usd
+                            closed_rec = PortfolioState(
+                                timestamp=datetime.now(),
+                                symbol=symbol,
+                                decision='CLOSED',
+                                current_price=float(current_price),
+                                usdt_balance=new_usdt_bal,
+                                asset_balance=0.0,
+                                position_direction=None,
+                                average_entry_price=None,
+                                dca_level=0,
+                                last_exec_price=None,
+                                total_cost=0.0,
+                                highest_price_since_entry=None,
+                                lowest_price_since_entry=None,
+                                stop_loss_price=None,
+                                stop_loss=None,
+                                strategy=portfolio.get('strategy'),
+                                trailing_active=False,
+                                pnl_pct=pnl_pct_val,
+                                pnl_usd=realized_pnl_usd,
+                                total_portfolio_value=new_usdt_bal,
+                                active_mode=portfolio.get('active_mode')
+                            )
+                            session.add(closed_rec)
+                            session.commit()
+                            print(f"  ✅ [{symbol}] Successfully archived ghost position with actual PNL.", flush=True)
+                        except Exception as e:
+                            session.rollback()
+                            print(f"  ⚠️ Error archiving ghost position for {symbol}: {e}", flush=True)
+
                         db_decision = 'MANUAL_CLOSE'
                         portfolio['asset_balance'] = 0.0
                         in_position = False
