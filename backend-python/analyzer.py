@@ -2756,23 +2756,59 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     if in_position and db_pos_direction in ('LONG', 'SHORT'):
                         print(f"🧹 [{symbol}] Binance reports no position. Fetching true realized PNL and archiving (MANUAL_CLOSE)...", flush=True)
                         
-                        realized_pnl_usd = 0.0
-                        if futures_client:
-                            try:
-                                income_hist = futures_client.futures_income_history(symbol=symbol, incomeType="REALIZED_PNL", limit=10)
-                                if income_hist:
-                                    # income_hist is ascending by time; last element is the newest
-                                    latest_time = income_hist[-1]['time']
-                                    # Sum income from events within 60 seconds of the most recent closure
-                                    recent_income = [float(x['income']) for x in income_hist if latest_time - x['time'] <= 60000]
-                                    realized_pnl_usd = sum(recent_income)
-                                    print(f"  💸 Fetched Realized PNL from Binance: ${realized_pnl_usd:.4f}", flush=True)
-                            except Exception as e:
-                                print(f"  ⚠️ Could not fetch realized PNL for {symbol}: {e}", flush=True)
-
                         ep = float(db_entry_price) if db_entry_price and float(db_entry_price) > 0 else float(current_price)
                         asset_bal = float(portfolio.get('asset_balance') or 0.0)
                         
+                        fallback_pnl = 0.0
+                        sl_price_val = portfolio.get('stop_loss_price') or portfolio.get('stop_loss')
+                        if sl_price_val and ep > 0:
+                            sl = float(sl_price_val)
+                            direction_mult = 1.0 if db_pos_direction == 'LONG' else -1.0
+                            fallback_pnl = (sl - ep) * asset_bal * direction_mult
+
+                        realized_pnl_usd = fallback_pnl
+                        if futures_client:
+                            try:
+                                last_closed = session.query(PortfolioState.timestamp).filter(
+                                    PortfolioState.symbol == symbol,
+                                    PortfolioState.asset_balance == 0
+                                ).order_by(PortfolioState.id.desc()).first()
+                                
+                                query = session.query(PortfolioState.timestamp).filter(
+                                    PortfolioState.symbol == symbol,
+                                    PortfolioState.asset_balance > 0
+                                )
+                                if last_closed:
+                                    query = query.filter(PortfolioState.timestamp > last_closed.timestamp)
+                                
+                                first_open = query.order_by(PortfolioState.id.asc()).first()
+                                
+                                if first_open:
+                                    created_at = first_open.timestamp
+                                    start_time_ms = int(created_at.timestamp() * 1000)
+                                    
+                                    income_hist = futures_client.futures_income_history(
+                                        symbol=symbol, 
+                                        incomeType="REALIZED_PNL", 
+                                        startTime=start_time_ms,
+                                        limit=1000
+                                    )
+                                    
+                                    if income_hist:
+                                        valid_income = [float(x['income']) for x in income_hist if x['time'] >= start_time_ms]
+                                        if valid_income:
+                                            realized_pnl_usd = sum(valid_income)
+                                            print(f"  💸 API Realized PNL: ${realized_pnl_usd:.4f}", flush=True)
+                                        else:
+                                            print(f"  ⚠️ No valid income records after {created_at}. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                    else:
+                                        print(f"  ⚠️ Empty income history from API. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                else:
+                                    print(f"  ⚠️ Could not find position created_at in DB. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                    
+                            except Exception as e:
+                                print(f"  ⚠️ API PNL fetch error: {e}. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                
                         pnl_pct_val = 0.0
                         if ep > 0 and asset_bal > 0:
                             pnl_pct_val = (realized_pnl_usd / (asset_bal * ep)) * 100
