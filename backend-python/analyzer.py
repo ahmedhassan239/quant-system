@@ -2759,7 +2759,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         realized_pnl_usd = 0.0
                         if futures_client:
                             try:
-                                income_hist = futures_client.futures_income(symbol=symbol, incomeType="REALIZED_PNL", limit=10)
+                                income_hist = futures_client.futures_income_history(symbol=symbol, incomeType="REALIZED_PNL", limit=10)
                                 if income_hist:
                                     # income_hist is ascending by time; last element is the newest
                                     latest_time = income_hist[-1]['time']
