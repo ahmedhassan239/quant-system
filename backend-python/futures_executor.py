@@ -18,7 +18,8 @@ from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from config import (BINANCE_API_KEY, BINANCE_API_SECRET,
-                    FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE)
+                    FUTURES_LEVERAGE, FUTURES_MARGIN_TYPE,
+                    STOP_LIMIT_SLIPPAGE_CAP)
 
 logger = logging.getLogger('FuturesExecutor')
 logger.setLevel(logging.DEBUG)
@@ -606,7 +607,28 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
                         trailing_distance: float = None, atr_val: float = None,
                         quantity: float = None) -> dict | None:
     """
-    Cancel existing open orders (e.g. old SL) and place a new STOP_MARKET reduce-only order.
+    Cancel existing open orders (e.g. old SL) and place a new STOP (Stop-Limit)
+    reduce-only order with a slippage-capped limit price.
+
+    FLASH-CRASH IMMUNITY:
+      Instead of STOP_MARKET (which executes at ANY price and causes 50-90%
+      slippage on illiquid Testnet), we place a STOP (Stop-Limit) order where:
+        - stopPrice = the trigger price (when the mark price crosses this, the
+                      limit order is placed on the book)
+        - price     = the worst acceptable execution price, calculated as:
+            LONG close (SELL):  price = stopPrice * (1 - STOP_LIMIT_SLIPPAGE_CAP)
+            SHORT close (BUY):  price = stopPrice * (1 + STOP_LIMIT_SLIPPAGE_CAP)
+
+      If the flash crash blows through the limit price, the order simply
+      does NOT fill (stays open as a limit order) — protecting the account.
+      The analyzer's Virtual Soft-Stop loop will catch it on the next tick.
+
+    VIRTUAL SOFT-STOP FALLBACK:
+      If Binance rejects the Stop-Limit (margin issues, etc.), this function
+      returns a virtual marker dict {'virtual': True, ...} so the caller
+      knows to monitor the price in software and trigger
+      execute_safe_market_order() if breached.
+
     Supports dynamic ATR trailing stop loss tracking.
     """
     direction = direction.upper()
@@ -619,44 +641,105 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
         _cancel_all_symbol_orders(client, symbol)
 
         # 2. Format the stop price strictly to symbol's tick size precision
-        rounded_price = _round_price(client, symbol, stop_price)
-        
-        # 3. Determine side (close LONG = SELL, close SHORT = BUY)
-        side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
-        
-        if atr_val is not None and trailing_distance is not None:
-            logger.info(f"[{symbol}] 📐 SETTING DYNAMIC ATR STOP LOSS {direction} | Side: {side} | Stop Price: {rounded_price} | ATR(14): {atr_val:.4f} | Trail Dist: {trailing_distance:.4f} (1.5x ATR)")
-        else:
-            logger.info(f"[{symbol}] SETTING STOP LOSS {direction} | Side: {side} | Stop Price: {rounded_price}")
+        rounded_stop_price = _round_price(client, symbol, stop_price)
 
-        # 4. Place order wrapped in try-except with safe error handling
+        # 3. Calculate slippage-capped limit execution price
+        #    LONG → SELL to close → limit price BELOW stop (worst-case sell price)
+        #    SHORT → BUY to close → limit price ABOVE stop (worst-case buy price)
+        if direction == 'LONG':
+            raw_limit_price = rounded_stop_price * (1 - STOP_LIMIT_SLIPPAGE_CAP)
+        else:
+            raw_limit_price = rounded_stop_price * (1 + STOP_LIMIT_SLIPPAGE_CAP)
+        rounded_limit_price = _round_price(client, symbol, raw_limit_price)
+
+        # 4. Determine side (close LONG = SELL, close SHORT = BUY)
+        side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
+
+        # 5. Resolve quantity — STOP (Stop-Limit) does NOT support closePosition,
+        #    so we must always provide an explicit quantity.
+        if not quantity or quantity <= 0:
+            try:
+                live_pos = get_position_info(client, symbol)
+                if live_pos and live_pos.get('size', 0) > 0:
+                    quantity = live_pos['size']
+                else:
+                    logger.warning(f"[{symbol}] Cannot set SL: no quantity provided and no live position found.")
+                    return None
+            except Exception as pos_err:
+                logger.error(f"[{symbol}] Cannot resolve position size for SL: {pos_err}")
+                return None
+
+        quantity = _round_quantity(client, symbol, quantity)
+        if quantity <= 0:
+            logger.error(f"[{symbol}] Quantity is 0 after rounding — cannot set SL")
+            return None
+
+        if atr_val is not None and trailing_distance is not None:
+            logger.info(
+                f"[{symbol}] 📐 SETTING DYNAMIC ATR STOP-LIMIT {direction} | Side: {side} | "
+                f"Stop Trigger: ${rounded_stop_price} | Limit Price: ${rounded_limit_price} | "
+                f"Slippage Cap: {STOP_LIMIT_SLIPPAGE_CAP*100:.1f}% | "
+                f"ATR(14): {atr_val:.4f} | Trail Dist: {trailing_distance:.4f}"
+            )
+        else:
+            logger.info(
+                f"[{symbol}] 🛡️ SETTING STOP-LIMIT {direction} | Side: {side} | "
+                f"Stop Trigger: ${rounded_stop_price} | Limit Price: ${rounded_limit_price} | "
+                f"Slippage Cap: {STOP_LIMIT_SLIPPAGE_CAP*100:.1f}% | Qty: {quantity}"
+            )
+
+        # 6. Place STOP (Stop-Limit) order — flash-crash immune
         try:
             order_params = {
                 'symbol': symbol,
                 'side': side,
-                'type': 'STOP_MARKET',
-                'stopPrice': rounded_price,
-                'timeInForce': 'GTC'
+                'type': 'STOP',               # ← Stop-Limit (NOT STOP_MARKET)
+                'stopPrice': rounded_stop_price,
+                'price': rounded_limit_price,  # ← Slippage-capped limit price
+                'timeInForce': 'GTC',
+                'quantity': quantity,
+                'reduceOnly': True,
             }
-            if quantity:
-                order_params['quantity'] = quantity
-                order_params['reduceOnly'] = True
-            else:
-                order_params['closePosition'] = 'true'
 
             order = client.futures_create_order(**order_params)
         except BinanceAPIException as api_err:
             if _check_api_exception_for_blacklist(symbol, api_err):
                 logger.warning(f"[{symbol}] Gracefully caught SL API restriction [{api_err.code}]. Auto-blacklisted for session.")
+                return None
             else:
-                logger.error(
-                    f"[{symbol}] ❌ Binance API rejected SL order (status {api_err.status_code}): "
-                    f"[{api_err.code}] {api_err.message} | Raw Response: {getattr(api_err, 'response', 'N/A')}"
+                # ── VIRTUAL SOFT-STOP FALLBACK ──
+                # Binance rejected the Stop-Limit (margin, notional, or other issue).
+                # Return a virtual marker so the analyzer loop monitors mark price
+                # and triggers execute_safe_market_order() if breached.
+                logger.warning(
+                    f"[{symbol}] ⚠️ Binance rejected Stop-Limit [{api_err.code}]: {api_err.message}. "
+                    f"ACTIVATING VIRTUAL SOFT-STOP at ${rounded_stop_price}. "
+                    f"The analyzer loop will monitor mark price and close via safe market order if breached."
                 )
-            return None
+                return {
+                    'virtual': True,
+                    'symbol': symbol,
+                    'direction': direction,
+                    'stopPrice': rounded_stop_price,
+                    'limitPrice': rounded_limit_price,
+                    'quantity': quantity,
+                    'side': side,
+                    'status': 'VIRTUAL_SOFT_STOP',
+                }
         except Exception as exec_err:
             logger.error(f"[{symbol}] ❌ Exception during SL futures_create_order: {type(exec_err).__name__} - {exec_err}")
-            return None
+            # Also activate virtual soft-stop on unexpected errors
+            logger.warning(f"[{symbol}] ⚠️ ACTIVATING VIRTUAL SOFT-STOP (fallback) at ${rounded_stop_price}.")
+            return {
+                'virtual': True,
+                'symbol': symbol,
+                'direction': direction,
+                'stopPrice': rounded_stop_price,
+                'limitPrice': rounded_limit_price,
+                'quantity': quantity,
+                'side': side,
+                'status': 'VIRTUAL_SOFT_STOP',
+            }
 
         order_id = order.get('orderId') or order.get('algoId')
         status = order.get('status') or order.get('algoStatus', 'UNKNOWN')
@@ -665,12 +748,107 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
             logger.error(f"[{symbol}] ❌ SL order failed or orderId/algoId missing in response. Exact raw response: {order}")
             return None
 
-        logger.info(f"[{symbol}] ✅ STOP LOSS SET | OrderID/AlgoID: {order_id} | Status: {status}")
+        logger.info(f"[{symbol}] ✅ STOP-LIMIT SET | OrderID/AlgoID: {order_id} | Status: {status}")
         return order
 
     except Exception as e:
         logger.error(f"[{symbol}] ❌ Unexpected error setting Stop Loss: {type(e).__name__} - {e}")
         return None
+
+
+def execute_virtual_stop_check(client: Client, symbol: str, direction: str,
+                               stop_price: float, quantity: float = None) -> dict | None | bool:
+    """
+    Virtual Soft-Stop: Check if the current mark price has breached the stop price
+    and, if so, execute a slippage-protected market close via execute_safe_market_order().
+
+    This is the fallback mechanism when Binance rejects the native Stop-Limit order.
+    Called by the analyzer's main loop on every tick for positions with virtual stops.
+
+    Args:
+        client:     python-binance Client
+        symbol:     e.g. "BTCUSDT"
+        direction:  "LONG" or "SHORT" (the position direction)
+        stop_price: The virtual stop trigger price
+        quantity:   Position size to close (fetched from Binance if not provided)
+
+    Returns:
+        order dict  — if stop was breached and close order was placed
+        None        — if stop has NOT been breached (price is safe)
+        False       — on error during execution
+    """
+    direction = direction.upper()
+    if direction not in ('LONG', 'SHORT'):
+        logger.error(f"[{symbol}] Invalid direction '{direction}' for virtual stop check")
+        return False
+
+    try:
+        # Fetch current mark price
+        mark_data = client.futures_mark_price(symbol=symbol)
+        mark_price = float(mark_data['markPrice'])
+
+        # Check if stop price is breached
+        # LONG: price drops BELOW stop → breached
+        # SHORT: price rises ABOVE stop → breached
+        breached = False
+        if direction == 'LONG' and mark_price <= stop_price:
+            breached = True
+        elif direction == 'SHORT' and mark_price >= stop_price:
+            breached = True
+
+        if not breached:
+            return None  # Price is safe, no action needed
+
+        # ── STOP BREACHED: Execute safe market close ──
+        logger.warning(
+            f"[{symbol}] 🚨 VIRTUAL SOFT-STOP BREACHED | {direction} | "
+            f"Mark: ${mark_price:.4f} vs Stop: ${stop_price:.4f} | "
+            f"Executing slippage-protected market close..."
+        )
+
+        # Resolve quantity if not provided
+        if not quantity or quantity <= 0:
+            live_pos = get_position_info(client, symbol)
+            if live_pos and live_pos.get('size', 0) > 0:
+                quantity = live_pos['size']
+            else:
+                logger.warning(f"[{symbol}] Virtual stop breached but no position found on Binance.")
+                return False
+
+        quantity = _round_quantity(client, symbol, quantity)
+        if quantity <= 0:
+            logger.error(f"[{symbol}] Virtual stop: quantity is 0 after rounding")
+            return False
+
+        # Close via the existing slippage-protected executor
+        side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
+
+        # Cancel any lingering orders first
+        _cancel_all_symbol_orders(client, symbol)
+
+        order = execute_safe_market_order(
+            client=client,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            reduce_only=True
+        )
+
+        logger.info(
+            f"[{symbol}] ✅ VIRTUAL SOFT-STOP EXECUTED | OrderID: {order.get('orderId')} | "
+            f"Status: {order.get('status', 'UNKNOWN')}"
+        )
+        return order
+
+    except BinanceAPIException as e:
+        if e.code in (-2022, -4509):
+            logger.warning(f"[{symbol}] Virtual stop: Position already closed (ghost position). Handling gracefully.")
+            return True
+        logger.error(f"[{symbol}] ❌ Virtual stop execution failed: [{e.code}] {e.message}")
+        return False
+    except Exception as e:
+        logger.error(f"[{symbol}] ❌ Unexpected error in virtual stop check: {type(e).__name__} - {e}")
+        return False
 
 
 def update_stop_loss_price(client: Client, symbol: str, direction: str, stop_price: float,

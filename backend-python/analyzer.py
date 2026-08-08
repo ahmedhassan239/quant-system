@@ -44,7 +44,8 @@ from config import (TIMEFRAME, ALERT_PREFIX, ENGINE_ROLE,
                     CRASH_CATCHER_TSL_ATR_MULT, CRASH_CATCHER_ALLOC_PCT)
 from futures_executor import (open_position, close_position, get_futures_balance,
                               get_position_info, count_all_open_positions, set_stop_loss_order,
-                              update_stop_loss_price, execute_partial_tp_scaleout)
+                              update_stop_loss_price, execute_partial_tp_scaleout,
+                              execute_virtual_stop_check)
 from market_regime import MarketRegime, strategy_router, RegimeDetector
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2745,7 +2746,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         try:
                             open_ords = futures_client.futures_get_open_orders(symbol=symbol)
                             algo_ords = futures_client.futures_get_open_algo_orders(symbol=symbol) if hasattr(futures_client, 'futures_get_open_algo_orders') else []
-                            has_sl = any(o.get('type') == 'STOP_MARKET' or o.get('orderType') == 'STOP_MARKET' for o in (open_ords + algo_ords))
+                            has_sl = any(o.get('type') in ('STOP', 'STOP_MARKET') or o.get('orderType') in ('STOP', 'STOP_MARKET') for o in (open_ords + algo_ords))
                             if not has_sl:
                                 print(f"🛡️ [{symbol}] Missing live SL on Binance! Placing emergency hard Stop Loss at ${float(sl_val):.4f}", flush=True)
                                 set_stop_loss_order(futures_client, symbol, db_pos_direction, float(sl_val))

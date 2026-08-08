@@ -86,6 +86,12 @@ BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
 FUTURES_LEVERAGE = int(os.environ.get("FUTURES_LEVERAGE", "5"))
 FUTURES_MARGIN_TYPE = os.environ.get("FUTURES_MARGIN_TYPE", "ISOLATED")
 
+# Stop-Limit Slippage Cap: Maximum allowed slippage from stopPrice → limit price (0.5%)
+# Used by set_stop_loss_order() to calculate the limit execution price for STOP (Stop-Limit) orders.
+# LONG close (SELL): limit price = stopPrice * (1 - cap)  → worst fill 0.5% below trigger
+# SHORT close (BUY): limit price = stopPrice * (1 + cap)  → worst fill 0.5% above trigger
+STOP_LIMIT_SLIPPAGE_CAP = float(os.environ.get("STOP_LIMIT_SLIPPAGE_CAP", "0.005"))
+
 # ──────────────────────────────────────────────────────────────────────
 #  TIMEFRAME & SCHEDULING
 # ──────────────────────────────────────────────────────────────────────
