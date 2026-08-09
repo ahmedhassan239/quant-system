@@ -2760,14 +2760,9 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                         ep = float(db_entry_price) if db_entry_price and float(db_entry_price) > 0 else float(current_price)
                         asset_bal = float(portfolio.get('asset_balance') or 0.0)
                         
-                        fallback_pnl = 0.0
-                        sl_price_val = portfolio.get('stop_loss_price') or portfolio.get('stop_loss')
-                        if sl_price_val and ep > 0:
-                            sl = float(sl_price_val)
-                            direction_mult = 1.0 if db_pos_direction == 'LONG' else -1.0
-                            fallback_pnl = (sl - ep) * asset_bal * direction_mult
-
-                        realized_pnl_usd = fallback_pnl
+                        # Start with 0.0 — never use (SL-Entry)*Qty math which causes
+                        # fake massive losses when futures_income_history has API latency.
+                        realized_pnl_usd = 0.0
                         if futures_client:
                             try:
                                 last_closed = session.query(PortfolioState.timestamp).filter(
@@ -2796,42 +2791,78 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                     # COMMISSION and FUNDING_FEE drain the account in the background.
                                     NET_PNL_INCOME_TYPES = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
 
-                                    income_hist = futures_client.futures_income_history(
-                                        symbol=symbol,
-                                        startTime=start_time_ms,
-                                        limit=1000
-                                        # incomeType intentionally omitted → returns all streams
-                                    )
+                                    # ── RETRY LOOP: Binance futures_income_history has a latency
+                                    # of a few seconds after a position closes. Retry up to 3 times
+                                    # with a 3-second sleep before giving up and using the secondary
+                                    # fallback (futures_account_trades). NEVER use (SL-Entry)*Qty math.
+                                    import time
+                                    income_hist = []
+                                    net_components = []
+                                    MAX_RETRIES = 3
+                                    for attempt in range(1, MAX_RETRIES + 1):
+                                        income_hist = futures_client.futures_income_history(
+                                            symbol=symbol,
+                                            startTime=start_time_ms,
+                                            limit=1000
+                                            # incomeType intentionally omitted → returns all streams
+                                        )
+                                        if income_hist:
+                                            net_components = [
+                                                float(x['income'])
+                                                for x in income_hist
+                                                if x['time'] >= start_time_ms
+                                                and x.get('incomeType') in NET_PNL_INCOME_TYPES
+                                            ]
+                                            if net_components:
+                                                break  # Got good data — exit retry loop
+                                        if attempt < MAX_RETRIES:
+                                            print(f"  ⏳ [{symbol}] income_history empty/no net components on attempt {attempt}/{MAX_RETRIES}. Retrying in 3s...", flush=True)
+                                            time.sleep(3)
 
-                                    if income_hist:
-                                        # Filter to the three streams that affect net wallet balance
-                                        net_components = [
-                                            float(x['income'])
-                                            for x in income_hist
-                                            if x['time'] >= start_time_ms
-                                            and x.get('incomeType') in NET_PNL_INCOME_TYPES
-                                        ]
-                                        if net_components:
-                                            gross_pnl    = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'REALIZED_PNL')
-                                            commissions  = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'COMMISSION')
-                                            funding_fees = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'FUNDING_FEE')
-                                            realized_pnl_usd = gross_pnl + commissions + funding_fees  # commissions & funding are already negative
-                                            print(
-                                                f"  💸 NET Realized PNL: ${realized_pnl_usd:.4f} "
-                                                f"[Gross PNL: ${gross_pnl:.4f} | "
-                                                f"Commission: ${commissions:.4f} | "
-                                                f"Funding Fee: ${funding_fees:.4f}]",
-                                                flush=True
-                                            )
-                                        else:
-                                            print(f"  ⚠️ No REALIZED_PNL/COMMISSION/FUNDING_FEE records after {created_at}. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                    if net_components:
+                                        gross_pnl    = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'REALIZED_PNL')
+                                        commissions  = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'COMMISSION')
+                                        funding_fees = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'FUNDING_FEE')
+                                        realized_pnl_usd = gross_pnl + commissions + funding_fees  # commissions & funding are already negative
+                                        print(
+                                            f"  💸 NET Realized PNL: ${realized_pnl_usd:.4f} "
+                                            f"[Gross PNL: ${gross_pnl:.4f} | "
+                                            f"Commission: ${commissions:.4f} | "
+                                            f"Funding Fee: ${funding_fees:.4f}]",
+                                            flush=True
+                                        )
                                     else:
-                                        print(f"  ⚠️ Empty income history from API. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                        # ── SECONDARY FALLBACK: income_history still empty after all
+                                        # retries. Sum realizedPnl from futures_account_trades for the
+                                        # most recent closing trades of this symbol. This is always
+                                        # accurate (no latency issue) and avoids blind math.
+                                        print(f"  ⚠️ [{symbol}] income_history empty after {MAX_RETRIES} retries. Falling back to futures_account_trades...", flush=True)
+                                        try:
+                                            acct_trades = futures_client.futures_account_trades(
+                                                symbol=symbol,
+                                                limit=50
+                                            )
+                                            if acct_trades:
+                                                # Keep only trades at or after position open time
+                                                closing_trades = [
+                                                    t for t in acct_trades
+                                                    if int(t.get('time', 0)) >= start_time_ms
+                                                    and t.get('realizedPnl') is not None
+                                                ]
+                                                if closing_trades:
+                                                    realized_pnl_usd = sum(float(t['realizedPnl']) for t in closing_trades)
+                                                    print(f"  💸 [{symbol}] PNL via futures_account_trades ({len(closing_trades)} trades): ${realized_pnl_usd:.4f}", flush=True)
+                                                else:
+                                                    print(f"  ⚠️ [{symbol}] No closing trades found in futures_account_trades after {created_at}. Logging PNL as $0.00.", flush=True)
+                                            else:
+                                                print(f"  ⚠️ [{symbol}] futures_account_trades returned empty. Logging PNL as $0.00.", flush=True)
+                                        except Exception as trades_err:
+                                            print(f"  ⚠️ [{symbol}] futures_account_trades error: {trades_err}. Logging PNL as $0.00.", flush=True)
                                 else:
-                                    print(f"  ⚠️ Could not find position created_at in DB. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                    print(f"  ⚠️ Could not find position created_at in DB. Logging PNL as $0.00.", flush=True)
                                     
                             except Exception as e:
-                                print(f"  ⚠️ API PNL fetch error: {e}. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                print(f"  ⚠️ API PNL fetch error: {e}. Logging PNL as $0.00.", flush=True)
                                 
                         pnl_pct_val = 0.0
                         if ep > 0 and asset_bal > 0:
