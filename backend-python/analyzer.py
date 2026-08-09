@@ -2787,21 +2787,44 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                                 if first_open:
                                     created_at = first_open.timestamp
                                     start_time_ms = int(created_at.timestamp() * 1000)
-                                    
+
+                                    # ── Fetch ALL income types for this symbol (no incomeType filter).
+                                    # Then aggregate REALIZED_PNL + COMMISSION + FUNDING_FEE to get the
+                                    # true NET_REALIZED_PNL, i.e. trade profit minus trading commissions
+                                    # minus funding fees paid during the lifetime of this position.
+                                    # Querying only REALIZED_PNL causes wallet-balance drift because
+                                    # COMMISSION and FUNDING_FEE drain the account in the background.
+                                    NET_PNL_INCOME_TYPES = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
+
                                     income_hist = futures_client.futures_income_history(
-                                        symbol=symbol, 
-                                        incomeType="REALIZED_PNL", 
+                                        symbol=symbol,
                                         startTime=start_time_ms,
                                         limit=1000
+                                        # incomeType intentionally omitted → returns all streams
                                     )
-                                    
+
                                     if income_hist:
-                                        valid_income = [float(x['income']) for x in income_hist if x['time'] >= start_time_ms]
-                                        if valid_income:
-                                            realized_pnl_usd = sum(valid_income)
-                                            print(f"  💸 API Realized PNL: ${realized_pnl_usd:.4f}", flush=True)
+                                        # Filter to the three streams that affect net wallet balance
+                                        net_components = [
+                                            float(x['income'])
+                                            for x in income_hist
+                                            if x['time'] >= start_time_ms
+                                            and x.get('incomeType') in NET_PNL_INCOME_TYPES
+                                        ]
+                                        if net_components:
+                                            gross_pnl    = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'REALIZED_PNL')
+                                            commissions  = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'COMMISSION')
+                                            funding_fees = sum(float(x['income']) for x in income_hist if x['time'] >= start_time_ms and x.get('incomeType') == 'FUNDING_FEE')
+                                            realized_pnl_usd = gross_pnl + commissions + funding_fees  # commissions & funding are already negative
+                                            print(
+                                                f"  💸 NET Realized PNL: ${realized_pnl_usd:.4f} "
+                                                f"[Gross PNL: ${gross_pnl:.4f} | "
+                                                f"Commission: ${commissions:.4f} | "
+                                                f"Funding Fee: ${funding_fees:.4f}]",
+                                                flush=True
+                                            )
                                         else:
-                                            print(f"  ⚠️ No valid income records after {created_at}. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
+                                            print(f"  ⚠️ No REALIZED_PNL/COMMISSION/FUNDING_FEE records after {created_at}. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
                                     else:
                                         print(f"  ⚠️ Empty income history from API. Using Fallback PNL: ${fallback_pnl:.4f}", flush=True)
                                 else:
