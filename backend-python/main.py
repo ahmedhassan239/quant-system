@@ -19,6 +19,7 @@ from database import (SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS,
 from futures_executor import (create_futures_client, get_futures_balance,
                               count_all_open_positions, is_symbol_blacklisted,
                               send_telegram_daily_report)
+from binance.exceptions import BinanceAPIException
 
 # ── Initialize Futures client once at module level ──
 futures_client = None
@@ -106,7 +107,15 @@ def scanner_job():
     if ENGINE_ROLE.upper() == "MACRO":
         # ── Macro Trend Engine (1h) — analysis only, no orders ──
         for sym in all_symbols:
-            run_macro_analyzer(symbol=sym)
+            time.sleep(0.3)
+            try:
+                run_macro_analyzer(symbol=sym)
+            except BinanceAPIException as e:
+                if e.code == -1003 or '429' in str(e):
+                    print(f"⚠️ [MACRO] Rate limit hit (-1003/429). Pausing engine for 60s...", flush=True)
+                    time.sleep(60)
+                else:
+                    print(f"⚠️ [MACRO] API Error for {sym}: {e}", flush=True)
     else:
         # ── Execution Engine (15m) — trades with MTF confluence ──
         import logging
@@ -116,25 +125,35 @@ def scanner_job():
         trades_opened_this_cycle = 0
 
         for sym in all_symbols:
+            time.sleep(0.3)
             is_open_position = sym in open_pos_symbols
 
-            if is_open_position:
-                # ── RULE 1 & 2: ALWAYS evaluate risk management for open positions ──
-                print(f"🛡️ [{sym}] Open position detected — evaluating risk management (SL/TSL/TP/Stagnant) unconditionally.", flush=True)
-                newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
-                if newly_executed:
-                    trades_opened_this_cycle += 1
-            else:
-                if trades_opened_this_cycle >= 3:
-                    logger.warning(f"Max trades per cycle (3) reached. Cooling down for {sym}.")
-                    print(f"🛑 Max trades per cycle (3) reached. Skipping new entry for {sym}.", flush=True)
-                    continue
+            try:
+                if is_open_position:
+                    # ── RULE 1 & 2: ALWAYS evaluate risk management for open positions ──
+                    print(f"🛡️ [{sym}] Open position detected — evaluating risk management (SL/TSL/TP/Stagnant) unconditionally.", flush=True)
+                    newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+                    if newly_executed:
+                        trades_opened_this_cycle += 1
+                else:
+                    if trades_opened_this_cycle >= 3:
+                        logger.warning(f"Max trades per cycle (3) reached. Cooling down for {sym}.")
+                        print(f"🛑 Max trades per cycle (3) reached. Skipping new entry for {sym}.", flush=True)
+                        continue
 
-                # Run analyzer (evaluates new entry or trade upgrade if portfolio is full)
-                newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
-                if newly_executed:
-                    current_open_count = count_all_open_positions(futures_client)
-                    trades_opened_this_cycle += 1
+                    # Run analyzer (evaluates new entry or trade upgrade if portfolio is full)
+                    newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+                    if newly_executed:
+                        current_open_count = count_all_open_positions(futures_client)
+                        trades_opened_this_cycle += 1
+            except BinanceAPIException as e:
+                if e.code == -1003 or '429' in str(e):
+                    logger.warning(f"⚠️ [EXECUTION] Rate limit hit (-1003/429) on {sym}. Pausing engine for 60s...")
+                    print(f"⚠️ [EXECUTION] Rate limit hit (-1003/429). Pausing engine for 60s...", flush=True)
+                    time.sleep(60)
+                else:
+                    logger.error(f"⚠️ [EXECUTION] API Error for {sym}: {e}")
+                    print(f"⚠️ [EXECUTION] API Error for {sym}: {e}", flush=True)
 
     print("\nJob completed. Sleeping until next interval...", flush=True)
     print("="*60 + "\n", flush=True)

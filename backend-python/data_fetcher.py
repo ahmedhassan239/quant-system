@@ -28,13 +28,22 @@ def fetch_binance_klines(symbol='BTCUSDT', interval=TIMEFRAME, limit=100):
     
     try:
         response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 400 or response.status_code >= 400:
+        if response.status_code == 429 or (response.status_code >= 400 and '-1003' in response.text):
+            print(f"⚠️ Rate limit hit (-1003/429). Pausing Fetcher for 60 seconds...", flush=True)
+            time.sleep(60)
+            return fetch_binance_klines(symbol, interval, limit)
+
+        if response.status_code >= 400:
             if symbol not in BLACKLISTED_SYMBOLS:
                 BLACKLISTED_SYMBOLS.add(symbol)
                 print(f"🚫 [{symbol}] added to auto-blacklist due to API error.", flush=True)
             response.raise_for_status()
     except requests.exceptions.HTTPError as e:
-        if e.response is not None and (e.response.status_code == 400 or e.response.status_code >= 400):
+        if e.response is not None and e.response.status_code == 429:
+            print(f"⚠️ Rate limit hit (HTTP 429). Pausing Fetcher for 60 seconds...", flush=True)
+            time.sleep(60)
+            return fetch_binance_klines(symbol, interval, limit)
+        if e.response is not None and e.response.status_code >= 400:
             if symbol not in BLACKLISTED_SYMBOLS:
                 BLACKLISTED_SYMBOLS.add(symbol)
                 print(f"🚫 [{symbol}] added to auto-blacklist due to API error.", flush=True)

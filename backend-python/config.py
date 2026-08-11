@@ -28,7 +28,7 @@ ENGINE_ROLE = os.environ.get("ENGINE_ROLE", "EXECUTION")  # "MACRO" or "EXECUTIO
 MIN_24H_VOLUME_USDT = float(os.environ.get("MIN_24H_VOLUME_USDT", "30000000.0"))
 
 # Max number of top volume-ranked symbols to scan dynamically (e.g. 45)
-TOP_N = int(os.environ.get("TOP_N", "45"))
+TOP_N = int(os.environ.get("TOP_N", "15"))
 
 # Stablecoin / fiat-pegged quote pairs to exclude from trading
 STABLECOIN_BLACKLIST = {
