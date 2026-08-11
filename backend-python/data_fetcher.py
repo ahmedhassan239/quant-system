@@ -28,21 +28,21 @@ def fetch_binance_klines(symbol='BTCUSDT', interval=TIMEFRAME, limit=100):
     
     try:
         response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 429 or (response.status_code >= 400 and '-1003' in response.text):
-            print(f"⚠️ Rate limit hit (-1003/429). Pausing Fetcher for 60 seconds...", flush=True)
+        if response.status_code in (418, 429) or (response.status_code >= 400 and '-1003' in response.text):
+            print(f"⚠️ Rate limit hit (-1003/418/429) on {symbol}. Pausing Fetcher for 60 seconds...", flush=True)
             time.sleep(60)
-            return fetch_binance_klines(symbol, interval, limit)
+            raise Exception("Rate limit hit")
 
         if response.status_code >= 400:
             if symbol not in BLACKLISTED_SYMBOLS:
                 BLACKLISTED_SYMBOLS.add(symbol)
-                print(f"🚫 [{symbol}] added to auto-blacklist due to API error.", flush=True)
+                print(f"🚫 [{symbol}] added to auto-blacklist due to API error (HTTP {response.status_code}).", flush=True)
             response.raise_for_status()
     except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 429:
-            print(f"⚠️ Rate limit hit (HTTP 429). Pausing Fetcher for 60 seconds...", flush=True)
+        if e.response is not None and e.response.status_code in (418, 429):
+            print(f"⚠️ Rate limit hit (HTTP {e.response.status_code}) on {symbol}. Pausing Fetcher for 60 seconds...", flush=True)
             time.sleep(60)
-            return fetch_binance_klines(symbol, interval, limit)
+            raise Exception("Rate limit hit")
         if e.response is not None and e.response.status_code >= 400:
             if symbol not in BLACKLISTED_SYMBOLS:
                 BLACKLISTED_SYMBOLS.add(symbol)
@@ -139,12 +139,18 @@ def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250, chunk_size=10):
     success_count = 0
     fail_count = 0
 
+    rate_limit_hit = False
+
     for chunk_idx, chunk in enumerate(chunks):
+        if rate_limit_hit:
+            print("⚠️ Rate limit triggered in previous chunk. Exiting fetch cycle gracefully.", flush=True)
+            break
+            
         with ThreadPoolExecutor(max_workers=len(chunk)) as executor:
             futures = []
             for sym in chunk:
                 futures.append(executor.submit(_fetch_and_save_symbol, sym, interval, limit))
-                time.sleep(0.1)  # Stagger requests to avoid breaching Binance rate limits
+                time.sleep(1.0)  # Increased stagger to 1.0s to avoid breaching Binance rate limits
             for future in as_completed(futures):
                 sym, success, err = future.result()
                 if success:
@@ -152,10 +158,12 @@ def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250, chunk_size=10):
                 else:
                     fail_count += 1
                     print(f"  ⚠️ Failed to fetch {sym}: {err}", flush=True)
+                    if err and "Rate limit hit" in err:
+                        rate_limit_hit = True
 
         # Rate-limit safety: slight pause between chunks
-        if chunk_idx < len(chunks) - 1:
-            time.sleep(0.15)
+        if chunk_idx < len(chunks) - 1 and not rate_limit_hit:
+            time.sleep(0.5)
 
     print(f"--- Fetcher Completed ({success_count}/{len(symbols)} symbols processed successfully) ---", flush=True)
 

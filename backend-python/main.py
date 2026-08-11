@@ -111,8 +111,8 @@ def scanner_job():
             try:
                 run_macro_analyzer(symbol=sym)
             except BinanceAPIException as e:
-                if e.code == -1003 or '429' in str(e):
-                    print(f"⚠️ [MACRO] Rate limit hit (-1003/429). Pausing engine for 60s...", flush=True)
+                if e.code == -1003 or '429' in str(e) or '418' in str(e):
+                    print(f"⚠️ [MACRO] Rate limit hit (-1003/418/429). Pausing engine for 60s...", flush=True)
                     time.sleep(60)
                 else:
                     print(f"⚠️ [MACRO] API Error for {sym}: {e}", flush=True)
@@ -147,9 +147,9 @@ def scanner_job():
                         current_open_count = count_all_open_positions(futures_client)
                         trades_opened_this_cycle += 1
             except BinanceAPIException as e:
-                if e.code == -1003 or '429' in str(e):
-                    logger.warning(f"⚠️ [EXECUTION] Rate limit hit (-1003/429) on {sym}. Pausing engine for 60s...")
-                    print(f"⚠️ [EXECUTION] Rate limit hit (-1003/429). Pausing engine for 60s...", flush=True)
+                if e.code == -1003 or '429' in str(e) or '418' in str(e):
+                    logger.warning(f"⚠️ [EXECUTION] Rate limit hit (-1003/418/429) on {sym}. Pausing engine for 60s...")
+                    print(f"⚠️ [EXECUTION] Rate limit hit (-1003/418/429). Pausing engine for 60s...", flush=True)
                     time.sleep(60)
                 else:
                     logger.error(f"⚠️ [EXECUTION] API Error for {sym}: {e}")
