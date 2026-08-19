@@ -116,8 +116,10 @@ def setup_symbol(client: Client, symbol: str) -> None:
         logger.info(f"[{symbol}] Margin type set to {FUTURES_MARGIN_TYPE}")
     except BinanceAPIException as e:
         # Code -4046: "No need to change margin type."
-        if e.code == -4046:
-            logger.debug(f"[{symbol}] Margin type already {FUTURES_MARGIN_TYPE}")
+        # Code -4067: "Position side cannot be changed with open orders."
+        #   → Safe to ignore: margin is already configured, proceed to entry.
+        if e.code in (-4046, -4067):
+            logger.debug(f"[{symbol}] Margin type already {FUTURES_MARGIN_TYPE} (code {e.code})")
         elif _check_api_exception_for_blacklist(symbol, e):
             logger.warning(f"[{symbol}] Margin setup restricted [{e.code}]. Auto-blacklisted for session.")
             raise
@@ -132,7 +134,10 @@ def setup_symbol(client: Client, symbol: str) -> None:
         actual = resp.get('leverage', FUTURES_LEVERAGE)
         logger.info(f"[{symbol}] Leverage set to {actual}x")
     except BinanceAPIException as e:
-        if _check_api_exception_for_blacklist(symbol, e):
+        # Code -4067: same scenario — open orders prevent changes, safe to proceed.
+        if e.code == -4067:
+            logger.debug(f"[{symbol}] Leverage unchanged (open orders exist, code -4067). Proceeding.")
+        elif _check_api_exception_for_blacklist(symbol, e):
             logger.warning(f"[{symbol}] Leverage setup restricted [{e.code}]. Auto-blacklisted for session.")
             raise
         else:

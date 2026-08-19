@@ -146,7 +146,7 @@ MACRO_SDC_MULTIPLIER = 2.0         # ±2σ Standard Deviation Channel
 # Execution Engine (5m) — Risk & Position Limits
 HARD_STOP_LOSS_PCT = 0.07          # 7% absolute stop loss
 STOP_LOSS_PCT = 0.07               # 7% trailing/soft stop loss
-MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "10"))  # Max open positions limit
+MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "3"))   # Hard limit: max 3 concurrent positions
 
 # Execution Engine (5m) — Dynamic ATR Trailing Stop Loss (TSL) Settings
 ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                               # 14-period ATR
@@ -155,22 +155,22 @@ ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                            
 # ── ALPHA MODE: TP raised to 3.0%, TSL widened to 2.5x/2.0x ATR across all primary regimes
 REGIME_RISK_PARAMS = {
     'RANGE': {
-        'SL_ATR_MULT': 2.5,
-        'PARTIAL_TP_PCT': 0.030,                # 3.0% (was 0.6%) — let winners run
-        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR (was 2.0x) — room to breathe
-        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR (was 1.5x) — wider trail
+        'SL_ATR_MULT': 1.2,                     # 1.2x ATR (was 2.5x) — cut losers rapidly
+        'PARTIAL_TP_PCT': 0.10,                 # 10.0% ROE (was 3.0%) — let winners run
+        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR — room to breathe
+        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR — wider trail
     },
     'TREND': {
-        'SL_ATR_MULT': 1.5,
-        'PARTIAL_TP_PCT': 0.030,                # 3.0% (was 2.0%) — let winners run
-        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR (was 2.0x) — room to breathe
-        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR (was 1.5x) — wider trail
+        'SL_ATR_MULT': 1.2,                     # 1.2x ATR (was 1.5x) — cut losers rapidly
+        'PARTIAL_TP_PCT': 0.10,                 # 10.0% ROE (was 3.0%) — let winners run
+        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR — room to breathe
+        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR — wider trail
     },
     'STORM': {
-        'SL_ATR_MULT': 1.5,
-        'PARTIAL_TP_PCT': 0.030,                # 3.0% (was 0.5%) — no more penny exits
-        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR (was 0.5x) — match primary
-        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR (was 0.3x) — match primary
+        'SL_ATR_MULT': 1.2,                     # 1.2x ATR (was 1.5x) — cut losers rapidly
+        'PARTIAL_TP_PCT': 0.10,                 # 10.0% ROE (was 3.0%) — let winners run
+        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR — match primary
+        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR — match primary
     },
     'CRASH_CATCHER': {
         # SL is wick-based (not ATR-based) — SL_ATR_MULT intentionally 0
@@ -227,8 +227,8 @@ CRASH_CATCHER_ALLOC_PCT     = float(os.environ.get("CC_ALLOC_PCT",     "0.05")) 
 
 # Pyramiding Strategy (Scaling Into Winners)
 MAX_SCALE_INS = 2                      # Max 2 scale-ins per winning position
-PYRAMID_TIER1_PNL = 0.02               # Tier 1 trigger: +2.0% unrealized PnL
-PYRAMID_TIER2_PNL = 0.04               # Tier 2 trigger: +4.0% unrealized PnL
+PYRAMID_TIER1_PNL = 0.06               # Tier 1 trigger: +6.0% unrealized PnL (was 2.0%)
+PYRAMID_TIER2_PNL = 0.10               # Tier 2 trigger: +10.0% unrealized PnL (was 4.0%)
 PYRAMID_TIER1_SIZE_PCT = 0.50          # Add 50% of initial position size on Tier 1
 PYRAMID_TIER2_SIZE_PCT = 0.25          # Add 25% of initial position size on Tier 2
 
