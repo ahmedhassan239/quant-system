@@ -319,9 +319,16 @@ def run_analyzer(
         macro_sma = float(macro_info['sma_50'])
         macro_emoji = "🟢" if macro_trend == 'UPTREND' else "🔴"
 
+        # ── 0b. Fetch BTC macro trend for the Hard SHORT Filter ──
+        # Used across ALL entry paths (router, Whale Strike, Crash Catcher)
+        # to suppress shorts when BTC is in a structural uptrend.
+        btc_macro_info = get_macro_trend('BTCUSDT')
+        btc_macro_trend = btc_macro_info.get('macro_trend') if btc_macro_info else None
+
         print(
             f"  {macro_emoji} [{symbol}] Macro: {macro_trend} | "
-            f"1h Z: {macro_zscore:+.2f} | SMA-50: ${macro_sma:,.2f}",
+            f"1h Z: {macro_zscore:+.2f} | SMA-50: ${macro_sma:,.2f} | "
+            f"BTC Macro: {btc_macro_trend or 'N/A'}",
             flush=True,
         )
 
@@ -549,6 +556,17 @@ def run_analyzer(
                 elif w_direction == 'SHORT' and macro_trend in ('DOWNTREND', 'NEUTRAL'):
                     is_macro_aligned = True
 
+                # ── HARD SHORT FILTER: Block Whale Strike SHORT if BTC/asset is UPTREND ──
+                if w_direction == 'SHORT' and is_macro_aligned:
+                    if macro_trend == 'UPTREND' or btc_macro_trend == 'UPTREND':
+                        _filter_src = 'asset' if macro_trend == 'UPTREND' else 'BTCUSDT'
+                        print(
+                            f"🚫 [{symbol}] WHALE STRIKE SHORT blocked by Hard Macro Filter "
+                            f"({_filter_src} macro is UPTREND)",
+                            flush=True,
+                        )
+                        is_macro_aligned = False
+
                 if is_macro_aligned:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
                         print(
@@ -590,34 +608,109 @@ def run_analyzer(
                 )
 
                 if cc_signal:
-                    decision          = cc_signal['direction']
-                    strategy_type     = cc_signal['strategy_type']
-                    new_stop_loss     = cc_signal['stop_loss']
-                    active_mode_value = 'CRASH_CATCHER'
+                    cc_direction = cc_signal['direction']
 
-                    # Override TSL parameters with Crash Catcher's aggressive profile
-                    # (early activation at 0.5x ATR, tight trail at 0.3x ATR)
-                    tsl_atr_activation_mult = CRASH_CATCHER_TSL_ATR_MULT
-                    tsl_atr_trail_mult      = REGIME_RISK_PARAMS['CRASH_CATCHER']['TSL_ATR_TRAIL_MULT']
-                    partial_tp_pct          = REGIME_RISK_PARAMS['CRASH_CATCHER']['PARTIAL_TP_PCT']
+                    # ── HARD SHORT FILTER: Block Crash Catcher SHORT if BTC/asset is UPTREND ──
+                    if cc_direction == 'SHORT' and (macro_trend == 'UPTREND' or btc_macro_trend == 'UPTREND'):
+                        _filter_src = 'asset' if macro_trend == 'UPTREND' else 'BTCUSDT'
+                        print(
+                            f"🚫 [{symbol}] CRASH CATCHER SHORT blocked by Hard Macro Filter "
+                            f"({_filter_src} macro is UPTREND)",
+                            flush=True,
+                        )
+                        cc_signal = None  # Suppress the signal
+                    else:
+                        decision          = cc_direction
+                        strategy_type     = cc_signal['strategy_type']
+                        new_stop_loss     = cc_signal['stop_loss']
+                        active_mode_value = 'CRASH_CATCHER'
 
-                    storm_bypass_msg = (
-                        f"⚡ [CRASH CATCHER] STORM Freeze BYPASSED for {symbol} {decision} "
-                        f"(counter-trend override authorised) | "
-                        f"Z: {current_zscore:+.3f} | RSI: {current_rsi:.1f} | "
-                        f"Vol: {cc_signal['vol_ratio']:.1f}x | Wick: {cc_signal['wick_ratio']:.2f} | "
-                        f"SL: ${new_stop_loss:.4f} | Regime: {active_regime.value}"
-                    )
-                    print(storm_bypass_msg, flush=True)
-                    log_to_db(session, symbol, "ENTRY", storm_bypass_msg)
+                        # Override TSL parameters with Crash Catcher's aggressive profile
+                        # (early activation at 0.5x ATR, tight trail at 0.3x ATR)
+                        tsl_atr_activation_mult = CRASH_CATCHER_TSL_ATR_MULT
+                        tsl_atr_trail_mult      = REGIME_RISK_PARAMS['CRASH_CATCHER']['TSL_ATR_TRAIL_MULT']
+                        partial_tp_pct          = REGIME_RISK_PARAMS['CRASH_CATCHER']['PARTIAL_TP_PCT']
 
-            # ── STORM OVERRIDE: Freeze all new entries (primary engine only) ──
+                        storm_bypass_msg = (
+                            f"⚡ [CRASH CATCHER] STORM Freeze BYPASSED for {symbol} {decision} "
+                            f"(counter-trend override authorised) | "
+                            f"Z: {current_zscore:+.3f} | RSI: {current_rsi:.1f} | "
+                            f"Vol: {cc_signal['vol_ratio']:.1f}x | Wick: {cc_signal['wick_ratio']:.2f} | "
+                            f"SL: ${new_stop_loss:.4f} | Regime: {active_regime.value}"
+                        )
+                        print(storm_bypass_msg, flush=True)
+                        log_to_db(session, symbol, "ENTRY", storm_bypass_msg)
+
+            # ── STORM OVERRIDE: Conditional freeze (primary engine only) ──
             # NOTE: Crash Catcher already set decision above if it fired.
-            # If decision is still 'WAIT', the STORM freeze applies.
+            # If decision is still 'WAIT', evaluate whether STORM should
+            # allow trend-aligned entries or freeze everything.
             if active_regime.value == 'STORM' and decision == 'WAIT':
-                print(f"⏸️ [{symbol}] STORM Regime Active — Freezing New Entries (primary engine)", flush=True)
+                storm_direction = precomputed_meta.get('storm_direction')
 
-            # ── STRATEGY ROUTER: Regime-Aware Entry Logic ──
+                # Allow Strategy Router for trend-following entries IF:
+                #   1. STORM was triggered by Z-Score (has directional bias)
+                #   2. Macro trend is defined (UPTREND or DOWNTREND)
+                if storm_direction and macro_trend in ('UPTREND', 'DOWNTREND'):
+                    regime, routed_decision, routed_strategy_type, routed_stop_loss, regime_meta = strategy_router.route(
+                        symbol=symbol,
+                        df=df,
+                        portfolio=portfolio,
+                        current_price=current_price,
+                        current_rsi=current_rsi,
+                        current_zscore=current_zscore,
+                        current_atr=current_atr,
+                        bullish_ob=bullish_ob,
+                        bearish_ob=bearish_ob,
+                        bullish_breakout=bullish_breakout,
+                        bearish_breakout=bearish_breakout,
+                        macro_trend=macro_trend,
+                        in_position=in_position,
+                        active_count=active_count,
+                        max_positions=MAX_CONCURRENT_POSITIONS,
+                        futures_client=futures_client,
+                        session=session,
+                        precomputed_regime=active_regime,
+                        precomputed_meta=precomputed_meta,
+                        btc_macro_trend=btc_macro_trend,
+                    )
+
+                    # Accept only trend-following/breakout strategies aligned with STORM direction.
+                    # Mean Reversion is always blocked during STORM.
+                    if routed_decision in ('LONG', 'SHORT') and routed_strategy_type in ('PULLBACK', 'BREAKOUT', 'TREND_MOMENTUM'):
+                        storm_aligned = (
+                            (storm_direction == 'UP' and macro_trend == 'UPTREND' and routed_decision == 'LONG') or
+                            (storm_direction == 'DOWN' and macro_trend == 'DOWNTREND' and routed_decision == 'SHORT')
+                        )
+                        if storm_aligned:
+                            decision      = routed_decision
+                            strategy_type = routed_strategy_type
+                            new_stop_loss = routed_stop_loss
+                            active_mode_value = regime.value
+                            print(
+                                f"🌪️✅ [{symbol}] STORM Trend-Aligned Entry ALLOWED — "
+                                f"{decision} {strategy_type} (storm_dir={storm_direction}, macro={macro_trend})",
+                                flush=True,
+                            )
+                            log_to_db(session, symbol, "ENTRY",
+                                f"STORM Trend-Aligned {decision} {strategy_type} allowed "
+                                f"(storm_dir={storm_direction}, macro={macro_trend})")
+                        else:
+                            print(
+                                f"⏸️ [{symbol}] STORM Freeze — counter-trend {routed_decision} {routed_strategy_type} rejected "
+                                f"(storm_dir={storm_direction}, macro={macro_trend})",
+                                flush=True,
+                            )
+                    elif routed_decision in ('LONG', 'SHORT') and routed_strategy_type == 'RANGE_MEAN_REVERSION':
+                        print(
+                            f"⏸️ [{symbol}] STORM Freeze — Mean Reversion blocked during STORM",
+                            flush=True,
+                        )
+                    # else: routed_decision was WAIT, nothing to do
+                else:
+                    print(f"⏸️ [{symbol}] STORM Regime Active — Freezing New Entries (primary engine)", flush=True)
+
+            # ── STRATEGY ROUTER: Regime-Aware Entry Logic (non-STORM) ──
             if decision == 'WAIT' and active_regime.value != 'STORM':
                 regime, routed_decision, routed_strategy_type, routed_stop_loss, regime_meta = strategy_router.route(
                     symbol=symbol,
@@ -639,6 +732,7 @@ def run_analyzer(
                     session=session,
                     precomputed_regime=active_regime,
                     precomputed_meta=precomputed_meta,
+                    btc_macro_trend=btc_macro_trend,
                 )
                 active_mode_value = regime.value
 
@@ -924,6 +1018,12 @@ def run_analyzer(
                                 f"{strategy_name} | Macro: {macro_trend} | "
                                 f"Price ${current_price:.2f} > SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY"
                             )
+                        elif strategy_type == 'TREND_MOMENTUM':
+                            strategy_name = f"{tier_str} [Z:{abs_z:.1f}] - Trend Momentum"
+                            reason_msg = (
+                                f"{strategy_name} | Macro: {macro_trend} | "
+                                f"Price > EMA-20 + RSI {current_rsi:.1f} + Micro-breakout"
+                            )
                         elif strategy_type in ('CRASH_CATCHER_LONG', 'CRASH_CATCHER_SHORT'):
                             _cc = cc_signal if cc_signal else {}
                             strategy_name = (
@@ -1014,6 +1114,14 @@ def run_analyzer(
                                 f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                 f"- Price: ${current_price:.2f} > SMA-50: ${current_sma:.2f}\n"
                                 f"- ⚠️ TESTNET ONLY — No OB/Volume confirmation"
+                            )
+                        elif strategy_type == 'TREND_MOMENTUM':
+                            alert_reason = (
+                                f"- Strategy: E (Trend Momentum)\n"
+                                f"- Macro Trend: {macro_emoji} {macro_trend}\n"
+                                f"- Price > EMA-20 (riding fast MA)\n"
+                                f"- RSI: {current_rsi:.1f} (momentum zone 50-75)\n"
+                                f"- Micro-breakout: Close > prior 3-candle high"
                             )
                         elif strategy_type == 'RANGE_MEAN_REVERSION':
                             alert_reason = (
@@ -1145,6 +1253,12 @@ def run_analyzer(
                                 f"{strategy_name} | Macro: {macro_trend} | "
                                 f"Price ${current_price:.2f} < SMA-50 ${current_sma:.2f} | 🧪 TESTNET ONLY"
                             )
+                        elif strategy_type == 'TREND_MOMENTUM':
+                            strategy_name = f"{tier_str} [Z:{abs_z:.1f}] - Trend Momentum"
+                            reason_msg = (
+                                f"{strategy_name} | Macro: {macro_trend} | "
+                                f"Price < EMA-20 + RSI {current_rsi:.1f} + Micro-breakdown"
+                            )
                         elif strategy_type in ('CRASH_CATCHER_LONG', 'CRASH_CATCHER_SHORT'):
                             _cc = cc_signal if cc_signal else {}
                             strategy_name = (
@@ -1234,6 +1348,14 @@ def run_analyzer(
                                 f"- Macro Trend: {macro_emoji} {macro_trend}\n"
                                 f"- Price: ${current_price:.2f} < SMA-50: ${current_sma:.2f}\n"
                                 f"- ⚠️ TESTNET ONLY — No OB/Volume confirmation"
+                            )
+                        elif strategy_type == 'TREND_MOMENTUM':
+                            alert_reason = (
+                                f"- Strategy: E (Trend Momentum)\n"
+                                f"- Macro Trend: {macro_emoji} {macro_trend}\n"
+                                f"- Price < EMA-20 (riding below fast MA)\n"
+                                f"- RSI: {current_rsi:.1f} (momentum zone 25-50)\n"
+                                f"- Micro-breakdown: Close < prior 3-candle low"
                             )
                         elif strategy_type == 'RANGE_MEAN_REVERSION':
                             alert_reason = (

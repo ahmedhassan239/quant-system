@@ -100,7 +100,7 @@ class RegimeDetector:
     RANGE_ADX_MAX    = 25.0   # ADX below this = no meaningful trend
     RANGE_ZSCORE_MAX = 1.0    # |Z-Score| must be inside ±1.0 for RANGE
     TREND_ADX_MIN    = 25.0   # ADX at/above this = established trend
-    TREND_ZSCORE_MIN = 1.5    # |Z-Score| must be ≥ 1.5 for TREND
+    TREND_ZSCORE_MIN = 1.2    # |Z-Score| must be ≥ 1.2 for TREND
     ATR_MA_PERIOD    = 50     # Window for ATR moving average (STORM detection)
     ADX_PERIOD       = 14     # ADX smoothing period
 
@@ -212,6 +212,16 @@ class RegimeDetector:
             if storm_zscore_trigger:
                 reason_parts.append(f"|Z-Score| {abs_z:.2f} (>{cls.STORM_ZSCORE})")
             meta['regime_reason'] = f"STORM: {' + '.join(reason_parts)}"
+
+            # ── Storm Direction: enables conditional freeze in core.py ──
+            # If Z-Score drove the STORM trigger, record which direction
+            # the parabolic move is heading so the engine can allow
+            # trend-aligned entries while still blocking counter-trend.
+            if storm_zscore_trigger:
+                meta['storm_direction'] = 'UP' if z_score > 0 else 'DOWN'
+            else:
+                meta['storm_direction'] = None  # ATR-only spike — no directional bias
+
             return MarketRegime.STORM, meta
 
         # ── Priority 2: RANGE (Mean Reversion) ──
@@ -336,6 +346,10 @@ class TrendStrategy(TradingStrategy):
             logger.info(f"[{symbol}] [TREND] Max slots reached ({active_count}/{max_positions})")
             return 'WAIT', None, 0.0
 
+        # ── Precompute EMA-20 for Trend Momentum trigger ──
+        ema_20 = df['close'].ewm(span=20, adjust=False).mean()
+        current_ema20 = float(ema_20.iloc[-1]) if len(ema_20) >= 20 else None
+
         # ── LONG Confluence (UPTREND) ──
         if macro_trend == 'UPTREND' and current_rsi > 55.0:
             # Strategy A: Pullback into Bullish OB
@@ -352,6 +366,23 @@ class TrendStrategy(TradingStrategy):
                 new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999
                 logger.info(f"[TREND] {symbol} LONG Breakout — Vol {bullish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
 
+            # Strategy E: Trend Momentum — catches smooth trends with no OB/breakout
+            # Conditions: Price > EMA-20 + RSI 50-75 + close > prior 3-candle high
+            elif current_ema20 and current_price > current_ema20 and 50.0 <= current_rsi <= 75.0:
+                if len(df) >= 4:
+                    prior_3_high = float(df['high'].iloc[-4:-1].max())
+                    candle_close = float(df['close'].iloc[-1])
+                    if candle_close > prior_3_high:
+                        decision = 'LONG'
+                        strategy_type = 'TREND_MOMENTUM'
+                        # ATR-based stop: 1.5x ATR below entry
+                        new_stop_loss = current_price - (1.5 * current_atr) if current_atr else current_price * 0.985
+                        logger.info(
+                            f"[TREND] {symbol} LONG Momentum — Price ${current_price:.2f} > EMA20 ${current_ema20:.2f} | "
+                            f"RSI {current_rsi:.1f} | Close ${candle_close:.2f} > Prior3H ${prior_3_high:.2f} | "
+                            f"Z={current_zscore:+.2f}"
+                        )
+
         # ── SHORT Confluence (DOWNTREND) ──
         elif macro_trend == 'DOWNTREND' and current_rsi < 45.0:
             # Strategy A: Pullback into Bearish OB
@@ -367,6 +398,23 @@ class TrendStrategy(TradingStrategy):
                 strategy_type = 'BREAKOUT'
                 new_stop_loss = bearish_breakout['breakout_candle_high'] * 1.001
                 logger.info(f"[TREND] {symbol} SHORT Breakout — Vol {bearish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
+
+            # Strategy E: Trend Momentum — catches smooth downtrends
+            # Conditions: Price < EMA-20 + RSI 25-50 + close < prior 3-candle low
+            elif current_ema20 and current_price < current_ema20 and 25.0 <= current_rsi <= 50.0:
+                if len(df) >= 4:
+                    prior_3_low = float(df['low'].iloc[-4:-1].min())
+                    candle_close = float(df['close'].iloc[-1])
+                    if candle_close < prior_3_low:
+                        decision = 'SHORT'
+                        strategy_type = 'TREND_MOMENTUM'
+                        # ATR-based stop: 1.5x ATR above entry
+                        new_stop_loss = current_price + (1.5 * current_atr) if current_atr else current_price * 1.015
+                        logger.info(
+                            f"[TREND] {symbol} SHORT Momentum — Price ${current_price:.2f} < EMA20 ${current_ema20:.2f} | "
+                            f"RSI {current_rsi:.1f} | Close ${candle_close:.2f} < Prior3L ${prior_3_low:.2f} | "
+                            f"Z={current_zscore:+.2f}"
+                        )
 
         return decision, strategy_type, new_stop_loss
 
@@ -685,6 +733,7 @@ class StrategyRouter:
         session,
         precomputed_regime: MarketRegime | None = None,
         precomputed_meta: dict | None = None,
+        btc_macro_trend: str | None = None,
     ) -> tuple[MarketRegime, str, str | None, float, dict]:
         """
         Detect regime → select strategy → execute.
@@ -749,6 +798,21 @@ class StrategyRouter:
                 decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
             elif macro_trend == 'DOWNTREND' and decision != 'SHORT':
                 logger.info(f"[{symbol}] HARD FILTER: Dropping {decision} signal (Macro Trend is DOWNTREND)")
+                decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
+
+        # 5. HARD MACRO SHORT FILTER: Suppress ALL shorts if BTC or asset is UPTREND
+        if decision == 'SHORT':
+            if macro_trend == 'UPTREND':
+                logger.info(
+                    f"[{symbol}] HARD SHORT FILTER: Dropping SHORT "
+                    f"(asset macro trend is UPTREND)"
+                )
+                decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
+            elif btc_macro_trend == 'UPTREND':
+                logger.info(
+                    f"[{symbol}] HARD SHORT FILTER: Dropping SHORT "
+                    f"(BTCUSDT macro trend is UPTREND)"
+                )
                 decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
 
         return regime, decision, strategy_type, new_stop_loss, regime_meta
