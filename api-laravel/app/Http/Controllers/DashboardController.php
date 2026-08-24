@@ -141,6 +141,12 @@ class DashboardController extends Controller
             }
         }
 
+        // ── HARD RESET: Zero-out historical PNL & Win Rate ──
+        // Override the DB-computed values so the dashboard starts fresh.
+        // To restore historical metrics, remove the two lines below.
+        $totalPnl = 0.00;
+        $winRate = 0.00;
+
         return response()->json([
             'wallet_balance' => number_format($walletBalance, 2, '.', ''),
             'active_unrealized_pnl' => number_format($totalUnrealizedProfit, 2, '.', ''),
