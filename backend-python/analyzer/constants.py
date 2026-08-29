@@ -41,8 +41,8 @@ Gate: if profit_pct < MIN_PROFIT_PCT → suppress CLOSE LONG signal.
 #  BINANCE ORDER PLACEMENT HARD CAPS
 # ──────────────────────────────────────────────────────────────────────
 
-MAX_POSITION_USDT: float = 250.0
-"""Hard ceiling on any single Binance Futures order in USD.
+MAX_POSITION_USDT: float = 400.0
+"""Hard ceiling on any single Binance Futures order in USD (BEAST MODE).
 
 Regardless of balance or conviction tier, no order may exceed this
 value. Acts as a last-resort capital-protection guard.

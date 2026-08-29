@@ -556,16 +556,8 @@ def run_analyzer(
                 elif w_direction == 'SHORT' and macro_trend in ('DOWNTREND', 'NEUTRAL'):
                     is_macro_aligned = True
 
-                # ── HARD SHORT FILTER: Block Whale Strike SHORT if BTC/asset is UPTREND ──
-                if w_direction == 'SHORT' and is_macro_aligned:
-                    if macro_trend == 'UPTREND' or btc_macro_trend == 'UPTREND':
-                        _filter_src = 'asset' if macro_trend == 'UPTREND' else 'BTCUSDT'
-                        print(
-                            f"🚫 [{symbol}] WHALE STRIKE SHORT blocked by Hard Macro Filter "
-                            f"({_filter_src} macro is UPTREND)",
-                            flush=True,
-                        )
-                        is_macro_aligned = False
+                # BEAST MODE: Whale Strike SHORTs allowed regardless of BTC/asset macro trend
+                # (bi-directional momentum scalping — intraday EMA-20 check in StrategyRouter handles filtering)
 
                 if is_macro_aligned:
                     if active_count >= MAX_CONCURRENT_POSITIONS:
@@ -610,15 +602,10 @@ def run_analyzer(
                 if cc_signal:
                     cc_direction = cc_signal['direction']
 
-                    # ── HARD SHORT FILTER: Block Crash Catcher SHORT if BTC/asset is UPTREND ──
-                    if cc_direction == 'SHORT' and (macro_trend == 'UPTREND' or btc_macro_trend == 'UPTREND'):
-                        _filter_src = 'asset' if macro_trend == 'UPTREND' else 'BTCUSDT'
-                        print(
-                            f"🚫 [{symbol}] CRASH CATCHER SHORT blocked by Hard Macro Filter "
-                            f"({_filter_src} macro is UPTREND)",
-                            flush=True,
-                        )
-                        cc_signal = None  # Suppress the signal
+                    # BEAST MODE: Crash Catcher SHORTs allowed regardless of BTC/asset macro trend
+                    # (bi-directional scalping — intraday momentum check in StrategyRouter handles filtering)
+                    if False:  # SHORT ban removed
+                        pass
                     else:
                         decision          = cc_direction
                         strategy_type     = cc_signal['strategy_type']

@@ -9567,3 +9567,5 @@ org.h2.jdbc.JdbcSQLNonTransientConnectionException: Database is already closed (
 	at metabase.core.core$destroy_BANG_.invoke(core.clj:103)
 	at clojure.lang.AFn.run(AFn.java:22)
 	at java.base/java.lang.Thread.run(Unknown Source)
+2026-08-24 14:36:55 jdbc[78]: exception
+org.h2.jdbc.JdbcSQLNonTransientException: The object is already closed [90007-214]

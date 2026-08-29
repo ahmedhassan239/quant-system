@@ -95,11 +95,12 @@ class RegimeDetector:
     """
 
     # Regime thresholds — all tunable via constants
+    # ── BEAST MODE: ADX thresholds lowered from 25 → 12 to allow entries on weak trends
     STORM_ATR_MULT   = 3.0    # ATR spike threshold (x its 50-period MA)
     STORM_ZSCORE     = 3.0    # |Z-Score| hard limit before STORM
-    RANGE_ADX_MAX    = 25.0   # ADX below this = no meaningful trend
+    RANGE_ADX_MAX    = 12.0   # ADX below 12 = true chop (BEAST MODE: was 25)
     RANGE_ZSCORE_MAX = 1.0    # |Z-Score| must be inside ±1.0 for RANGE
-    TREND_ADX_MIN    = 25.0   # ADX at/above this = established trend
+    TREND_ADX_MIN    = 12.0   # ADX at/above 12 = trending enough (BEAST MODE: was 25)
     TREND_ZSCORE_MIN = 1.2    # |Z-Score| must be ≥ 1.2 for TREND
     ATR_MA_PERIOD    = 50     # Window for ATR moving average (STORM detection)
     ADX_PERIOD       = 14     # ADX smoothing period
@@ -346,14 +347,30 @@ class TrendStrategy(TradingStrategy):
             logger.info(f"[{symbol}] [TREND] Max slots reached ({active_count}/{max_positions})")
             return 'WAIT', None, 0.0
 
-        # ── Precompute EMA-20 for Trend Momentum trigger ──
+        # ── Precompute EMAs for Beast Mode micro-breakout triggers ──
+        ema_9  = df['close'].ewm(span=9, adjust=False).mean()
         ema_20 = df['close'].ewm(span=20, adjust=False).mean()
+        current_ema9  = float(ema_9.iloc[-1])  if len(ema_9)  >= 9  else None
         current_ema20 = float(ema_20.iloc[-1]) if len(ema_20) >= 20 else None
 
-        # ── LONG Confluence (UPTREND) ──
-        if macro_trend == 'UPTREND' and current_rsi > 55.0:
-            # Strategy A: Pullback into Bullish OB
-            if bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.2:
+        # ── LONG Confluence (UPTREND) ── BEAST MODE: RSI gate widened to > 35 ──
+        if macro_trend == 'UPTREND' and current_rsi > 35.0:
+            # ── PRIMARY: EMA-9/EMA-20 Micro-Breakout (fast entry, no OB dependency) ──
+            if (current_ema9 and current_ema20
+                    and current_price > current_ema9
+                    and current_ema9 > current_ema20):
+                decision = 'LONG'
+                strategy_type = 'PULLBACK'
+                # ATR-based stop: 1.0x ATR below entry
+                new_stop_loss = current_price - (1.0 * current_atr) if current_atr else current_price * 0.985
+                logger.info(
+                    f"[TREND] {symbol} LONG Micro-Breakout — Price ${current_price:.2f} > "
+                    f"EMA9 ${current_ema9:.2f} > EMA20 ${current_ema20:.2f} | "
+                    f"RSI {current_rsi:.1f} | Z={current_zscore:+.2f}"
+                )
+
+            # ── FALLBACK: OB touch (legacy path, still valid) ──
+            elif bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.2:
                 decision = 'LONG'
                 strategy_type = 'PULLBACK'
                 new_stop_loss = bullish_ob['low'] * 0.999
@@ -367,26 +384,40 @@ class TrendStrategy(TradingStrategy):
                 logger.info(f"[TREND] {symbol} LONG Breakout — Vol {bullish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
 
             # Strategy E: Trend Momentum — catches smooth trends with no OB/breakout
-            # Conditions: Price > EMA-20 + RSI 50-75 + close > prior 3-candle high
-            elif current_ema20 and current_price > current_ema20 and 50.0 <= current_rsi <= 75.0:
+            # BEAST MODE: RSI band widened to 35-75
+            elif current_ema20 and current_price > current_ema20 and 35.0 <= current_rsi <= 75.0:
                 if len(df) >= 4:
                     prior_3_high = float(df['high'].iloc[-4:-1].max())
                     candle_close = float(df['close'].iloc[-1])
                     if candle_close > prior_3_high:
                         decision = 'LONG'
                         strategy_type = 'TREND_MOMENTUM'
-                        # ATR-based stop: 1.5x ATR below entry
-                        new_stop_loss = current_price - (1.5 * current_atr) if current_atr else current_price * 0.985
+                        # ATR-based stop: 1.0x ATR below entry
+                        new_stop_loss = current_price - (1.0 * current_atr) if current_atr else current_price * 0.985
                         logger.info(
                             f"[TREND] {symbol} LONG Momentum — Price ${current_price:.2f} > EMA20 ${current_ema20:.2f} | "
                             f"RSI {current_rsi:.1f} | Close ${candle_close:.2f} > Prior3H ${prior_3_high:.2f} | "
                             f"Z={current_zscore:+.2f}"
                         )
 
-        # ── SHORT Confluence (DOWNTREND) ──
-        elif macro_trend == 'DOWNTREND' and current_rsi < 45.0:
-            # Strategy A: Pullback into Bearish OB
-            if bearish_ob and current_price <= bearish_ob['high'] and current_zscore > 1.2:
+        # ── SHORT Confluence (DOWNTREND) ── BEAST MODE: RSI gate widened to < 65 ──
+        elif macro_trend == 'DOWNTREND' and current_rsi < 65.0:
+            # ── PRIMARY: EMA-9/EMA-20 Micro-Breakdown (fast entry, no OB dependency) ──
+            if (current_ema9 and current_ema20
+                    and current_price < current_ema9
+                    and current_ema9 < current_ema20):
+                decision = 'SHORT'
+                strategy_type = 'PULLBACK'
+                # ATR-based stop: 1.0x ATR above entry
+                new_stop_loss = current_price + (1.0 * current_atr) if current_atr else current_price * 1.015
+                logger.info(
+                    f"[TREND] {symbol} SHORT Micro-Breakdown — Price ${current_price:.2f} < "
+                    f"EMA9 ${current_ema9:.2f} < EMA20 ${current_ema20:.2f} | "
+                    f"RSI {current_rsi:.1f} | Z={current_zscore:+.2f}"
+                )
+
+            # ── FALLBACK: OB touch (legacy path, still valid) ──
+            elif bearish_ob and current_price <= bearish_ob['high'] and current_zscore > 1.2:
                 decision = 'SHORT'
                 strategy_type = 'PULLBACK'
                 new_stop_loss = bearish_ob['high'] * 1.001
@@ -400,16 +431,16 @@ class TrendStrategy(TradingStrategy):
                 logger.info(f"[TREND] {symbol} SHORT Breakout — Vol {bearish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
 
             # Strategy E: Trend Momentum — catches smooth downtrends
-            # Conditions: Price < EMA-20 + RSI 25-50 + close < prior 3-candle low
-            elif current_ema20 and current_price < current_ema20 and 25.0 <= current_rsi <= 50.0:
+            # BEAST MODE: RSI band widened to 25-65
+            elif current_ema20 and current_price < current_ema20 and 25.0 <= current_rsi <= 65.0:
                 if len(df) >= 4:
                     prior_3_low = float(df['low'].iloc[-4:-1].min())
                     candle_close = float(df['close'].iloc[-1])
                     if candle_close < prior_3_low:
                         decision = 'SHORT'
                         strategy_type = 'TREND_MOMENTUM'
-                        # ATR-based stop: 1.5x ATR above entry
-                        new_stop_loss = current_price + (1.5 * current_atr) if current_atr else current_price * 1.015
+                        # ATR-based stop: 1.0x ATR above entry
+                        new_stop_loss = current_price + (1.0 * current_atr) if current_atr else current_price * 1.015
                         logger.info(
                             f"[TREND] {symbol} SHORT Momentum — Price ${current_price:.2f} < EMA20 ${current_ema20:.2f} | "
                             f"RSI {current_rsi:.1f} | Close ${candle_close:.2f} < Prior3L ${prior_3_low:.2f} | "
@@ -434,8 +465,9 @@ class RangeStrategy(TradingStrategy):
       • No Trailing Stop (range-bound price will oscillate)
     """
 
-    RSI_LONG_THRESHOLD  = 35.0   # Oversold — look for longs
-    RSI_SHORT_THRESHOLD = 65.0   # Overbought — look for shorts
+    # BEAST MODE: Wider RSI bands for more entries
+    RSI_LONG_THRESHOLD  = 45.0   # Mid-range — look for longs (BEAST MODE: was 35)
+    RSI_SHORT_THRESHOLD = 55.0   # Mid-range — look for shorts (BEAST MODE: was 65)
 
     @property
     def regime(self) -> MarketRegime:
@@ -466,27 +498,31 @@ class RangeStrategy(TradingStrategy):
         
         sl_dist = REGIME_RISK_PARAMS['RANGE']['SL_ATR_MULT'] * (current_atr if current_atr else current_price * 0.005)
 
-        # ── LONG: RSI oversold + Bullish Order Block touch ──
-        if current_rsi < self.RSI_LONG_THRESHOLD and bullish_ob:
-            if bullish_ob['low'] <= current_price <= bullish_ob['high']:
-                decision = 'LONG'
-                strategy_type = 'RANGE_MEAN_REVERSION'
-                new_stop_loss = current_price - sl_dist
-                logger.info(
-                    f"[RANGE] {symbol} LONG MR — RSI {current_rsi:.1f} "
-                    f"(oversold) + Bullish OB touch ${bullish_ob['low']:.2f}–${bullish_ob['high']:.2f}"
-                )
+        # ── BEAST MODE: LONG on RSI condition alone (OB touch optional) ──
+        if current_rsi < self.RSI_LONG_THRESHOLD:
+            decision = 'LONG'
+            strategy_type = 'RANGE_MEAN_REVERSION'
+            new_stop_loss = current_price - sl_dist
+            ob_info = ""
+            if bullish_ob and bullish_ob['low'] <= current_price <= bullish_ob['high']:
+                ob_info = f" + Bullish OB touch ${bullish_ob['low']:.2f}–${bullish_ob['high']:.2f}"
+            logger.info(
+                f"[RANGE] {symbol} LONG MR — RSI {current_rsi:.1f} "
+                f"(< {self.RSI_LONG_THRESHOLD}){ob_info}"
+            )
 
-        # ── SHORT: RSI overbought + Bearish Order Block touch ──
-        elif current_rsi > self.RSI_SHORT_THRESHOLD and bearish_ob:
-            if bearish_ob['low'] <= current_price <= bearish_ob['high']:
-                decision = 'SHORT'
-                strategy_type = 'RANGE_MEAN_REVERSION'
-                new_stop_loss = current_price + sl_dist
-                logger.info(
-                    f"[RANGE] {symbol} SHORT MR — RSI {current_rsi:.1f} "
-                    f"(overbought) + Bearish OB touch ${bearish_ob['low']:.2f}–${bearish_ob['high']:.2f}"
-                )
+        # ── BEAST MODE: SHORT on RSI condition alone (OB touch optional) ──
+        elif current_rsi > self.RSI_SHORT_THRESHOLD:
+            decision = 'SHORT'
+            strategy_type = 'RANGE_MEAN_REVERSION'
+            new_stop_loss = current_price + sl_dist
+            ob_info = ""
+            if bearish_ob and bearish_ob['low'] <= current_price <= bearish_ob['high']:
+                ob_info = f" + Bearish OB touch ${bearish_ob['low']:.2f}–${bearish_ob['high']:.2f}"
+            logger.info(
+                f"[RANGE] {symbol} SHORT MR — RSI {current_rsi:.1f} "
+                f"(> {self.RSI_SHORT_THRESHOLD}){ob_info}"
+            )
 
         return decision, strategy_type, new_stop_loss
 
@@ -792,28 +828,36 @@ class StrategyRouter:
         )
 
         # 4. HARD FILTER: Strict Macro-Trend Alignment
+        #    BEAST MODE: Removed for LONGs — macro alignment is still checked
+        #    in TrendStrategy. Keep only the counter-trend LONG block.
         if decision in ('LONG', 'SHORT'):
-            if macro_trend == 'UPTREND' and decision != 'LONG':
-                logger.info(f"[{symbol}] HARD FILTER: Dropping {decision} signal (Macro Trend is UPTREND)")
-                decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
-            elif macro_trend == 'DOWNTREND' and decision != 'SHORT':
-                logger.info(f"[{symbol}] HARD FILTER: Dropping {decision} signal (Macro Trend is DOWNTREND)")
+            if macro_trend == 'DOWNTREND' and decision == 'LONG':
+                logger.info(f"[{symbol}] HARD FILTER: Dropping LONG signal (Macro Trend is DOWNTREND)")
                 decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
 
-        # 5. HARD MACRO SHORT FILTER: Suppress ALL shorts if BTC or asset is UPTREND
+        # 5. BEAST MODE: Bi-Directional Shorts — allow SHORT momentum scalps
+        #    when intraday 5m price is below EMA-20 (downward momentum).
+        #    OLD BEHAVIOR: Blocked ALL shorts when BTC/asset macro was UPTREND.
+        #    NEW BEHAVIOR: Allow shorts if price < EMA-20 (intraday momentum check).
         if decision == 'SHORT':
-            if macro_trend == 'UPTREND':
-                logger.info(
-                    f"[{symbol}] HARD SHORT FILTER: Dropping SHORT "
-                    f"(asset macro trend is UPTREND)"
-                )
-                decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
-            elif btc_macro_trend == 'UPTREND':
-                logger.info(
-                    f"[{symbol}] HARD SHORT FILTER: Dropping SHORT "
-                    f"(BTCUSDT macro trend is UPTREND)"
-                )
-                decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
+            # Compute intraday EMA-20 from the DataFrame passed through route()
+            if len(df) >= 20:
+                ema_20_series = df['close'].ewm(span=20, adjust=False).mean()
+                ema_20_val = float(ema_20_series.iloc[-1])
+                current_close = float(df['close'].iloc[-1])
+                if current_close >= ema_20_val:
+                    logger.info(
+                        f"[{symbol}] BEAST MODE SHORT FILTER: Dropping SHORT — "
+                        f"Price ${current_close:.2f} >= EMA20 ${ema_20_val:.2f} "
+                        f"(no intraday downward momentum)"
+                    )
+                    decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
+                else:
+                    logger.info(
+                        f"[{symbol}] BEAST MODE: SHORT ALLOWED — "
+                        f"Price ${current_close:.2f} < EMA20 ${ema_20_val:.2f} "
+                        f"(intraday downward momentum confirmed)"
+                    )
 
         return regime, decision, strategy_type, new_stop_loss, regime_meta
 

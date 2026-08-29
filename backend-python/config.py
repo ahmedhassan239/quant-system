@@ -146,31 +146,31 @@ MACRO_SDC_MULTIPLIER = 2.0         # ±2σ Standard Deviation Channel
 # Execution Engine (5m) — Risk & Position Limits
 HARD_STOP_LOSS_PCT = 0.07          # 7% absolute stop loss
 STOP_LOSS_PCT = 0.07               # 7% trailing/soft stop loss
-MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "3"))   # Hard limit: max 3 concurrent positions
+MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "5"))   # Hard limit: max 5 concurrent positions (BEAST MODE)
 
 # Execution Engine (5m) — Dynamic ATR Trailing Stop Loss (TSL) Settings
 ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                               # 14-period ATR
 
 # ── Dynamic Regime-Based Risk Parameters ──
-# ── ALPHA MODE: TP raised to 3.0%, TSL widened to 2.5x/2.0x ATR across all primary regimes
+# ── BEAST MODE: Aggressive Scalp TP at 4.0% ROE, 1.0x ATR SL, 1.5x ATR trailing
 REGIME_RISK_PARAMS = {
     'RANGE': {
-        'SL_ATR_MULT': 1.2,                     # 1.2x ATR (was 2.5x) — cut losers rapidly
-        'PARTIAL_TP_PCT': 0.10,                 # 10.0% ROE (was 3.0%) — let winners run
-        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR — room to breathe
-        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR — wider trail
+        'SL_ATR_MULT': 1.0,                     # 1.0x ATR — cut bad scalps instantly
+        'PARTIAL_TP_PCT': 0.04,                 # 4.0% ROE — scalp TP (scale out 50%, move SL to BE)
+        'TSL_ATR_ACTIVATION_MULT': 1.5,         # 1.5x ATR — activate trailing at ~+3% ROE
+        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR — trail closely
     },
     'TREND': {
-        'SL_ATR_MULT': 1.2,                     # 1.2x ATR (was 1.5x) — cut losers rapidly
-        'PARTIAL_TP_PCT': 0.10,                 # 10.0% ROE (was 3.0%) — let winners run
-        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR — room to breathe
-        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR — wider trail
+        'SL_ATR_MULT': 1.0,                     # 1.0x ATR — cut bad scalps instantly
+        'PARTIAL_TP_PCT': 0.04,                 # 4.0% ROE — scalp TP (scale out 50%, move SL to BE)
+        'TSL_ATR_ACTIVATION_MULT': 1.5,         # 1.5x ATR — activate trailing at ~+3% ROE
+        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR — trail closely
     },
     'STORM': {
-        'SL_ATR_MULT': 1.2,                     # 1.2x ATR (was 1.5x) — cut losers rapidly
-        'PARTIAL_TP_PCT': 0.10,                 # 10.0% ROE (was 3.0%) — let winners run
-        'TSL_ATR_ACTIVATION_MULT': 2.5,         # 2.5x ATR — match primary
-        'TSL_ATR_TRAIL_MULT': 2.0,              # 2.0x ATR — match primary
+        'SL_ATR_MULT': 1.0,                     # 1.0x ATR — cut bad scalps instantly
+        'PARTIAL_TP_PCT': 0.04,                 # 4.0% ROE — scalp TP (scale out 50%, move SL to BE)
+        'TSL_ATR_ACTIVATION_MULT': 1.5,         # 1.5x ATR — activate trailing at ~+3% ROE
+        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR — trail closely
     },
     'CRASH_CATCHER': {
         # SL is wick-based (not ATR-based) — SL_ATR_MULT intentionally 0
