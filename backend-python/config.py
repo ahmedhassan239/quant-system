@@ -137,6 +137,28 @@ DISABLE_STAGNANT_EXIT = True
 DISABLE_TREND_REVERSAL_EJECT = True
 
 # ──────────────────────────────────────────────────────────────────────
+#  DAILY DRAWDOWN CIRCUIT BREAKER
+# ──────────────────────────────────────────────────────────────────────
+# If realized daily losses (sum of negative PnL on closed trades today UTC)
+# exceed this threshold, freeze ALL new entries until the next UTC day.
+MAX_DAILY_DRAWDOWN_USDT = float(os.environ.get("MAX_DAILY_DRAWDOWN_USDT", "30.0"))
+
+# ──────────────────────────────────────────────────────────────────────
+#  NOISE FILTER — MINIMUM ADX FOR ENTRIES
+# ──────────────────────────────────────────────────────────────────────
+# Any LONG/SHORT signal is suppressed if ADX < this value (chop zone).
+MIN_ADX_FOR_ENTRY = float(os.environ.get("MIN_ADX_FOR_ENTRY", "18.0"))
+
+# ──────────────────────────────────────────────────────────────────────
+#  ANTI-WHIPSAW RSI GATES (PULLBACK ONLY)
+# ──────────────────────────────────────────────────────────────────────
+# Strict RSI band for entries — price must be pulling back, not chasing.
+RSI_ENTRY_FLOOR = float(os.environ.get("RSI_ENTRY_FLOOR", "40.0"))   # RSI >= 40 for any entry
+RSI_ENTRY_CEIL  = float(os.environ.get("RSI_ENTRY_CEIL",  "60.0"))   # RSI <= 60 for any entry
+RSI_LONG_HARD_CEIL  = float(os.environ.get("RSI_LONG_HARD_CEIL",  "62.0"))   # NEVER buy if RSI > 62
+RSI_SHORT_HARD_FLOOR = float(os.environ.get("RSI_SHORT_HARD_FLOOR", "38.0"))  # NEVER short if RSI < 38
+
+# ──────────────────────────────────────────────────────────────────────
 #  STATISTICAL ANALYSIS CONSTANTS
 # ──────────────────────────────────────────────────────────────────────
 # Macro Engine (1h)
