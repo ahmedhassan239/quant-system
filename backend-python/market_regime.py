@@ -33,6 +33,7 @@ from binance.exceptions import BinanceAPIException
 from config import (
     REGIME_RISK_PARAMS,
     MAX_DAILY_DRAWDOWN_USDT,
+    DRAWDOWN_COOLDOWN_HOURS,
     MIN_ADX_FOR_ENTRY,
     RSI_ENTRY_FLOOR,
     RSI_ENTRY_CEIL,
@@ -755,6 +756,16 @@ class StrategyRouter:
             MarketRegime.RANGE: RangeStrategy(),
             MarketRegime.STORM: StormStrategy(),
         }
+        # Session-based drawdown tracker — records when THIS engine instance started.
+        # Only losses incurred AFTER this timestamp count toward the drawdown limit.
+        self._session_start_time: float = time.time()
+        # When a drawdown breach occurs, entries are frozen until this epoch time.
+        # None = not frozen. After cooldown expires, the tracker resets.
+        self._drawdown_frozen_until: float | None = None
+        logger.info(
+            f"StrategyRouter initialized | session_start_time={self._session_start_time:.0f} "
+            f"| drawdown_limit=${MAX_DAILY_DRAWDOWN_USDT} | cooldown={DRAWDOWN_COOLDOWN_HOURS}h"
+        )
 
     def route(
         self,
@@ -813,36 +824,62 @@ class StrategyRouter:
         )
 
         # ────────────────────────────────────────────────────────────
-        # PRE-STRATEGY CIRCUIT BREAKER: Daily Drawdown Freeze
+        # PRE-STRATEGY CIRCUIT BREAKER: Session-Based Drawdown Tracker
         # ────────────────────────────────────────────────────────────
-        # Query realized losses for today (UTC). If cumulative losses
-        # exceed MAX_DAILY_DRAWDOWN_USDT, freeze all new entries.
-        if not in_position and session is not None:
-            try:
-                from datetime import datetime, timezone
-                from database import TradeHistory
-                from sqlalchemy import func as sa_func
+        # Only counts realized losses incurred AFTER this engine session
+        # started (self._session_start_time). If the limit is breached,
+        # entries are frozen for DRAWDOWN_COOLDOWN_HOURS (not until midnight).
+        if not in_position:
+            now = time.time()
 
-                utc_today_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
-                daily_loss = session.query(
-                    sa_func.coalesce(sa_func.sum(TradeHistory.pnl_usd), 0.0)
-                ).filter(
-                    TradeHistory.closed_at >= utc_today_start,
-                    TradeHistory.pnl_usd < 0,
-                ).scalar() or 0.0
-
-                daily_loss_abs = abs(float(daily_loss))
-                if daily_loss_abs >= MAX_DAILY_DRAWDOWN_USDT:
-                    logger.warning(
-                        f"🛑 [CIRCUIT BREAKER] [{symbol}] Daily realized loss "
-                        f"${daily_loss_abs:.2f} >= ${MAX_DAILY_DRAWDOWN_USDT:.2f} — "
-                        f"FREEZING all new entries until next UTC day."
+            # ── Check if we're currently in a cooldown freeze ──
+            if self._drawdown_frozen_until is not None:
+                if now < self._drawdown_frozen_until:
+                    remaining_min = (self._drawdown_frozen_until - now) / 60.0
+                    logger.info(
+                        f"🛑 [CIRCUIT BREAKER] [{symbol}] Still in drawdown cooldown "
+                        f"({remaining_min:.0f} min remaining). Entries frozen."
                     )
-                    return regime, 'WAIT', 'DAILY_DRAWDOWN_FREEZE', 0.0, regime_meta
-            except Exception as cb_err:
-                logger.debug(f"[{symbol}] Circuit breaker query failed (non-fatal): {cb_err}")
+                    return regime, 'WAIT', 'DRAWDOWN_COOLDOWN', 0.0, regime_meta
+                else:
+                    # Cooldown expired — reset tracker with a new session window
+                    logger.info(
+                        f"✅ [CIRCUIT BREAKER] Drawdown cooldown expired. "
+                        f"Resetting session start to now. Entries re-enabled."
+                    )
+                    self._session_start_time = now
+                    self._drawdown_frozen_until = None
+
+            # ── Query realized losses since session start ──
+            if session is not None:
+                try:
+                    from datetime import datetime, timezone
+                    from database import TradeHistory
+                    from sqlalchemy import func as sa_func
+
+                    session_start_dt = datetime.fromtimestamp(
+                        self._session_start_time, tz=timezone.utc
+                    )
+                    session_loss = session.query(
+                        sa_func.coalesce(sa_func.sum(TradeHistory.pnl_usd), 0.0)
+                    ).filter(
+                        TradeHistory.closed_at >= session_start_dt,
+                        TradeHistory.pnl_usd < 0,
+                    ).scalar() or 0.0
+
+                    session_loss_abs = abs(float(session_loss))
+                    if session_loss_abs >= MAX_DAILY_DRAWDOWN_USDT:
+                        cooldown_seconds = DRAWDOWN_COOLDOWN_HOURS * 3600
+                        self._drawdown_frozen_until = now + cooldown_seconds
+                        logger.warning(
+                            f"🛑 [CIRCUIT BREAKER] [{symbol}] Session realized loss "
+                            f"${session_loss_abs:.2f} >= ${MAX_DAILY_DRAWDOWN_USDT:.2f} — "
+                            f"FREEZING new entries for {DRAWDOWN_COOLDOWN_HOURS}h "
+                            f"(until {datetime.fromtimestamp(self._drawdown_frozen_until, tz=timezone.utc).strftime('%H:%M UTC')})."
+                        )
+                        return regime, 'WAIT', 'DRAWDOWN_COOLDOWN', 0.0, regime_meta
+                except Exception as cb_err:
+                    logger.debug(f"[{symbol}] Circuit breaker query failed (non-fatal): {cb_err}")
 
         # 3. Select and execute strategy
         strategy = self._strategies[regime]

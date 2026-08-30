@@ -137,11 +137,13 @@ DISABLE_STAGNANT_EXIT = True
 DISABLE_TREND_REVERSAL_EJECT = True
 
 # ──────────────────────────────────────────────────────────────────────
-#  DAILY DRAWDOWN CIRCUIT BREAKER
+#  SESSION-BASED DRAWDOWN CIRCUIT BREAKER
 # ──────────────────────────────────────────────────────────────────────
-# If realized daily losses (sum of negative PnL on closed trades today UTC)
-# exceed this threshold, freeze ALL new entries until the next UTC day.
-MAX_DAILY_DRAWDOWN_USDT = float(os.environ.get("MAX_DAILY_DRAWDOWN_USDT", "30.0"))
+# If realized losses incurred AFTER the engine session started exceed
+# this threshold, freeze ALL new entries for DRAWDOWN_COOLDOWN_HOURS.
+# Session-based (not UTC-day) to avoid counting pre-session historical losses.
+MAX_DAILY_DRAWDOWN_USDT = float(os.environ.get("MAX_DAILY_DRAWDOWN_USDT", "150.0"))  # 3% risk for $5k account
+DRAWDOWN_COOLDOWN_HOURS = float(os.environ.get("DRAWDOWN_COOLDOWN_HOURS", "2.0"))    # 2h cooldown, not midnight lock
 
 # ──────────────────────────────────────────────────────────────────────
 #  NOISE FILTER — MINIMUM ADX FOR ENTRIES
