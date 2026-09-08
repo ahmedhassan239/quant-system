@@ -363,7 +363,7 @@ class TrendStrategy(TradingStrategy):
         current_ema20 = float(ema_20.iloc[-1]) if len(ema_20) >= 20 else None
 
         # ── LONG Confluence (UPTREND) ── STABILIZER: RSI pullback-only gate 40–60, hard ceil 62 ──
-        if macro_trend == 'UPTREND' and RSI_ENTRY_FLOOR <= current_rsi <= RSI_ENTRY_CEIL and current_rsi <= RSI_LONG_HARD_CEIL:
+        if macro_trend == 'UPTREND' and current_rsi >= RSI_ENTRY_FLOOR and current_rsi <= RSI_LONG_HARD_CEIL:
             # ── PRIMARY: EMA-9/EMA-20 Micro-Breakout (fast entry, no OB dependency) ──
             if (current_ema9 and current_ema20
                     and current_price > current_ema9
@@ -410,7 +410,7 @@ class TrendStrategy(TradingStrategy):
                         )
 
         # ── SHORT Confluence (DOWNTREND) ── STABILIZER: RSI pullback-only gate 40–60, hard floor 38 ──
-        elif macro_trend == 'DOWNTREND' and RSI_ENTRY_FLOOR <= current_rsi <= RSI_ENTRY_CEIL and current_rsi >= RSI_SHORT_HARD_FLOOR:
+        elif macro_trend == 'DOWNTREND' and current_rsi <= RSI_ENTRY_CEIL and current_rsi >= RSI_SHORT_HARD_FLOOR:
             # ── PRIMARY: EMA-9/EMA-20 Micro-Breakdown (fast entry, no OB dependency) ──
             if (current_ema9 and current_ema20
                     and current_price < current_ema9

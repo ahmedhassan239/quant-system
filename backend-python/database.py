@@ -36,9 +36,9 @@ SharedBase = declarative_base()     # Shared MTF tables
 # ──────────────────────────────────────────────────────────────────────
 #  GLOBAL PORTFOLIO CONSTANTS
 # ──────────────────────────────────────────────────────────────────────
-TOTAL_CAPITAL = 1000.0             # Total virtual capital
+TOTAL_CAPITAL = 5000.0             # Total virtual capital
 MAX_CONCURRENT_POSITIONS = 5        # Max symbols with open positions (BEAST MODE — aligned with MAX_GLOBAL_POSITIONS)
-SLOT_BUDGET = 100.0                # Max USDT allocated per symbol
+SLOT_BUDGET = 200.0                # Max USDT allocated per symbol
 
 
 # ══════════════════════════════════════════════════════════════════════

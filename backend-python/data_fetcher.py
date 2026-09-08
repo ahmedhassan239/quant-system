@@ -6,6 +6,15 @@ from sqlalchemy.dialects.postgresql import insert
 from database import SessionLocal, MarketData, engine, init_db
 from config import BINANCE_FUTURES_BASE_URL, TIMEFRAME, STABLECOIN_BLACKLIST, MOCK_TOKENS_BLACKLIST
 
+# Import centralized rate-limit state from futures_executor
+try:
+    from futures_executor import is_rate_limited, rate_limit_remaining_seconds, _register_rate_limit_ban
+except ImportError:
+    # Fallback if futures_executor is not available (standalone usage)
+    def is_rate_limited(): return False
+    def rate_limit_remaining_seconds(): return 0.0
+    def _register_rate_limit_ban(e): pass
+
 # Global in-memory blacklist set for unsupported/corrupted testnet symbols
 BLACKLISTED_SYMBOLS: set[str] = set()
 
@@ -29,8 +38,20 @@ def fetch_binance_klines(symbol='BTCUSDT', interval=TIMEFRAME, limit=100):
     try:
         response = requests.get(url, params=params, timeout=10)
         if response.status_code in (418, 429) or (response.status_code >= 400 and '-1003' in response.text):
-            print(f"⚠️ Rate limit hit (-1003/418/429) on {symbol}. Pausing Fetcher for 60 seconds...", flush=True)
-            time.sleep(60)
+            # Sync with centralized rate-limit state
+            from binance.exceptions import BinanceAPIException
+            try:
+                # Create a mock exception to register the ban
+                class _MockBanErr:
+                    code = -1003
+                    message = response.text
+                    def __str__(self): return self.message
+                _register_rate_limit_ban(_MockBanErr())
+            except Exception:
+                pass
+            sleep_secs = max(60, rate_limit_remaining_seconds())
+            print(f"⚠️ Rate limit hit (-1003/418/429) on {symbol}. Pausing Fetcher for {sleep_secs:.0f} seconds...", flush=True)
+            time.sleep(sleep_secs)
             raise Exception("Rate limit hit")
 
         if response.status_code >= 400:
@@ -40,8 +61,9 @@ def fetch_binance_klines(symbol='BTCUSDT', interval=TIMEFRAME, limit=100):
             response.raise_for_status()
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code in (418, 429):
-            print(f"⚠️ Rate limit hit (HTTP {e.response.status_code}) on {symbol}. Pausing Fetcher for 60 seconds...", flush=True)
-            time.sleep(60)
+            sleep_secs = max(60, rate_limit_remaining_seconds())
+            print(f"⚠️ Rate limit hit (HTTP {e.response.status_code}) on {symbol}. Pausing Fetcher for {sleep_secs:.0f} seconds...", flush=True)
+            time.sleep(sleep_secs)
             raise Exception("Rate limit hit")
         if e.response is not None and e.response.status_code >= 400:
             if symbol not in BLACKLISTED_SYMBOLS:

@@ -14,6 +14,7 @@ containers share this module.
 import os
 import requests
 import logging
+import time as _time
 from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -34,6 +35,40 @@ if not logger.handlers:
         datefmt='%H:%M:%S',
     ))
     logger.addHandler(_ch)
+
+
+# ── GLOBAL RATE-LIMIT / BAN STATE ──────────────────────────────────
+# Shared across every function in this module. When Binance returns
+# -1003 (IP banned) it embeds the ban-expiry epoch-ms in the message.
+# Every API-calling function below MUST check this before calling, and
+# MUST set it (not just log-and-continue) when a -1003 is caught.
+_RATE_LIMIT_BANNED_UNTIL: float = 0.0  # epoch seconds, 0 = not banned
+
+def _parse_ban_until_ms(message: str) -> float | None:
+    """Extract the 'banned until <epoch_ms>' value from a -1003 error message."""
+    import re
+    m = re.search(r'banned until (\d+)', message)
+    return float(m.group(1)) / 1000.0 if m else None
+
+def _register_rate_limit_ban(e: "BinanceAPIException") -> None:
+    """Record a -1003 ban globally so every subsequent call can skip until it clears."""
+    global _RATE_LIMIT_BANNED_UNTIL
+    parsed = _parse_ban_until_ms(str(e))
+    ban_until = parsed if parsed else (_time.time() + 60.0)  # fallback: 60s if unparsable
+    if ban_until > _RATE_LIMIT_BANNED_UNTIL:
+        _RATE_LIMIT_BANNED_UNTIL = ban_until
+        logger.error(
+            f"🚫 [GLOBAL RATE LIMIT] IP banned by Binance. ALL API calls paused until "
+            f"{_time.strftime('%H:%M:%S', _time.localtime(ban_until))} "
+            f"({max(0, ban_until - _time.time()):.0f}s)."
+        )
+
+def is_rate_limited() -> bool:
+    """True if the IP is currently under a registered -1003 ban."""
+    return _time.time() < _RATE_LIMIT_BANNED_UNTIL
+
+def rate_limit_remaining_seconds() -> float:
+    return max(0.0, _RATE_LIMIT_BANNED_UNTIL - _time.time())
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -109,12 +144,19 @@ def setup_symbol(client: Client, symbol: str) -> None:
         logger.warning(f"[{symbol}] Skipping setup_symbol — symbol is in SESSION_BLACKLIST.")
         return
 
+    if is_rate_limited():
+        logger.debug(f"[{symbol}] Skipped setup_symbol — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return
+
     # ── 1. Margin type ──
     try:
         client.futures_change_margin_type(symbol=symbol,
                                           marginType=FUTURES_MARGIN_TYPE)
         logger.info(f"[{symbol}] Margin type set to {FUTURES_MARGIN_TYPE}")
     except BinanceAPIException as e:
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
+            return
         # Code -4046: "No need to change margin type."
         # Code -4067: "Position side cannot be changed with open orders."
         #   → Safe to ignore: margin is already configured, proceed to entry.
@@ -134,6 +176,9 @@ def setup_symbol(client: Client, symbol: str) -> None:
         actual = resp.get('leverage', FUTURES_LEVERAGE)
         logger.info(f"[{symbol}] Leverage set to {actual}x")
     except BinanceAPIException as e:
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
+            return
         # Code -4067: same scenario — open orders prevent changes, safe to proceed.
         if e.code == -4067:
             logger.debug(f"[{symbol}] Leverage unchanged (open orders exist, code -4067). Proceeding.")
@@ -154,6 +199,10 @@ def execute_safe_market_order(client: Client, symbol: str, side: str, quantity: 
     Slippage-protected execution. Checks the order book spread.
     If expected slippage > 0.5%, it places a GTC LIMIT order instead of MARKET.
     """
+    if is_rate_limited():
+        logger.debug(f"[{symbol}] Skipped execute_safe_market_order — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return {}
+
     try:
         ticker = client.futures_symbol_ticker(symbol=symbol)
         current_price = float(ticker['price'])
@@ -188,7 +237,9 @@ def execute_safe_market_order(client: Client, symbol: str, side: str, quantity: 
                 quantity=quantity,
                 reduceOnly=reduce_only,
             )
-    except BinanceAPIException:
+    except BinanceAPIException as e:
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
         raise
     except Exception as slip_err:
         logger.error(f"[{symbol}] Error calculating slippage, defaulting to MARKET: {slip_err}")
@@ -224,6 +275,10 @@ def open_position(client: Client, symbol: str, direction: str,
     """
     if is_symbol_blacklisted(symbol):
         logger.warning(f"[{symbol}] Skipping open_position — symbol is in SESSION_BLACKLIST.")
+        return None
+
+    if is_rate_limited():
+        logger.debug(f"[{symbol}] Skipped open_position — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
         return None
 
     direction = direction.upper()
@@ -276,7 +331,9 @@ def open_position(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        if _check_api_exception_for_blacklist(symbol, e):
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
+        elif _check_api_exception_for_blacklist(symbol, e):
             logger.warning(f"[{symbol}] Gracefully caught API restriction [{e.code}] during open_position. Auto-blacklisted for session.")
         else:
             logger.error(f"[{symbol}] ❌ Failed to open {direction}: [{e.code}] {e.message}")
@@ -324,6 +381,10 @@ def close_position(client: Client, symbol: str, direction: str,
         Close LONG  → SIDE_SELL  (market)
         Close SHORT → SIDE_BUY   (market)
     """
+    if is_rate_limited():
+        logger.debug(f"[{symbol}] Skipped close_position — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return None
+
     direction = direction.upper()
     if direction not in ('LONG', 'SHORT'):
         logger.error(f"[{symbol}] Invalid direction '{direction}' — must be LONG or SHORT")
@@ -356,7 +417,9 @@ def close_position(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        if e.code in (-2022, -4509):
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
+        elif e.code in (-2022, -4509):
             logger.warning(f"[{symbol}] Position already closed by Binance (ghost position). Handling gracefully.")
             return True
         elif _check_api_exception_for_blacklist(symbol, e):
@@ -376,6 +439,10 @@ def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
     Execute a 50% partial Take Profit (scale-out) market close and immediately
     move the Stop Loss for the remaining position to Entry Price (Break-Even).
     """
+    if is_rate_limited():
+        logger.debug(f"[{symbol}] Skipped execute_partial_tp_scaleout — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return None, total_quantity
+
     direction = direction.upper()
     if direction not in ('LONG', 'SHORT'):
         logger.error(f"[{symbol}] Invalid direction '{direction}' for partial TP")
@@ -415,7 +482,9 @@ def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
             reduce_only=True
         )
     except BinanceAPIException as api_err:
-        if api_err.code in (-2022, -4509):
+        if api_err.code == -1003:
+            _register_rate_limit_ban(api_err)
+        elif api_err.code in (-2022, -4509):
             logger.warning(f"[{symbol}] TP rejected — Position already closed by Binance (ghost position). Handling gracefully.")
             return True, remaining_qty
         elif _check_api_exception_for_blacklist(symbol, api_err):
@@ -458,6 +527,11 @@ def get_position_info(client: Client, symbol: str) -> dict:
         dict with keys: symbol, size, direction, entry_price, unrealized_pnl
         size=0 means no open position.
     """
+    if is_rate_limited():
+        logger.debug(f"[{symbol}] Skipped get_position_info — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return {'symbol': symbol, 'size': 0.0, 'direction': None,
+                'entry_price': 0.0, 'unrealized_pnl': 0.0}
+
     try:
         positions = client.futures_position_information(symbol=symbol)
         for pos in positions:
@@ -483,6 +557,8 @@ def get_position_info(client: Client, symbol: str) -> dict:
             'unrealized_pnl': 0.0,
         }
     except BinanceAPIException as e:
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
         logger.error(f"[{symbol}] Failed to fetch position info: [{e.code}] {e.message}")
         return {'symbol': symbol, 'size': 0.0, 'direction': None,
                 'entry_price': 0.0, 'unrealized_pnl': 0.0}
@@ -499,6 +575,10 @@ def get_futures_balance(client: Client) -> float:
     Returns:
         Available USDT balance as float, or 0.0 on error.
     """
+    if is_rate_limited():
+        logger.debug(f"Skipped get_futures_balance — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return 0.0
+
     try:
         balances = client.futures_account_balance()
         for b in balances:
@@ -509,6 +589,8 @@ def get_futures_balance(client: Client) -> float:
         logger.warning("No USDT asset found in Futures account balance")
         return 0.0
     except BinanceAPIException as e:
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
         logger.error(f"Failed to fetch Futures balance: [{e.code}] {e.message}")
         return 0.0
     except Exception as e:
@@ -529,6 +611,10 @@ def count_all_open_positions(client: Client) -> int:
     Returns:
         int: number of symbols with an active position.
     """
+    if is_rate_limited():
+        logger.debug(f"Skipped count_all_open_positions — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return 999
+
     try:
         positions = client.futures_position_information()
         count = 0
@@ -543,6 +629,8 @@ def count_all_open_positions(client: Client) -> int:
         logger.debug(f"Live Binance open positions: {count}")
         return count
     except BinanceAPIException as e:
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
         logger.error(f"Failed to count open positions: [{e.code}] {e.message}")
         return 999  # Fail-safe: assume max so we don't open more
     except Exception as e:
@@ -641,6 +729,10 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
         logger.error(f"[{symbol}] Invalid direction '{direction}' for SL")
         return None
 
+    if is_rate_limited():
+        logger.debug(f"[{symbol}] Skipped set_stop_loss_order — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return None
+
     try:
         # 1. Cancel existing orders (to clear old SLs, both normal and conditional algo orders)
         _cancel_all_symbol_orders(client, symbol)
@@ -708,9 +800,26 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
 
             order = client.futures_create_order(**order_params)
         except BinanceAPIException as api_err:
-            if _check_api_exception_for_blacklist(symbol, api_err):
+            if api_err.code == -1003:
+                _register_rate_limit_ban(api_err)
+                return None
+            elif _check_api_exception_for_blacklist(symbol, api_err):
                 logger.warning(f"[{symbol}] Gracefully caught SL API restriction [{api_err.code}]. Auto-blacklisted for session.")
                 return None
+            elif api_err.code == -2021:
+                logger.warning(f"[{symbol}] 🚨 Stop-Limit [-2021]: price already past trigger. Executing IMMEDIATE market close.")
+                try:
+                    close_side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
+                    return execute_safe_market_order(
+                        client=client, symbol=symbol, side=close_side,
+                        quantity=quantity, reduce_only=True,
+                    )
+                except BinanceAPIException as close_err:
+                    if close_err.code in (-2022, -4509):
+                        logger.warning(f"[{symbol}] Already closed by Binance during immediate-close attempt.")
+                        return True
+                    logger.error(f"[{symbol}] ❌ Immediate close after -2021 failed: [{close_err.code}] {close_err.message}")
+                    return None
             else:
                 # ── VIRTUAL SOFT-STOP FALLBACK ──
                 # Binance rejected the Stop-Limit (margin, notional, or other issue).
@@ -787,6 +896,10 @@ def execute_virtual_stop_check(client: Client, symbol: str, direction: str,
         logger.error(f"[{symbol}] Invalid direction '{direction}' for virtual stop check")
         return False
 
+    if is_rate_limited():
+        logger.debug(f"[{symbol}] Skipped execute_virtual_stop_check — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
+        return False
+
     try:
         # Fetch current mark price
         mark_data = client.futures_mark_price(symbol=symbol)
@@ -846,7 +959,9 @@ def execute_virtual_stop_check(client: Client, symbol: str, direction: str,
         return order
 
     except BinanceAPIException as e:
-        if e.code in (-2022, -4509):
+        if e.code == -1003:
+            _register_rate_limit_ban(e)
+        elif e.code in (-2022, -4509):
             logger.warning(f"[{symbol}] Virtual stop: Position already closed (ghost position). Handling gracefully.")
             return True
         logger.error(f"[{symbol}] ❌ Virtual stop execution failed: [{e.code}] {e.message}")

@@ -18,7 +18,8 @@ from database import (SLOT_BUDGET, TOTAL_CAPITAL, MAX_CONCURRENT_POSITIONS,
                       SessionLocal, get_open_position_symbols, sync_missing_stop_losses)
 from futures_executor import (create_futures_client, get_futures_balance,
                               count_all_open_positions, is_symbol_blacklisted,
-                              send_telegram_daily_report)
+                              send_telegram_daily_report,
+                              is_rate_limited, rate_limit_remaining_seconds)
 from binance.exceptions import BinanceAPIException
 
 # ── Initialize Futures client once at module level ──
@@ -107,6 +108,10 @@ def scanner_job():
     if ENGINE_ROLE.upper() == "MACRO":
         # ── Macro Trend Engine (1h) — analysis only, no orders ──
         for sym in all_symbols:
+            if is_rate_limited():
+                sleep_secs = rate_limit_remaining_seconds() + 1
+                print(f"\n🚫 [MACRO] Rate-limit ban active. Sleeping {sleep_secs:.0f}s before continuing...", flush=True)
+                time.sleep(sleep_secs)
             time.sleep(0.3)
             try:
                 run_macro_analyzer(symbol=sym)
@@ -125,6 +130,10 @@ def scanner_job():
         trades_opened_this_cycle = 0
 
         for sym in all_symbols:
+            if is_rate_limited():
+                sleep_secs = rate_limit_remaining_seconds() + 1
+                print(f"\n🚫 [EXECUTION] Rate-limit ban active. Sleeping {sleep_secs:.0f}s before continuing...", flush=True)
+                time.sleep(sleep_secs)
             time.sleep(0.3)
             is_open_position = sym in open_pos_symbols
 

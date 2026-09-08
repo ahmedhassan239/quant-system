@@ -423,7 +423,8 @@ def sync_binance_position(
                                 try:
                                     acct_trades = futures_client.futures_account_trades(
                                         symbol=symbol,
-                                        limit=50,
+                                        startTime=start_time_ms,
+                                        limit=1000,
                                     )
                                     if acct_trades:
                                         closing_trades = [
@@ -469,6 +470,53 @@ def sync_binance_position(
                     except Exception as e:
                         print(f"  ⚠️ API PNL fetch error: {e}. Logging PNL as $0.00.", flush=True)
 
+                # ── LAST-RESORT FALLBACK: if both APIs returned $0.00, try
+                # using the last known unrealized PnL from PortfolioState ──
+                if realized_pnl_usd == 0.0:
+                    try:
+                        last_pnl_row = (
+                            session.query(PortfolioState.pnl_usd)
+                            .filter(
+                                PortfolioState.symbol == symbol,
+                                PortfolioState.pnl_usd.isnot(None),
+                            )
+                            .order_by(PortfolioState.id.desc())
+                            .first()
+                        )
+                        if last_pnl_row and last_pnl_row.pnl_usd is not None and float(last_pnl_row.pnl_usd) != 0.0:
+                            realized_pnl_usd = float(last_pnl_row.pnl_usd)
+                            print(
+                                f"  📊 [{symbol}] Using last known uPnL as estimate: ${realized_pnl_usd:.4f}",
+                                flush=True,
+                            )
+                    except Exception as fallback_err:
+                        print(
+                            f"  ⚠️ [{symbol}] Failed to query last known uPnL: {fallback_err}",
+                            flush=True,
+                        )
+
+                # Determine exit_reason based on PNL source
+                exit_reason = 'MANUAL_CLOSE'
+                if realized_pnl_usd != 0.0:
+                    # Check if this came from the last-resort fallback
+                    try:
+                        last_pnl_row_check = (
+                            session.query(PortfolioState.pnl_usd)
+                            .filter(
+                                PortfolioState.symbol == symbol,
+                                PortfolioState.pnl_usd.isnot(None),
+                            )
+                            .order_by(PortfolioState.id.desc())
+                            .first()
+                        )
+                        if (last_pnl_row_check and last_pnl_row_check.pnl_usd is not None
+                                and abs(float(last_pnl_row_check.pnl_usd) - realized_pnl_usd) < 0.0001):
+                            # PNL came from DB estimate, not from API
+                            if not net_components and not (locals().get('closing_trades')):
+                                exit_reason = 'MANUAL_CLOSE_ESTIMATED'
+                    except Exception:
+                        pass
+
                 pnl_pct_val = 0.0
                 if ep > 0 and asset_bal > 0:
                     pnl_pct_val = (realized_pnl_usd / (asset_bal * ep)) * 100
@@ -483,7 +531,7 @@ def sync_binance_position(
                     pnl_usd=realized_pnl_usd,
                     pnl_pct=pnl_pct_val,
                     outcome=outcome,
-                    exit_reason='MANUAL_CLOSE',
+                    exit_reason=exit_reason,
                     closed_at=datetime.utcnow(),
                 )
 
@@ -599,7 +647,7 @@ def sync_binance_position(
             strategy=portfolio.get('strategy'),
             trailing_active=portfolio.get('trailing_active', False),
             pnl_pct=None,
-            pnl_usd=None,
+            pnl_usd=(float(db_unrealized_pnl) if db_unrealized_pnl is not None else None),
             total_portfolio_value=float(round(total_value, 2)),
             active_mode=active_mode_value,
         )
