@@ -19,13 +19,79 @@ class DashboardController extends Controller
 
     public function getDashboardMetrics()
     {
-        // 1. Total PNL from CLOSED trades
-        $totalPnl = \Illuminate\Support\Facades\DB::table('trade_history')->sum('pnl_usd'); 
-        
-        // 2. Win Rate from CLOSED trades
-        $winningTrades = \Illuminate\Support\Facades\DB::table('trade_history')->where('outcome', 'WIN')->count();
-        $actualTotalTrades = \Illuminate\Support\Facades\DB::table('trade_history')->count();
-        $winRate = $actualTotalTrades > 0 ? round(($winningTrades / $actualTotalTrades) * 100, 2) : 0;
+        // 1 & 2. Total PNL & Win Rate for TODAY'S ROLLING SESSION ONLY
+        $today = \Illuminate\Support\Carbon::now()->startOfDay();
+        $totalPnl = 0.00;
+        $winRate = 0.00;
+
+        // Primary calculation directly from local `positions` table for closed positions today
+        if (\Illuminate\Support\Facades\Schema::hasTable('positions')) {
+            $pnlCol = null;
+            if (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'realized_pnl')) {
+                $pnlCol = 'realized_pnl';
+            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'net_pnl')) {
+                $pnlCol = 'net_pnl';
+            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'pnl_usd')) {
+                $pnlCol = 'pnl_usd';
+            }
+
+            $dateCol = null;
+            if (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'closed_at')) {
+                $dateCol = 'closed_at';
+            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'updated_at')) {
+                $dateCol = 'updated_at';
+            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'timestamp')) {
+                $dateCol = 'timestamp';
+            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'created_at')) {
+                $dateCol = 'created_at';
+            }
+
+            if ($pnlCol && $dateCol) {
+                $query = \Illuminate\Support\Facades\DB::table('positions')
+                    ->where($dateCol, '>=', $today);
+
+                if (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'is_active')) {
+                    $query->where('is_active', false);
+                } else {
+                    $query->where(function ($q) {
+                        if (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'asset_balance')) {
+                            $q->where('asset_balance', 0);
+                        }
+                        if (\Illuminate\Support\Facades\Schema::hasColumn('positions', 'decision')) {
+                            $q->orWhereIn('decision', ['CLOSED', 'MANUAL_CLOSE']);
+                        }
+                    });
+                }
+
+                $closedPositionsToday = $query->get();
+
+                if ($closedPositionsToday->isNotEmpty()) {
+                    $totalPnl = (float) $closedPositionsToday->sum($pnlCol);
+                    $winCount = $closedPositionsToday->where($pnlCol, '>', 0)->count();
+                    $totalClosed = $closedPositionsToday->count();
+                    $winRate = $totalClosed > 0 ? round(($winCount / $totalClosed) * 100, 2) : 0.00;
+                }
+            }
+        }
+
+        // Secondary fallback to `trade_history` filtered for TODAY ONLY if `positions` has no closed records today
+        if ($totalPnl == 0.00 && $winRate == 0.00 && \Illuminate\Support\Facades\Schema::hasTable('trade_history')) {
+            $pnlCol = \Illuminate\Support\Facades\Schema::hasColumn('trade_history', 'realized_pnl') ? 'realized_pnl' : 'pnl_usd';
+            $dateCol = \Illuminate\Support\Facades\Schema::hasColumn('trade_history', 'closed_at') ? 'closed_at' : 'created_at';
+
+            if (\Illuminate\Support\Facades\Schema::hasColumn('trade_history', $dateCol) && \Illuminate\Support\Facades\Schema::hasColumn('trade_history', $pnlCol)) {
+                $tradesToday = \Illuminate\Support\Facades\DB::table('trade_history')
+                    ->where($dateCol, '>=', $today)
+                    ->get();
+
+                if ($tradesToday->isNotEmpty()) {
+                    $totalPnl = (float) $tradesToday->sum($pnlCol);
+                    $winCount = $tradesToday->where($pnlCol, '>', 0)->count();
+                    $totalClosed = $tradesToday->count();
+                    $winRate = $totalClosed > 0 ? round(($winCount / $totalClosed) * 100, 2) : 0.00;
+                }
+            }
+        }
 
         // 3. Wallet Balance from Binance Testnet
         $apiKey = env('BINANCE_API_KEY');
