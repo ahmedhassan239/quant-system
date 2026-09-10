@@ -14,12 +14,16 @@ Usage:
 """
 
 import requests
+import re
 from config import (
     BINANCE_FUTURES_BASE_URL, TIMEFRAME, ALERT_PREFIX,
     MIN_24H_VOLUME_USDT, TOP_N, STABLECOIN_BLACKLIST, MOCK_TOKENS_BLACKLIST,
     VIP_SYMBOLS, DEFAULT_SYMBOLS
 )
 from data_fetcher import BLACKLISTED_SYMBOLS
+
+# Regex to filter out malformed/non-ASCII symbol names (e.g. '牛来USDT')
+_VALID_SYMBOL_RE = re.compile(r'^[A-Z0-9]+$')
 
 # ──────────────────────────────────────────────────────────────────────
 #  CONFIGURATION
@@ -83,7 +87,11 @@ def fetch_top_symbols():
     for t in tickers:
         symbol = t.get('symbol', '')
 
-        # 0. Check if symbol is actually a valid TRADING perpetual contract in this environment
+        # 0. Reject non-ASCII or malformed symbol names
+        if not _VALID_SYMBOL_RE.match(symbol):
+            continue
+
+        # 0b. Check if symbol is actually a valid TRADING perpetual contract in this environment
         if valid_symbols and symbol not in valid_symbols:
             continue
 
@@ -128,6 +136,8 @@ def fetch_top_symbols():
         for t in tickers:
             symbol = t.get('symbol', '')
             if valid_symbols and symbol not in valid_symbols:
+                continue
+            if not _VALID_SYMBOL_RE.match(symbol):
                 continue
             if not symbol.endswith('USDT') or symbol in MOCK_TOKENS_BLACKLIST or symbol in STABLECOIN_BLACKLIST or symbol in VIP_SYMBOLS or symbol in BLACKLISTED_SYMBOLS:
                 continue

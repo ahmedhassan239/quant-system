@@ -102,6 +102,13 @@ def scanner_job():
     print(f"Trading active symbols (Scanned: {len(radar_symbols)}, Open: {len(open_pos_symbols)}, Total Valid: {len(all_symbols)}): {all_symbols}", flush=True)
 
     # 3. Fetch latest Futures candle data for all processed symbols
+    if is_rate_limited():
+        sleep_secs = rate_limit_remaining_seconds() + 1
+        print(f"\n🚫 [ENGINE] Rate-limit ban active before fetcher. Sleeping {sleep_secs:.0f}s and skipping this cycle.", flush=True)
+        time.sleep(sleep_secs)
+        print("\nJob skipped (rate-limit recovery). Sleeping until next interval...", flush=True)
+        print("=" * 60 + "\n", flush=True)
+        return
     run_fetcher(symbols=all_symbols)
 
     # 4. Run the appropriate analyzer based on engine role
@@ -117,8 +124,10 @@ def scanner_job():
                 run_macro_analyzer(symbol=sym)
             except BinanceAPIException as e:
                 if e.code == -1003 or '429' in str(e) or '418' in str(e):
-                    print(f"⚠️ [MACRO] Rate limit hit (-1003/418/429). Pausing engine for 60s...", flush=True)
-                    time.sleep(60)
+                    from futures_executor import _register_rate_limit_ban
+                    _register_rate_limit_ban(e)
+                    print(f"🚫 [MACRO] Rate-limit ban registered. HALTING all remaining symbols.", flush=True)
+                    break  # ← HARD STOP: do NOT continue to the next symbol
                 else:
                     print(f"⚠️ [MACRO] API Error for {sym}: {e}", flush=True)
     else:
@@ -157,9 +166,11 @@ def scanner_job():
                         trades_opened_this_cycle += 1
             except BinanceAPIException as e:
                 if e.code == -1003 or '429' in str(e) or '418' in str(e):
-                    logger.warning(f"⚠️ [EXECUTION] Rate limit hit (-1003/418/429) on {sym}. Pausing engine for 60s...")
-                    print(f"⚠️ [EXECUTION] Rate limit hit (-1003/418/429). Pausing engine for 60s...", flush=True)
-                    time.sleep(60)
+                    from futures_executor import _register_rate_limit_ban
+                    _register_rate_limit_ban(e)
+                    logger.warning(f"🚫 [EXECUTION] Rate-limit ban registered. HALTING all remaining symbols.")
+                    print(f"🚫 [EXECUTION] Rate-limit ban registered. HALTING all remaining symbols.", flush=True)
+                    break  # ← HARD STOP: do NOT continue to the next symbol
                 else:
                     logger.error(f"⚠️ [EXECUTION] API Error for {sym}: {e}")
                     print(f"⚠️ [EXECUTION] API Error for {sym}: {e}", flush=True)

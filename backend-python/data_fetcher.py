@@ -125,69 +125,61 @@ def save_to_db(df):
     finally:
         session.close()
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-def _fetch_and_save_symbol(sym, interval, limit):
-    """Helper worker to fetch and persist candles for a single symbol."""
-    try:
-        df = fetch_binance_klines(symbol=sym, interval=interval, limit=limit)
-        if df is None:
-            return sym, False, "Blacklisted symbol"
-        save_to_db(df)
-        return sym, True, None
-    except Exception as e:
-        return sym, False, str(e)
-
-def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250, chunk_size=10):
+def run_fetcher(symbols=None, interval=TIMEFRAME, limit=250):
     """
     Core execution logic for the data fetcher.
-    Fetches Futures candle data for each symbol in the list in concurrent chunks.
+    Fetches Futures candle data for each symbol SEQUENTIALLY with throttling.
     Defaults to BTCUSDT if no symbols provided.
     Strictly forbids fetching candles for mock tokens or auto-blacklisted symbols.
     Uses limit=250 to ensure SMA 200 has enough warmup data.
+
+    ARCHITECTURE NOTE (post-ban fix):
+      Previously used ThreadPoolExecutor(max_workers=10) which fired up to 10
+      concurrent HTTP requests per chunk. This caused Binance -1003 bans.
+      Now processes symbols sequentially with a 150ms inter-request gap via
+      the centralized throttle in futures_executor.
     """
     if symbols is None:
         symbols = ['BTCUSDT']
     else:
-        # Ensure under NO circumstances should the bot pull candles for mock tokens, stablecoins, or auto-blacklisted symbols
         symbols = [s for s in symbols if s not in MOCK_TOKENS_BLACKLIST and s not in STABLECOIN_BLACKLIST and s not in BLACKLISTED_SYMBOLS]
 
-    print(f"--- Fetcher Started (Futures — {len(symbols)} symbols) ---", flush=True)
-    # Ensure tables exist before trying to save
+    # ── Hard guard: skip entire fetch if IP is currently banned ──
+    if is_rate_limited():
+        remaining = rate_limit_remaining_seconds()
+        print(f"🚫 Fetcher SKIPPED — rate-limit ban active ({remaining:.0f}s remaining). No API calls will be made.", flush=True)
+        return
+
+    print(f"--- Fetcher Started (Futures — {len(symbols)} symbols, sequential) ---", flush=True)
     init_db()
 
-    # Split symbols into chunks of chunk_size (default 10) to stay safely within rate limits
-    chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
     success_count = 0
     fail_count = 0
 
-    rate_limit_hit = False
-
-    for chunk_idx, chunk in enumerate(chunks):
-        if rate_limit_hit:
-            print("⚠️ Rate limit triggered in previous chunk. Exiting fetch cycle gracefully.", flush=True)
+    for sym in symbols:
+        # Re-check ban before every symbol (another function may have triggered it)
+        if is_rate_limited():
+            print(f"🚫 Fetcher HALTED mid-cycle — rate-limit ban detected. Remaining symbols skipped.", flush=True)
             break
-            
-        with ThreadPoolExecutor(max_workers=len(chunk)) as executor:
-            futures = []
-            for sym in chunk:
-                futures.append(executor.submit(_fetch_and_save_symbol, sym, interval, limit))
-                time.sleep(1.0)  # Increased stagger to 1.0s to avoid breaching Binance rate limits
-            for future in as_completed(futures):
-                sym, success, err = future.result()
-                if success:
-                    success_count += 1
-                else:
-                    fail_count += 1
-                    print(f"  ⚠️ Failed to fetch {sym}: {err}", flush=True)
-                    if err and "Rate limit hit" in err:
-                        rate_limit_hit = True
 
-        # Rate-limit safety: slight pause between chunks
-        if chunk_idx < len(chunks) - 1 and not rate_limit_hit:
-            time.sleep(0.5)
+        try:
+            time.sleep(0.15)  # 150ms throttle between kline requests
+            df = fetch_binance_klines(symbol=sym, interval=interval, limit=limit)
+            if df is None:
+                fail_count += 1
+                continue
+            save_to_db(df)
+            success_count += 1
+        except Exception as e:
+            fail_count += 1
+            err_str = str(e)
+            print(f"  ⚠️ Failed to fetch {sym}: {err_str}", flush=True)
+            if "Rate limit hit" in err_str:
+                print(f"🚫 Fetcher HALTED — rate-limit ban. Remaining symbols skipped.", flush=True)
+                break
 
     print(f"--- Fetcher Completed ({success_count}/{len(symbols)} symbols processed successfully) ---", flush=True)
 
 if __name__ == "__main__":
     run_fetcher()
+

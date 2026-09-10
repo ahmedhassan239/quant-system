@@ -71,6 +71,46 @@ def rate_limit_remaining_seconds() -> float:
     return max(0.0, _RATE_LIMIT_BANNED_UNTIL - _time.time())
 
 
+# ── GLOBAL REST API THROTTLE ───────────────────────────────────────
+# Enforces a minimum gap between ANY two consecutive Binance REST API
+# calls from this process. This prevents rate-limit violations (-1003)
+# which cause multi-hour IP bans. Thread-safe via Lock.
+import threading as _threading
+
+_API_CALL_LOCK = _threading.Lock()
+_API_LAST_CALL: float = 0.0
+_API_MIN_INTERVAL: float = 0.15  # 150ms between ANY Binance REST call
+
+def _throttle() -> None:
+    """Enforce minimum 150ms gap between consecutive Binance API calls."""
+    global _API_LAST_CALL
+    with _API_CALL_LOCK:
+        now = _time.monotonic()
+        elapsed = now - _API_LAST_CALL
+        if elapsed < _API_MIN_INTERVAL:
+            _time.sleep(_API_MIN_INTERVAL - elapsed)
+        _API_LAST_CALL = _time.monotonic()
+
+
+# ── EXCHANGE INFO CACHE ────────────────────────────────────────────
+# futures_exchange_info() is expensive and rarely changes. Cache it
+# for 5 minutes to eliminate dozens of redundant calls per cycle.
+_EXCHANGE_INFO_CACHE: dict | None = None
+_EXCHANGE_INFO_CACHE_TS: float = 0.0
+_EXCHANGE_INFO_TTL: float = 300.0  # 5 minutes
+
+def _get_cached_exchange_info(client: "Client") -> dict:
+    """Return cached exchange info, refreshing every 5 minutes."""
+    global _EXCHANGE_INFO_CACHE, _EXCHANGE_INFO_CACHE_TS
+    now = _time.monotonic()
+    if _EXCHANGE_INFO_CACHE and (now - _EXCHANGE_INFO_CACHE_TS) < _EXCHANGE_INFO_TTL:
+        return _EXCHANGE_INFO_CACHE
+    _throttle()
+    _EXCHANGE_INFO_CACHE = client.futures_exchange_info()
+    _EXCHANGE_INFO_CACHE_TS = now
+    return _EXCHANGE_INFO_CACHE
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  SESSION IN-MEMORY BLACKLIST (Auto-blacklisting for API restrictions)
 # ──────────────────────────────────────────────────────────────────────
@@ -150,6 +190,7 @@ def setup_symbol(client: Client, symbol: str) -> None:
 
     # ── 1. Margin type ──
     try:
+        _throttle()
         client.futures_change_margin_type(symbol=symbol,
                                           marginType=FUTURES_MARGIN_TYPE)
         logger.info(f"[{symbol}] Margin type set to {FUTURES_MARGIN_TYPE}")
@@ -171,6 +212,7 @@ def setup_symbol(client: Client, symbol: str) -> None:
 
     # ── 2. Leverage ──
     try:
+        _throttle()
         resp = client.futures_change_leverage(symbol=symbol,
                                               leverage=FUTURES_LEVERAGE)
         actual = resp.get('leverage', FUTURES_LEVERAGE)
@@ -204,9 +246,11 @@ def execute_safe_market_order(client: Client, symbol: str, side: str, quantity: 
         return {}
 
     try:
+        _throttle()
         ticker = client.futures_symbol_ticker(symbol=symbol)
         current_price = float(ticker['price'])
         
+        _throttle()
         ob = client.futures_order_book(symbol=symbol, limit=5)
         best_bid = float(ob['bids'][0][0])
         best_ask = float(ob['asks'][0][0])
@@ -220,6 +264,7 @@ def execute_safe_market_order(client: Client, symbol: str, side: str, quantity: 
 
         if expected_slippage > 0.005:
             logger.warning(f"[{symbol}] ⚠️ Slippage protection triggered! Expected: {expected_slippage:.2%} > 0.5%. Falling back to LIMIT order at {limit_price}.")
+            _throttle()
             return client.futures_create_order(
                 symbol=symbol,
                 side=side,
@@ -230,6 +275,7 @@ def execute_safe_market_order(client: Client, symbol: str, side: str, quantity: 
                 reduceOnly=reduce_only,
             )
         else:
+            _throttle()
             return client.futures_create_order(
                 symbol=symbol,
                 side=side,
@@ -243,6 +289,7 @@ def execute_safe_market_order(client: Client, symbol: str, side: str, quantity: 
         raise
     except Exception as slip_err:
         logger.error(f"[{symbol}] Error calculating slippage, defaulting to MARKET: {slip_err}")
+        _throttle()
         return client.futures_create_order(
             symbol=symbol,
             side=side,
@@ -291,6 +338,7 @@ def open_position(client: Client, symbol: str, direction: str,
         setup_symbol(client, symbol)
 
         # Fetch mark price to calculate quantity
+        _throttle()
         mark_data = client.futures_mark_price(symbol=symbol)
         mark_price = float(mark_data['markPrice'])
         if mark_price <= 0:
@@ -353,11 +401,13 @@ def _cancel_all_symbol_orders(client: Client, symbol: str) -> None:
     Prevents Binance API error [-2022] ReduceOnly Order is rejected.
     """
     try:
+        _throttle()
         client.futures_cancel_all_open_orders(symbol=symbol)
     except Exception as err:
         logger.debug(f"[{symbol}] Note canceling open orders: {err}")
     try:
         if hasattr(client, 'futures_cancel_all_algo_open_orders'):
+            _throttle()
             client.futures_cancel_all_algo_open_orders(symbol=symbol)
     except Exception as err:
         logger.debug(f"[{symbol}] Note canceling algo open orders: {err}")
@@ -533,6 +583,7 @@ def get_position_info(client: Client, symbol: str) -> dict:
                 'entry_price': 0.0, 'unrealized_pnl': 0.0}
 
     try:
+        _throttle()
         positions = client.futures_position_information(symbol=symbol)
         for pos in positions:
             amt = float(pos.get('positionAmt', 0))
@@ -580,6 +631,7 @@ def get_futures_balance(client: Client) -> float:
         return 0.0
 
     try:
+        _throttle()
         balances = client.futures_account_balance()
         for b in balances:
             if b['asset'] == 'USDT':
@@ -616,6 +668,7 @@ def count_all_open_positions(client: Client) -> int:
         return 999
 
     try:
+        _throttle()
         positions = client.futures_position_information()
         count = 0
         for pos in positions:
@@ -649,7 +702,7 @@ def _round_quantity(client: Client, symbol: str, raw_qty: float) -> float:
     Also ensures the quantity is bounded by minQty and maxQty limits.
     """
     try:
-        info = client.futures_exchange_info()
+        info = _get_cached_exchange_info(client)
         for s in info['symbols']:
             if s['symbol'] == symbol:
                 for f in s['filters']:
@@ -678,7 +731,7 @@ def _round_price(client: Client, symbol: str, raw_price: float) -> float:
     for a given Futures symbol without floating-point modulo artifacts.
     """
     try:
-        info = client.futures_exchange_info()
+        info = _get_cached_exchange_info(client)
         for s in info['symbols']:
             if s['symbol'] == symbol:
                 for f in s['filters']:
@@ -798,6 +851,7 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
                 'reduceOnly': True,
             }
 
+            _throttle()
             order = client.futures_create_order(**order_params)
         except BinanceAPIException as api_err:
             if api_err.code == -1003:
@@ -902,6 +956,7 @@ def execute_virtual_stop_check(client: Client, symbol: str, direction: str,
 
     try:
         # Fetch current mark price
+        _throttle()
         mark_data = client.futures_mark_price(symbol=symbol)
         mark_price = float(mark_data['markPrice'])
 
@@ -1004,11 +1059,13 @@ def send_telegram_daily_report(client: Client) -> None:
         return
 
     try:
+        _throttle()
         account_info = client.futures_account()
         wallet_balance = float(account_info['totalWalletBalance'])
         unrealized_pnl = float(account_info['totalUnrealizedProfit'])
         
         # Calculate Realized PNL from income history
+        _throttle()
         income_history = client.futures_income_history(incomeType="REALIZED_PNL", limit=1000)
         total_realized_pnl = sum(float(item['income']) for item in income_history)
         

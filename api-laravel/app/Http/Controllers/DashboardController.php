@@ -137,15 +137,44 @@ class DashboardController extends Controller
                     }
                 }
             } catch (\Exception $e) {
-                // If Binance request fails, return empty array for active positions
+                // ── DATABASE FALLBACK: Binance API failed (rate-limit, ban, timeout) ──
+                // Instead of returning empty positions, query local DB for active positions.
+                \Log::warning('Binance positionRisk API failed, falling back to local DB: ' . $e->getMessage());
+
+                $localPositions = \Illuminate\Support\Facades\DB::table('positions')
+                    ->where('asset_balance', '>', 0)
+                    ->orderBy('id', 'desc')
+                    ->get();
+
+                if ($localPositions->isNotEmpty()) {
+                    $mappedPositions = $localPositions->map(function ($pos) {
+                        $rawSl = $pos->stop_loss ?: ($pos->stop_loss_price ?? null);
+                        $actualStopLoss = ($rawSl && (float)$rawSl > 0)
+                            ? number_format((float)$rawSl, 4, '.', '')
+                            : 'N/A';
+
+                        $entryPrice = (float)($pos->entry_price ?? 0);
+                        $assetBal = (float)($pos->asset_balance ?? 0);
+                        $allocatedUsdt = $assetBal * $entryPrice;
+
+                        return [
+                            'id' => $pos->id,
+                            'symbol' => $pos->symbol,
+                            'direction' => $pos->decision ?? 'N/A',
+                            'entry_price' => number_format($entryPrice, 2, '.', ''),
+                            'current_price' => 'N/A (offline)',
+                            'unrealized_pnl' => number_format((float)($pos->unrealized_pnl ?? 0), 2, '.', ''),
+                            'allocated_usdt' => number_format($allocatedUsdt, 2, '.', ''),
+                            'entry_reason' => $pos->entry_reason ?? 'From local DB',
+                            'stop_loss' => $actualStopLoss,
+                            'stop_loss_price' => $actualStopLoss,
+                            'strategy' => $pos->strategy ?? 'N/A',
+                            'active_mode' => $pos->active_mode ?? null,
+                        ];
+                    })->values();
+                }
             }
         }
-
-        // ── HARD RESET: Zero-out historical PNL & Win Rate ──
-        // Override the DB-computed values so the dashboard starts fresh.
-        // To restore historical metrics, remove the two lines below.
-        $totalPnl = 0.00;
-        $winRate = 0.00;
 
         return response()->json([
             'wallet_balance' => number_format($walletBalance, 2, '.', ''),

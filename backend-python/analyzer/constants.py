@@ -147,11 +147,11 @@ REALIZED_PNL causes wallet-balance drift because commissions and funding
 fees drain the account without being reflected in the local DB.
 """
 
-INCOME_HISTORY_MAX_RETRIES: int = 6
+INCOME_HISTORY_MAX_RETRIES: int = 2
 """Maximum retry attempts for futures_income_history before falling back
 to futures_account_trades. Binance has a latency of a few seconds after
 position closure before income entries appear.
 """
 
-INCOME_HISTORY_RETRY_SLEEP_S: int = 5
+INCOME_HISTORY_RETRY_SLEEP_S: int = 3
 """Seconds to sleep between income_history retry attempts."""
