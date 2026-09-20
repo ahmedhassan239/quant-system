@@ -185,7 +185,7 @@ REGIME_RISK_PARAMS = {
         'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR — trail closely
     },
     'TREND': {
-        'SL_ATR_MULT': 1.0,                     # 1.0x ATR — cut bad scalps instantly
+        'SL_ATR_MULT': 1.4,                     # 1.4x ATR — wider to survive entry noise
         'PARTIAL_TP_PCT': 0.04,                 # 4.0% ROE — scalp TP (scale out 50%, move SL to BE)
         'TSL_ATR_ACTIVATION_MULT': 1.5,         # 1.5x ATR — activate trailing at ~+3% ROE
         'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR — trail closely

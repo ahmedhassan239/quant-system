@@ -370,8 +370,8 @@ class TrendStrategy(TradingStrategy):
                     and current_ema9 > current_ema20):
                 decision = 'LONG'
                 strategy_type = 'PULLBACK'
-                # ATR-based stop: 1.0x ATR below entry
-                new_stop_loss = current_price - (1.0 * current_atr) if current_atr else current_price * 0.985
+                # ATR-based stop: 1.4x ATR below entry
+                new_stop_loss = current_price - (1.4 * current_atr) if current_atr else current_price * 0.985
                 logger.info(
                     f"[TREND] {symbol} LONG Micro-Breakout — Price ${current_price:.2f} > "
                     f"EMA9 ${current_ema9:.2f} > EMA20 ${current_ema20:.2f} | "
@@ -393,16 +393,16 @@ class TrendStrategy(TradingStrategy):
                 logger.info(f"[TREND] {symbol} LONG Breakout — Vol {bullish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
 
             # Strategy E: Trend Momentum — catches smooth trends with no OB/breakout
-            # STABILIZER: RSI band tightened to 40-60 (pullback only)
-            elif current_ema20 and current_price > current_ema20 and RSI_ENTRY_FLOOR <= current_rsi <= RSI_ENTRY_CEIL:
+            # Strategy E: broader RSI allowed (outer guard enforces floor + hard ceil)
+            elif current_ema20 and current_price > current_ema20 and current_rsi >= RSI_ENTRY_FLOOR and current_rsi <= RSI_LONG_HARD_CEIL:
                 if len(df) >= 4:
                     prior_3_high = float(df['high'].iloc[-4:-1].max())
                     candle_close = float(df['close'].iloc[-1])
                     if candle_close > prior_3_high:
                         decision = 'LONG'
                         strategy_type = 'TREND_MOMENTUM'
-                        # ATR-based stop: 1.0x ATR below entry
-                        new_stop_loss = current_price - (1.0 * current_atr) if current_atr else current_price * 0.985
+                        # ATR-based stop: 1.4x ATR below entry
+                        new_stop_loss = current_price - (1.4 * current_atr) if current_atr else current_price * 0.985
                         logger.info(
                             f"[TREND] {symbol} LONG Momentum — Price ${current_price:.2f} > EMA20 ${current_ema20:.2f} | "
                             f"RSI {current_rsi:.1f} (pullback {RSI_ENTRY_FLOOR}–{RSI_ENTRY_CEIL}) | Close ${candle_close:.2f} > Prior3H ${prior_3_high:.2f} | "
@@ -417,8 +417,8 @@ class TrendStrategy(TradingStrategy):
                     and current_ema9 < current_ema20):
                 decision = 'SHORT'
                 strategy_type = 'PULLBACK'
-                # ATR-based stop: 1.0x ATR above entry
-                new_stop_loss = current_price + (1.0 * current_atr) if current_atr else current_price * 1.015
+                # ATR-based stop: 1.4x ATR above entry
+                new_stop_loss = current_price + (1.4 * current_atr) if current_atr else current_price * 1.015
                 logger.info(
                     f"[TREND] {symbol} SHORT Micro-Breakdown — Price ${current_price:.2f} < "
                     f"EMA9 ${current_ema9:.2f} < EMA20 ${current_ema20:.2f} | "
@@ -440,16 +440,16 @@ class TrendStrategy(TradingStrategy):
                 logger.info(f"[TREND] {symbol} SHORT Breakout — Vol {bearish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
 
             # Strategy E: Trend Momentum — catches smooth downtrends
-            # STABILIZER: RSI band tightened to 40-60 (pullback only)
-            elif current_ema20 and current_price < current_ema20 and RSI_ENTRY_FLOOR <= current_rsi <= RSI_ENTRY_CEIL:
+            # Strategy E: broader RSI allowed (outer guard enforces ceil + hard floor)
+            elif current_ema20 and current_price < current_ema20 and current_rsi <= RSI_ENTRY_CEIL and current_rsi >= RSI_SHORT_HARD_FLOOR:
                 if len(df) >= 4:
                     prior_3_low = float(df['low'].iloc[-4:-1].min())
                     candle_close = float(df['close'].iloc[-1])
                     if candle_close < prior_3_low:
                         decision = 'SHORT'
                         strategy_type = 'TREND_MOMENTUM'
-                        # ATR-based stop: 1.0x ATR above entry
-                        new_stop_loss = current_price + (1.0 * current_atr) if current_atr else current_price * 1.015
+                        # ATR-based stop: 1.4x ATR above entry
+                        new_stop_loss = current_price + (1.4 * current_atr) if current_atr else current_price * 1.015
                         logger.info(
                             f"[TREND] {symbol} SHORT Momentum — Price ${current_price:.2f} < EMA20 ${current_ema20:.2f} | "
                             f"RSI {current_rsi:.1f} (pullback {RSI_ENTRY_FLOOR}–{RSI_ENTRY_CEIL}) | Close ${candle_close:.2f} < Prior3L ${prior_3_low:.2f} | "
@@ -665,7 +665,7 @@ class StormStrategy(TradingStrategy):
 
             logger.warning(
                 f"🌪️  [STORM] [{symbol}] Placing {direction} LIMIT @ ${limit_price:,.4f} "
-                f"({self.LIMIT_OFFSET_PCT*100:.0f}% below current ${current_price:,.4f}) | "
+                f"({self.LIMIT_OFFSET_PCT*100:.0f}% {'below' if direction == 'LONG' else 'above'} current ${current_price:,.4f}) | "
                 f"Qty: {quantity} | Hard SL: ${sl_price:,.4f} ({self.HARD_SL_PCT*100:.1f}%) | "
                 f"ADX: {regime_meta.get('adx')} | ATR ratio: {regime_meta.get('atr_ratio')}x"
             )
@@ -904,11 +904,28 @@ class StrategyRouter:
             regime_meta=regime_meta,
         )
 
-        # 4. HARD FILTER: Strict Macro-Trend Alignment
+        # 4. HARD FILTER: Strict Macro-Trend Alignment (with Z-Score override)
+        MACRO_OVERRIDE_ZSCORE_MIN = 2.0  # Allow entry if independent momentum is extreme
+
         if decision in ('LONG', 'SHORT'):
             if macro_trend == 'DOWNTREND' and decision == 'LONG':
-                logger.info(f"[{symbol}] HARD FILTER: Dropping LONG signal (Macro Trend is DOWNTREND)")
-                decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
+                if current_zscore is not None and current_zscore >= MACRO_OVERRIDE_ZSCORE_MIN:
+                    logger.info(
+                        f"[{symbol}] MACRO OVERRIDE: Allowing LONG despite DOWNTREND macro — "
+                        f"independent Z-Score {current_zscore:+.2f} >= {MACRO_OVERRIDE_ZSCORE_MIN}."
+                    )
+                else:
+                    logger.info(f"[{symbol}] HARD FILTER: Dropping LONG signal (Macro Trend is DOWNTREND, Z-Score {current_zscore})")
+                    decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
+            elif macro_trend == 'UPTREND' and decision == 'SHORT':
+                if current_zscore is not None and current_zscore <= -MACRO_OVERRIDE_ZSCORE_MIN:
+                    logger.info(
+                        f"[{symbol}] MACRO OVERRIDE: Allowing SHORT despite UPTREND macro — "
+                        f"independent Z-Score {current_zscore:+.2f} <= -{MACRO_OVERRIDE_ZSCORE_MIN}."
+                    )
+                else:
+                    logger.info(f"[{symbol}] HARD FILTER: Dropping SHORT signal (Macro Trend is UPTREND, Z-Score {current_zscore})")
+                    decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
 
         # 5. Bi-Directional Shorts — allow SHORT momentum scalps
         #    when intraday 5m price is below EMA-20 (downward momentum).

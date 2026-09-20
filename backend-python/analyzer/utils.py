@@ -46,3 +46,24 @@ def log_to_db(
     except Exception as e:
         session.rollback()
         print(f"Warning: Failed to save bot log to DB: {e}", flush=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PRICE FORMATTING
+# ══════════════════════════════════════════════════════════════════════
+
+def format_price(price: float) -> str:
+    """Dynamic decimal precision — more decimals for sub-$1 prices.
+
+    Prevents cheap coins (e.g. ONEUSDT $0.0041) from displaying as $0.00.
+    The actual trading calculations are unaffected; this is display-only.
+    """
+    if price == 0:
+        return "0.00"
+    if price >= 1:
+        return f"{price:,.2f}"
+    elif price >= 0.01:
+        return f"{price:.4f}"
+    else:
+        return f"{price:.8f}".rstrip('0').ljust(6, '0')
+

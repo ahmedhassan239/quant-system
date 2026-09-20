@@ -25,6 +25,18 @@ from config import (BINANCE_API_KEY, BINANCE_API_SECRET,
 logger = logging.getLogger('FuturesExecutor')
 logger.setLevel(logging.DEBUG)
 
+# Late import to avoid circular dependency — format_price is used only in log strings
+def _format_price(price: float) -> str:
+    """Dynamic decimal precision — more decimals for sub-$1 prices."""
+    if price == 0:
+        return "0.00"
+    if price >= 1:
+        return f"{price:,.2f}"
+    elif price >= 0.01:
+        return f"{price:.4f}"
+    else:
+        return f"{price:.8f}".rstrip('0').ljust(6, '0')
+
 # Ensure at least a console handler exists
 if not logger.handlers:
     import sys
@@ -363,7 +375,7 @@ def open_position(client: Client, symbol: str, direction: str,
         side = Client.SIDE_BUY if direction == 'LONG' else Client.SIDE_SELL
 
         logger.info(f"[{symbol}] OPENING {direction} | Side: {side} | "
-                    f"Qty: {quantity} | Mark: ${mark_price:,.2f} | "
+                    f"Qty: {quantity} | Mark: ${_format_price(mark_price)} | "
                     f"Notional: ~${usdt_amount:,.2f}")
 
         order = execute_safe_market_order(
@@ -569,14 +581,27 @@ def execute_partial_tp_scaleout(client: Client, symbol: str, direction: str,
 #  POSITION & BALANCE QUERIES
 # ──────────────────────────────────────────────────────────────────────
 
-def get_position_info(client: Client, symbol: str) -> dict:
+def get_position_info(client: Client, symbol: str, positions_cache: dict | None = None) -> dict:
     """
     Fetch current Futures position for a symbol.
+
+    Args:
+        client:          python-binance Client
+        symbol:          e.g. "BTCUSDT"
+        positions_cache: Optional pre-fetched dict {symbol: position_data} from a
+                         batch futures_position_information() call. When provided
+                         and the symbol exists in it, skips the API call entirely.
 
     Returns:
         dict with keys: symbol, size, direction, entry_price, unrealized_pnl
         size=0 means no open position.
     """
+    # ── Use cache if available ──
+    if positions_cache is not None and symbol in positions_cache:
+        cached = positions_cache[symbol]
+        logger.debug(f"[{symbol}] get_position_info — using positions_cache (skipped API call)")
+        return cached
+
     if is_rate_limited():
         logger.debug(f"[{symbol}] Skipped get_position_info — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
         return {'symbol': symbol, 'size': 0.0, 'direction': None,
@@ -617,6 +642,7 @@ def get_position_info(client: Client, symbol: str) -> dict:
         logger.error(f"[{symbol}] Unexpected error fetching position info: {e}")
         return {'symbol': symbol, 'size': 0.0, 'direction': None,
                 'entry_price': 0.0, 'unrealized_pnl': 0.0}
+
 
 
 def get_futures_balance(client: Client) -> float:

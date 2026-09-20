@@ -111,7 +111,7 @@ from analyzer.risk import (
     apply_short_risk_management,
 )
 from analyzer.sync import sync_binance_position
-from analyzer.utils import log_to_db
+from analyzer.utils import log_to_db, format_price
 
 logger = logging.getLogger("Analyzer")
 logger.setLevel(logging.DEBUG)
@@ -439,7 +439,7 @@ def run_analyzer(
                     msg = (
                         f"🚨🔴 [{symbol}] TREND REVERSAL EJECT — LONG position vs "
                         f"DOWNTREND macro. Thesis invalidated. CLOSING IMMEDIATELY "
-                        f"at ${cp:.2f} (Entry: ${ep:.2f})"
+                        f"at ${format_price(cp)} (Entry: ${format_price(ep)})"
                     )
                     print(msg, flush=True)
                     log_to_db(session, symbol, "EXIT", msg)
@@ -455,7 +455,7 @@ def run_analyzer(
                     msg = (
                         f"🚨🟢 [{symbol}] TREND REVERSAL EJECT — SHORT position vs "
                         f"UPTREND macro. Thesis invalidated. CLOSING IMMEDIATELY "
-                        f"at ${cp:.2f} (Entry: ${ep:.2f})"
+                        f"at ${format_price(cp)} (Entry: ${format_price(ep)})"
                     )
                     print(msg, flush=True)
                     log_to_db(session, symbol, "EXIT", msg)
@@ -1135,15 +1135,15 @@ def run_analyzer(
                             f"\n"
                             f"🤖 Active Mode: {mode_label}\n"
                             f"*Symbol:* {symbol}\n"
-                            f"*Price:* ${float(current_price):.2f}\n"
+                            f"*Price:* ${format_price(float(current_price))}\n"
                             f"*Time:* {alert_time}\n"
                             f"\n"
                             f"💡 *MTF Confluence:*\n"
                             f"{alert_reason}\n"
                             f"\n"
                             f"🛡 *Risk Management:*\n"
-                            f"- Entry Price: ${float(portfolio['average_entry_price']):.2f}\n"
-                            f"- Stop-Loss: ${new_stop_loss:.2f} (Dynamic)\n"
+                            f"- Entry Price: ${format_price(float(portfolio['average_entry_price']))}\n"
+                            f"- Stop-Loss: ${format_price(new_stop_loss)} (Dynamic)\n"
                             f"- Trailing Stop: {tsl_atr_activation_mult}x ATR act / {tsl_atr_trail_mult}x ATR trail\n"
                             f"\n"
                             f"💼 *Virtual Portfolio:*\n"
@@ -1369,15 +1369,15 @@ def run_analyzer(
                             f"\n"
                             f"🤖 Active Mode: {mode_label}\n"
                             f"*Symbol:* {symbol}\n"
-                            f"*Price:* ${float(current_price):.2f}\n"
+                            f"*Price:* ${format_price(float(current_price))}\n"
                             f"*Time:* {alert_time}\n"
                             f"\n"
                             f"💡 *MTF Confluence:*\n"
                             f"{alert_reason}\n"
                             f"\n"
                             f"🛡 *Risk Management:*\n"
-                            f"- Entry Price: ${float(portfolio['average_entry_price']):.2f}\n"
-                            f"- Stop-Loss: ${new_stop_loss:.2f} (Dynamic)\n"
+                            f"- Entry Price: ${format_price(float(portfolio['average_entry_price']))}\n"
+                            f"- Stop-Loss: ${format_price(new_stop_loss)} (Dynamic)\n"
                             f"- Trailing Stop: {tsl_atr_activation_mult}x ATR act / {tsl_atr_trail_mult}x ATR trail\n"
                             f"\n"
                             f"💼 *Virtual Portfolio:*\n"
@@ -1501,11 +1501,11 @@ def run_analyzer(
                 trailing_status = "🟢 ACTIVE" if is_trailing else "⚪ INACTIVE"
                 tp_status = "✅ HIT (50% Closed)" if portfolio.get('partial_tp_hit') else f"⚪ WAITING (+{partial_tp_pct * 100:.1f}%)"
                 print(f"\n--- Risk Management (LONG) ---", flush=True)
-                print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}% | Peak: ${hp:.2f}", flush=True)
+                print(f"Entry: ${format_price(ep)} | Unrealized: {unrealized:+.2f}% | Peak: ${format_price(hp)}", flush=True)
                 tsl_act_str = f"+${tsl_atr_activation_mult * current_atr:.4f} ({tsl_atr_activation_mult}x ATR)" if current_atr else f"+{0.8:.1f}%"
                 tsl_trl_str = f"${tsl_atr_trail_mult * current_atr:.4f} ({tsl_atr_trail_mult}x ATR)" if current_atr else "0.4%"
                 print(
-                    f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} | Partial TP: {tp_status} "
+                    f"Stop-Loss: ${format_price(current_sl)} | TSL: {trailing_status} | Partial TP: {tp_status} "
                     f"(activates at {tsl_act_str}, trails {tsl_trl_str})",
                     flush=True,
                 )
@@ -1517,11 +1517,11 @@ def run_analyzer(
                 trailing_status = "🟢 ACTIVE" if is_trailing else "⚪ INACTIVE"
                 tp_status = "✅ HIT (50% Closed)" if portfolio.get('partial_tp_hit') else f"⚪ WAITING (+{partial_tp_pct * 100:.1f}%)"
                 print(f"\n--- Risk Management (SHORT) ---", flush=True)
-                print(f"Entry: ${ep:.2f} | Unrealized: {unrealized:+.2f}% | Trough: ${lp:.2f}", flush=True)
+                print(f"Entry: ${format_price(ep)} | Unrealized: {unrealized:+.2f}% | Trough: ${format_price(lp)}", flush=True)
                 tsl_act_str = f"+${tsl_atr_activation_mult * current_atr:.4f} ({tsl_atr_activation_mult}x ATR)" if current_atr else "+0.8%"
                 tsl_trl_str = f"${tsl_atr_trail_mult * current_atr:.4f} ({tsl_atr_trail_mult}x ATR)" if current_atr else "0.4%"
                 print(
-                    f"Stop-Loss: ${current_sl:.2f} | TSL: {trailing_status} | Partial TP: {tp_status} "
+                    f"Stop-Loss: ${format_price(current_sl)} | TSL: {trailing_status} | Partial TP: {tp_status} "
                     f"(activates at {tsl_act_str}, trails {tsl_trl_str})",
                     flush=True,
                 )
