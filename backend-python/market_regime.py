@@ -905,23 +905,29 @@ class StrategyRouter:
         )
 
         # 4. HARD FILTER: Strict Macro-Trend Alignment (with Z-Score override)
-        MACRO_OVERRIDE_ZSCORE_MIN = 2.0  # Allow entry if independent momentum is extreme
+        MACRO_OVERRIDE_ZSCORE_MIN_BY_REGIME = {
+            'RANGE': 1.3,   # RANGE أصلاً بيتاجر عكس الاتجاه — عتبة أرخى
+            'TREND': 2.0,   # TREND عكس الماكرو مخاطرة أعلى — سيبها متشددة
+            'STORM': 2.0,
+        }
+        current_regime_name = regime.value if hasattr(regime, 'value') else str(regime)
+        macro_override_zscore_min = MACRO_OVERRIDE_ZSCORE_MIN_BY_REGIME.get(current_regime_name, 2.0)
 
         if decision in ('LONG', 'SHORT'):
             if macro_trend == 'DOWNTREND' and decision == 'LONG':
-                if current_zscore is not None and current_zscore >= MACRO_OVERRIDE_ZSCORE_MIN:
+                if current_zscore is not None and current_zscore >= macro_override_zscore_min:
                     logger.info(
                         f"[{symbol}] MACRO OVERRIDE: Allowing LONG despite DOWNTREND macro — "
-                        f"independent Z-Score {current_zscore:+.2f} >= {MACRO_OVERRIDE_ZSCORE_MIN}."
+                        f"independent Z-Score {current_zscore:+.2f} >= {macro_override_zscore_min}."
                     )
                 else:
                     logger.info(f"[{symbol}] HARD FILTER: Dropping LONG signal (Macro Trend is DOWNTREND, Z-Score {current_zscore})")
                     decision, strategy_type, new_stop_loss = 'WAIT', None, 0.0
             elif macro_trend == 'UPTREND' and decision == 'SHORT':
-                if current_zscore is not None and current_zscore <= -MACRO_OVERRIDE_ZSCORE_MIN:
+                if current_zscore is not None and current_zscore <= -macro_override_zscore_min:
                     logger.info(
                         f"[{symbol}] MACRO OVERRIDE: Allowing SHORT despite UPTREND macro — "
-                        f"independent Z-Score {current_zscore:+.2f} <= -{MACRO_OVERRIDE_ZSCORE_MIN}."
+                        f"independent Z-Score {current_zscore:+.2f} <= -{macro_override_zscore_min}."
                     )
                 else:
                     logger.info(f"[{symbol}] HARD FILTER: Dropping SHORT signal (Macro Trend is UPTREND, Z-Score {current_zscore})")
