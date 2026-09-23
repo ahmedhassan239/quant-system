@@ -149,6 +149,7 @@ def _close_position_handler(
     current_rsi: Optional[float] = None,
     current_zscore: Optional[float] = None,
     macro_info: Optional[Dict[str, Any]] = None,
+    positions_cache: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Close an open position: compute PnL, execute on Futures, archive to DB, alert Telegram.
 
@@ -184,7 +185,7 @@ def _close_position_handler(
     live_pos = None
     if futures_client:
         try:
-            live_pos = get_position_info(futures_client, symbol)
+            live_pos = get_position_info(futures_client, symbol, positions_cache=positions_cache)
         except Exception as e:
             print(f"⚠️ [{symbol}] Error checking live position in close handler: {e}", flush=True)
 
@@ -386,6 +387,7 @@ def _save_tracking_update(
     symbol: str,
     session: object,
     futures_client: Optional[object] = None,
+    positions_cache: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Persist a lightweight portfolio snapshot for an active HOLD cycle.
 
@@ -417,7 +419,7 @@ def _save_tracking_update(
     db_pnl_usd = None
 
     if futures_client:
-        pos_info = get_position_info(futures_client, symbol)
+        pos_info = get_position_info(futures_client, symbol, positions_cache=positions_cache)
         if pos_info and pos_info['size'] > 0:
             db_decision = pos_info['direction']          # Force 'LONG' or 'SHORT'
             db_position_direction = pos_info['direction']

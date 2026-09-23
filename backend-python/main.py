@@ -138,6 +138,27 @@ def scanner_job():
         current_open_count = count_all_open_positions(futures_client)
         trades_opened_this_cycle = 0
 
+        # ── PRE-BUILD POSITIONS CACHE ──
+        positions_cache = {}
+        if futures_client:
+            try:
+                all_positions = futures_client.futures_position_information()
+                for p in all_positions:
+                    amt = float(p.get('positionAmt', 0))
+                    if amt != 0:
+                        mark_price = float(p.get('markPrice') or p.get('entryPrice') or 0)
+                        if abs(amt) * mark_price >= 2.0:
+                            positions_cache[p['symbol']] = {
+                                'symbol': p['symbol'],
+                                'size': abs(amt),
+                                'direction': 'LONG' if amt > 0 else 'SHORT',
+                                'entry_price': float(p.get('entryPrice', 0)),
+                                'unrealized_pnl': float(p.get('unRealizedProfit', 0)),
+                            }
+            except Exception as e:
+                print(f"⚠️ Could not build positions_cache this cycle: {e}", flush=True)
+                positions_cache = None  # fallback to None to trigger API call
+
         for sym in all_symbols:
             if is_rate_limited():
                 sleep_secs = rate_limit_remaining_seconds() + 1
@@ -150,7 +171,7 @@ def scanner_job():
                 if is_open_position:
                     # ── RULE 1 & 2: ALWAYS evaluate risk management for open positions ──
                     print(f"🛡️ [{sym}] Open position detected — evaluating risk management (SL/TSL/TP/Stagnant) unconditionally.", flush=True)
-                    newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+                    newly_executed = run_analyzer(symbol=sym, futures_client=futures_client, positions_cache=positions_cache)
                     if newly_executed:
                         trades_opened_this_cycle += 1
                 else:
@@ -160,7 +181,7 @@ def scanner_job():
                         continue
 
                     # Run analyzer (evaluates new entry or trade upgrade if portfolio is full)
-                    newly_executed = run_analyzer(symbol=sym, futures_client=futures_client)
+                    newly_executed = run_analyzer(symbol=sym, futures_client=futures_client, positions_cache=positions_cache)
                     if newly_executed:
                         current_open_count = count_all_open_positions(futures_client)
                         trades_opened_this_cycle += 1

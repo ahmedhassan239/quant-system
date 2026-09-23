@@ -63,6 +63,7 @@ def sync_binance_position(
     sl_atr_mult: float,
     db_decision: str,
     active_mode_value: str,
+    positions_cache: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], str, bool]:
     """Reconcile local DB state with live Binance Futures position.
 
@@ -121,7 +122,7 @@ def sync_binance_position(
     db_unrealized_pnl = None
 
     if futures_client:
-        pos_info = get_position_info(futures_client, symbol)
+        pos_info = get_position_info(futures_client, symbol, positions_cache=positions_cache)
 
         # ── Case A: Live position confirmed on Binance ──
         if pos_info and pos_info['size'] > 0:

@@ -597,10 +597,14 @@ def get_position_info(client: Client, symbol: str, positions_cache: dict | None 
         size=0 means no open position.
     """
     # ── Use cache if available ──
-    if positions_cache is not None and symbol in positions_cache:
-        cached = positions_cache[symbol]
-        logger.debug(f"[{symbol}] get_position_info — using positions_cache (skipped API call)")
-        return cached
+    if positions_cache is not None:
+        cached = positions_cache.get(symbol)
+        if cached is not None:
+            logger.debug(f"[{symbol}] get_position_info — using positions_cache (skipped API call)")
+            return cached
+        # If cache was successfully built but symbol is not in it, it means 0 open position.
+        return {'symbol': symbol, 'size': 0.0, 'direction': None,
+                'entry_price': 0.0, 'unrealized_pnl': 0.0}
 
     if is_rate_limited():
         logger.debug(f"[{symbol}] Skipped get_position_info — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")

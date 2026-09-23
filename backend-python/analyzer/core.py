@@ -268,6 +268,7 @@ def run_analyzer(
     symbol: str = 'PAXGUSDT',
     timeframe: str = TIMEFRAME,
     futures_client: Optional[object] = None,
+    positions_cache: Optional[dict] = None,
 ) -> bool:
     """15m Execution Engine with MTF Confluence.
 
@@ -396,7 +397,7 @@ def run_analyzer(
         # ── 5. Load portfolio state ──
         portfolio = load_portfolio(session, symbol)
         if futures_client:
-            live_pos_start = get_position_info(futures_client, symbol)
+            live_pos_start = get_position_info(futures_client, symbol, positions_cache=positions_cache)
             if live_pos_start and live_pos_start.get('size', 0) > 0:
                 portfolio['asset_balance'] = live_pos_start['size']
                 portfolio['average_entry_price'] = live_pos_start['entry_price']
@@ -447,7 +448,7 @@ def run_analyzer(
                         portfolio, current_price, symbol, session,
                         'TREND_REVERSAL_EJECT',
                         futures_client, bullish_ob, bearish_ob,
-                        current_rsi, current_zscore, macro_info,
+                        current_rsi, current_zscore, macro_info, positions_cache=positions_cache,
                     )
                     risk_exit_triggered = True
 
@@ -463,7 +464,7 @@ def run_analyzer(
                         portfolio, current_price, symbol, session,
                         'TREND_REVERSAL_EJECT',
                         futures_client, bullish_ob, bearish_ob,
-                        current_rsi, current_zscore, macro_info,
+                        current_rsi, current_zscore, macro_info, positions_cache=positions_cache,
                     )
                     risk_exit_triggered = True
             else:
@@ -501,6 +502,7 @@ def run_analyzer(
                     current_rsi=current_rsi,
                     current_zscore=current_zscore,
                     macro_info=macro_info,
+                    positions_cache=positions_cache,
                 )
 
             elif pos_direction == 'SHORT' and not risk_exit_triggered:
@@ -523,6 +525,7 @@ def run_analyzer(
                     current_rsi=current_rsi,
                     current_zscore=current_zscore,
                     macro_info=macro_info,
+                    positions_cache=positions_cache,
                 )
 
         # ── Pyramiding (Scaling Into Winners) Check ──
@@ -822,7 +825,7 @@ def run_analyzer(
 
         if decision == 'WAIT' and not risk_exit_triggered:
             if futures_client:
-                pos_info = get_position_info(futures_client, symbol)
+                pos_info = get_position_info(futures_client, symbol, positions_cache=positions_cache)
                 if pos_info and pos_info['size'] > 0:
                     db_decision = pos_info['direction']
                     print(
@@ -1439,6 +1442,7 @@ def run_analyzer(
                 sl_atr_mult=sl_atr_mult,
                 db_decision=db_decision,
                 active_mode_value=active_mode_value,
+                positions_cache=positions_cache,
             )
 
         # ── Back-patch TradingSignal if sync changed db_decision ──
@@ -1543,7 +1547,7 @@ def run_analyzer(
             current_open_count = count_all_open_positions(futures_client)
             can_proceed_with_entry = True
 
-            live_pos = get_position_info(futures_client, symbol)
+            live_pos = get_position_info(futures_client, symbol, positions_cache=positions_cache)
             if live_pos and live_pos['size'] > 0:
                 _exec_logger.info(
                     f"🔒 [SKIP ENTRY] {symbol} already has an active Binance "
@@ -1602,7 +1606,7 @@ def run_analyzer(
                         if futures_client:
                             for _attempt in range(ROTATION_CONFIRM_RETRIES):
                                 time.sleep(ROTATION_CONFIRM_SLEEP_S)
-                                check_pos = get_position_info(futures_client, weak_sym)
+                                check_pos = get_position_info(futures_client, weak_sym, positions_cache=positions_cache)
                                 if not check_pos or check_pos.get('size', 0.0) == 0.0:
                                     closed_confirmed = True
                                     break

@@ -429,6 +429,7 @@ def apply_long_risk_management(
     current_rsi: Optional[float],
     current_zscore: Optional[float],
     macro_info: Optional[Dict[str, Any]],
+    positions_cache: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], bool]:
     """Apply full LONG-side risk management for an active position.
 
@@ -472,7 +473,7 @@ def apply_long_risk_management(
     position_size = float(portfolio.get('asset_balance', 0) or 0)
     if position_size <= 0 and futures_client:
         try:
-            live_pos = get_position_info(futures_client, symbol)
+            live_pos = get_position_info(futures_client, symbol, positions_cache=positions_cache)
             if live_pos and live_pos.get('size', 0) > 0:
                 position_size = float(live_pos['size'])
         except Exception:
@@ -743,6 +744,7 @@ def apply_short_risk_management(
     current_rsi: Optional[float],
     current_zscore: Optional[float],
     macro_info: Optional[Dict[str, Any]],
+    positions_cache: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], bool]:
     """Apply full SHORT-side risk management for an active position.
 
@@ -766,7 +768,7 @@ def apply_short_risk_management(
     position_size = float(portfolio.get('asset_balance', 0) or 0)
     if position_size <= 0 and futures_client:
         try:
-            live_pos = get_position_info(futures_client, symbol)
+            live_pos = get_position_info(futures_client, symbol, positions_cache=positions_cache)
             if live_pos and live_pos.get('size', 0) > 0:
                 position_size = float(live_pos['size'])
         except Exception:
