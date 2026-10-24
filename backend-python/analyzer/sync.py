@@ -139,48 +139,123 @@ def sync_binance_position(
 
         # ── Case A: Live position confirmed on Binance ──
         if pos_info and pos_info['size'] > 0:
-            _was_orphan = not (in_position and db_pos_direction == pos_info['direction'])
-            db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
-            db_pos_direction = pos_info['direction']
+            _live_dir = pos_info['direction']
+            _was_orphan = not (in_position and db_pos_direction == _live_dir)
+            _prev_trailing = bool(portfolio.get('trailing_active') or portfolio.get('trailing_sl_active'))
+            _prev_sl = float(portfolio.get('stop_loss_price') or portfolio.get('stop_loss') or 0.0)
+            _prev_dir = db_pos_direction
+            _prev_bal = portfolio.get('asset_balance')
+
+            # ── Rehydrate: the latest row may be stale/zero-balance/direction-less even though an
+            #    open row for THIS position exists (e.g. DOGE/BR/SUI). That is NOT an orphan —
+            #    restore its state (SL, trailing, partial TP, dca) instead of re-adopting.
+            if _was_orphan:
+                try:
+                    _last_closed = (
+                        session.query(PortfolioState.id)
+                        .filter(PortfolioState.symbol == symbol, PortfolioState.asset_balance == 0)
+                        .order_by(PortfolioState.id.desc())
+                        .first()
+                    )
+                    _q = session.query(PortfolioState).filter(
+                        PortfolioState.symbol == symbol,
+                        PortfolioState.asset_balance > 0,
+                        PortfolioState.position_direction == _live_dir,
+                    )
+                    if _last_closed:
+                        _q = _q.filter(PortfolioState.id > _last_closed.id)
+                    _open_row = _q.order_by(PortfolioState.id.desc()).first()
+                except Exception as _rh_err:
+                    _open_row = None
+                    logger.warning(f"[{symbol}] Orphan pre-check query failed: {_rh_err}")
+
+                if _open_row is not None:
+                    _sl_row = _open_row.stop_loss_price or _open_row.stop_loss
+                    portfolio['asset_balance'] = float(pos_info['size'])
+                    portfolio['position_direction'] = _live_dir
+                    portfolio['average_entry_price'] = float(
+                        pos_info['entry_price'] or _open_row.average_entry_price or current_price
+                    )
+                    portfolio['dca_level'] = int(_open_row.dca_level or 0)
+                    portfolio['last_exec_price'] = _open_row.last_exec_price
+                    portfolio['total_cost'] = float(_open_row.total_cost or 0.0)
+                    portfolio['highest_price_since_entry'] = _open_row.highest_price_since_entry
+                    portfolio['lowest_price_since_entry'] = getattr(_open_row, 'lowest_price_since_entry', None)
+                    portfolio['stop_loss_price'] = float(_sl_row) if _sl_row else None
+                    portfolio['stop_loss'] = portfolio['stop_loss_price']
+                    portfolio['trailing_active'] = bool(getattr(_open_row, 'trailing_active', False))
+                    portfolio['partial_tp_hit'] = bool(getattr(_open_row, 'partial_tp_hit', False))
+                    _why = (
+                        f"latest row stale (asset_balance={_prev_bal}, direction={_prev_dir}, "
+                        f"live={_live_dir}); restored from row id={_open_row.id}"
+                    )
+                    logger.info(f"[{symbol}] ♻️ Not an orphan — rehydrated existing position state: {_why}")
+                    print(f"  ♻️ [{symbol}] Not an orphan — {_why}", flush=True)
+                    _was_orphan = False
+
+            db_decision = _live_dir           # 'LONG' or 'SHORT'
+            db_pos_direction = _live_dir
             db_entry_price = pos_info['entry_price']
             db_unrealized_pnl = pos_info['unrealized_pnl']
             in_position = True
 
-            # ── FIX 2: ORPHAN ADOPTION — Binance is the source of truth ──
+            # ── FIX 2: ORPHAN ADOPTION — runs ONCE, only when no open DB row exists for this position ──
             if _was_orphan:
                 _size = float(pos_info['size'])
                 _entry = float(pos_info['entry_price'] or current_price)
+                _ref = float(current_price) if current_price else _entry
                 portfolio['asset_balance'] = _size
-                portfolio['position_direction'] = pos_info['direction']
+                portfolio['position_direction'] = _live_dir
                 portfolio['average_entry_price'] = _entry
                 portfolio['total_cost'] = _size * _entry
                 portfolio['dca_level'] = int(portfolio.get('dca_level') or 0)
                 portfolio['last_exec_price'] = _entry
-                portfolio['highest_price_since_entry'] = max(_entry, float(current_price))
-                portfolio['lowest_price_since_entry'] = min(_entry, float(current_price))
-                portfolio['stop_loss_price'] = None  # force emergency calc below
-                portfolio['stop_loss'] = None
+                portfolio['highest_price_since_entry'] = max(_entry, _ref)
+                portfolio['lowest_price_since_entry'] = min(_entry, _ref)
+
+                # An existing SL only counts if it sits on the protective side of the live price.
+                _valid_prev_sl = (
+                    _prev_sl > 0
+                    and ((_live_dir == 'LONG' and _prev_sl < _ref) or (_live_dir == 'SHORT' and _prev_sl > _ref))
+                )
                 _atr = float(current_atr) if current_atr else 0.0
+                _emergency_sl = None
                 if _atr > 0:
-                    _ref = float(current_price) if current_price else _entry
                     _emergency_sl = (
                         min(_entry, _ref) - 1.4 * _atr
-                        if pos_info['direction'] == 'LONG'
+                        if _live_dir == 'LONG'
                         else max(_entry, _ref) + 1.4 * _atr
                     )
+
+                _skip_reason = None
+                if _valid_prev_sl and _prev_trailing:
+                    _skip_reason = f"trailing SL active (existing SL ${_prev_sl:.6g})"
+                elif _valid_prev_sl and _emergency_sl is not None and (
+                    (_live_dir == 'LONG' and _prev_sl > _emergency_sl)
+                    or (_live_dir == 'SHORT' and 0 < _prev_sl < _emergency_sl)
+                ):
+                    _skip_reason = f"existing SL ${_prev_sl:.6g} already tighter than emergency ${_emergency_sl:.6g}"
+
+                if _skip_reason:
+                    portfolio['stop_loss_price'] = _prev_sl
+                    portfolio['stop_loss'] = _prev_sl
+                    portfolio['trailing_active'] = _prev_trailing
+                    logger.info(f"[{symbol}] Orphan adoption: emergency SL skipped — {_skip_reason}")
+                    print(f"  🛡️ [{symbol}] Emergency SL skipped — {_skip_reason}", flush=True)
+                else:
                     portfolio['stop_loss_price'] = _emergency_sl
                     portfolio['stop_loss'] = _emergency_sl
-                    try:
-                        place_mandatory_stop_loss(
-                            futures_client, symbol, pos_info['direction'], float(_emergency_sl),
-                            quantity=_size,
-                        )
-                    except Exception as _adopt_err:
-                        logger.error(f"[{symbol}] Emergency SL placement failed on adoption: {_adopt_err}")
+                    if _emergency_sl is not None:
+                        try:
+                            place_mandatory_stop_loss(
+                                futures_client, symbol, _live_dir, float(_emergency_sl),
+                                quantity=_size,
+                            )
+                        except Exception as _adopt_err:
+                            logger.error(f"[{symbol}] Emergency SL placement failed on adoption: {_adopt_err}")
                 warn = (
-                    f"🚨 [{symbol}] ORPHAN POSITION ADOPTED from Binance: {pos_info['direction']} "
-                    f"qty={_size} entry=${_entry:.4f} | Emergency SL (1.4×ATR)="
-                    f"{portfolio['stop_loss_price']}"
+                    f"🚨 [{symbol}] ORPHAN POSITION ADOPTED from Binance: {_live_dir} "
+                    f"qty={_size} entry=${_entry:.4f} | SL={portfolio['stop_loss_price']}"
                 )
                 print(warn, flush=True)
                 logger.warning(warn)
