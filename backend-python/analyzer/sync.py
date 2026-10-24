@@ -34,6 +34,7 @@ from database import (
 from futures_executor import (
     get_position_info,
     set_stop_loss_order,
+    place_mandatory_stop_loss,
     execute_partial_tp_scaleout,
 )
 
@@ -124,13 +125,66 @@ def sync_binance_position(
     if futures_client:
         pos_info = get_position_info(futures_client, symbol, positions_cache=positions_cache)
 
+        # ── FIX 1: API error / rate-limit ≠ "no position". Abort sync, preserve local DB. ──
+        if pos_info and pos_info.get('error'):
+            msg = (
+                f"⚠️ [{symbol}] Position fetch failed (API error/rate-limit). "
+                "Aborting sync this cycle — local DB state preserved (no ghost archive)."
+            )
+            print(msg, flush=True)
+            logger.warning(msg)
+            if db_decision == 'WAIT' and in_position and db_pos_direction in ('LONG', 'SHORT'):
+                db_decision = db_pos_direction
+            return portfolio, db_decision, in_position
+
         # ── Case A: Live position confirmed on Binance ──
         if pos_info and pos_info['size'] > 0:
+            _was_orphan = not (in_position and db_pos_direction == pos_info['direction'])
             db_decision = pos_info['direction']           # 'LONG' or 'SHORT'
             db_pos_direction = pos_info['direction']
             db_entry_price = pos_info['entry_price']
             db_unrealized_pnl = pos_info['unrealized_pnl']
             in_position = True
+
+            # ── FIX 2: ORPHAN ADOPTION — Binance is the source of truth ──
+            if _was_orphan:
+                _size = float(pos_info['size'])
+                _entry = float(pos_info['entry_price'] or current_price)
+                portfolio['asset_balance'] = _size
+                portfolio['position_direction'] = pos_info['direction']
+                portfolio['average_entry_price'] = _entry
+                portfolio['total_cost'] = _size * _entry
+                portfolio['dca_level'] = int(portfolio.get('dca_level') or 0)
+                portfolio['last_exec_price'] = _entry
+                portfolio['highest_price_since_entry'] = max(_entry, float(current_price))
+                portfolio['lowest_price_since_entry'] = min(_entry, float(current_price))
+                portfolio['stop_loss_price'] = None  # force emergency calc below
+                portfolio['stop_loss'] = None
+                _atr = float(current_atr) if current_atr else 0.0
+                if _atr > 0:
+                    _ref = float(current_price) if current_price else _entry
+                    _emergency_sl = (
+                        min(_entry, _ref) - 1.4 * _atr
+                        if pos_info['direction'] == 'LONG'
+                        else max(_entry, _ref) + 1.4 * _atr
+                    )
+                    portfolio['stop_loss_price'] = _emergency_sl
+                    portfolio['stop_loss'] = _emergency_sl
+                    try:
+                        place_mandatory_stop_loss(
+                            futures_client, symbol, pos_info['direction'], float(_emergency_sl),
+                            quantity=_size,
+                        )
+                    except Exception as _adopt_err:
+                        logger.error(f"[{symbol}] Emergency SL placement failed on adoption: {_adopt_err}")
+                warn = (
+                    f"🚨 [{symbol}] ORPHAN POSITION ADOPTED from Binance: {pos_info['direction']} "
+                    f"qty={_size} entry=${_entry:.4f} | Emergency SL (1.4×ATR)="
+                    f"{portfolio['stop_loss_price']}"
+                )
+                print(warn, flush=True)
+                logger.warning(warn)
+                log_to_db(session, symbol, "WARNING", warn)
             print(
                 f"  🔒 [{symbol}] Binance sync: {db_decision} | "
                 f"Entry=${db_entry_price:.2f} | uPnL=${db_unrealized_pnl:.2f}",

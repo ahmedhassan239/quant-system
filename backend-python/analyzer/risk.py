@@ -64,6 +64,9 @@ def evaluate_pyramid_scale_in(
     symbol: str,
     session: object,
     futures_client: Optional[object] = None,
+    z_score: Optional[float] = None,
+    rsi: Optional[float] = None,
+    regime: Optional[str] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Evaluate and execute pyramiding (scaling into a winning position).
 
@@ -97,6 +100,22 @@ def evaluate_pyramid_scale_in(
 
     direction = portfolio.get('position_direction')
     if not direction or direction not in ('LONG', 'SHORT'):
+        return False, portfolio
+
+    # ── FIX 4: NEVER pyramid into extremes / STORM. Missing data => fail closed. ──
+    if z_score is None or rsi is None:
+        return False, portfolio
+    block_reason = None
+    if regime and str(regime).upper() == 'STORM':
+        block_reason = 'STORM regime'
+    elif abs(float(z_score)) > 2.0:
+        block_reason = f'|Z|={abs(float(z_score)):.2f} > 2.0'
+    elif direction == 'LONG' and float(rsi) > 65:
+        block_reason = f'RSI={float(rsi):.1f} > 65 (overbought)'
+    elif direction == 'SHORT' and float(rsi) < 35:
+        block_reason = f'RSI={float(rsi):.1f} < 35 (oversold)'
+    if block_reason:
+        print(f"🚫 [PYRAMID BLOCKED] {symbol} {direction}: {block_reason}", flush=True)
         return False, portfolio
 
     ep = float(portfolio.get('average_entry_price') or 0.0)

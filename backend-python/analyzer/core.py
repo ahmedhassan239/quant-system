@@ -70,6 +70,7 @@ from futures_executor import (
     get_position_info,
     count_all_open_positions,
     set_stop_loss_order,
+    place_mandatory_stop_loss,
     _check_api_exception_for_blacklist,
 )
 from market_regime import MarketRegime, strategy_router, RegimeDetector
@@ -530,7 +531,10 @@ def run_analyzer(
 
         # ── Pyramiding (Scaling Into Winners) Check ──
         if in_position and not risk_exit_triggered:
-            _, portfolio = evaluate_pyramid_scale_in(portfolio, current_price, symbol, session, futures_client)
+            _, portfolio = evaluate_pyramid_scale_in(
+                portfolio, current_price, symbol, session, futures_client,
+                z_score=current_zscore, rsi=current_rsi, regime=active_mode_value,
+            )
 
         bullish_breakout, bearish_breakout = detect_consolidation_breakout(df)
         whale_strike = detect_whale_strike(df)
@@ -891,6 +895,20 @@ def run_analyzer(
                         current_zscore, macro_info,
                     )
                     in_position = False
+
+                # ── FIX 4: Forbid same-direction scale-ups at extreme Z / RSI / STORM ──
+                if in_position and pos_direction == decision and decision in ('LONG', 'SHORT'):
+                    _z = abs(float(current_zscore)) if current_zscore is not None else 99.0
+                    _r = float(current_rsi) if current_rsi is not None else (100.0 if decision == 'LONG' else 0.0)
+                    if (_z > 2.0 or active_mode_value == 'STORM'
+                            or (decision == 'LONG' and _r > 65)
+                            or (decision == 'SHORT' and _r < 35)):
+                        print(
+                            f"🚫 [{symbol}] {decision} Scale-Up BLOCKED: extreme conditions "
+                            f"(|Z|={_z:.2f}, RSI={_r:.1f}, mode={active_mode_value}).",
+                            flush=True,
+                        )
+                        decision = 'WAIT'
 
                 # ── Scale-Up (Pyramiding) Safety Checks ──
                 dca_level = portfolio.get('dca_level', 0)
@@ -1708,7 +1726,14 @@ def run_analyzer(
                                 f"Allocated: ${allocated_usdt:.2f}"
                             )
                             if new_stop_loss and float(new_stop_loss) > 0:
-                                set_stop_loss_order(futures_client, symbol, direction, float(new_stop_loss))
+                                protected = place_mandatory_stop_loss(
+                                    futures_client, symbol, direction, float(new_stop_loss), retries=2,
+                                )
+                                if not protected:
+                                    _exec_logger.critical(
+                                        f"❌ [{symbol}] UNPROTECTED {direction}: SL + emergency close failed."
+                                    )
+                                    return False
                             return True
                         else:
                             _exec_logger.warning(

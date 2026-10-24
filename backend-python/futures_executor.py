@@ -609,7 +609,7 @@ def get_position_info(client: Client, symbol: str, positions_cache: dict | None 
     if is_rate_limited():
         logger.debug(f"[{symbol}] Skipped get_position_info — rate-limit ban active ({rate_limit_remaining_seconds():.0f}s remaining).")
         return {'symbol': symbol, 'size': 0.0, 'direction': None,
-                'entry_price': 0.0, 'unrealized_pnl': 0.0}
+                'entry_price': 0.0, 'unrealized_pnl': 0.0, 'error': True}
 
     try:
         _throttle()
@@ -641,11 +641,11 @@ def get_position_info(client: Client, symbol: str, positions_cache: dict | None 
             _register_rate_limit_ban(e)
         logger.error(f"[{symbol}] Failed to fetch position info: [{e.code}] {e.message}")
         return {'symbol': symbol, 'size': 0.0, 'direction': None,
-                'entry_price': 0.0, 'unrealized_pnl': 0.0}
+                'entry_price': 0.0, 'unrealized_pnl': 0.0, 'error': True}
     except Exception as e:
         logger.error(f"[{symbol}] Unexpected error fetching position info: {e}")
         return {'symbol': symbol, 'size': 0.0, 'direction': None,
-                'entry_price': 0.0, 'unrealized_pnl': 0.0}
+                'entry_price': 0.0, 'unrealized_pnl': 0.0, 'error': True}
 
 
 
@@ -870,19 +870,47 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
 
         # 6. Place STOP (Stop-Limit) order — flash-crash immune
         try:
-            order_params = {
+            stop_market_params = {
                 'symbol': symbol,
                 'side': side,
-                'type': 'STOP',               # ← Stop-Limit (NOT STOP_MARKET)
+                'type': 'STOP_MARKET',        # ← preferred: guaranteed execution
                 'stopPrice': rounded_stop_price,
-                'price': rounded_limit_price,  # ← Slippage-capped limit price
+                'quantity': quantity,
+                'reduceOnly': True,
+                'workingType': 'MARK_PRICE',
+            }
+            stop_limit_params = {            # ← proven structure (0.5% slippage cap)
+                'symbol': symbol,
+                'side': side,
+                'type': 'STOP',
+                'stopPrice': rounded_stop_price,
+                'price': rounded_limit_price,
                 'timeInForce': 'GTC',
                 'quantity': quantity,
                 'reduceOnly': True,
             }
 
-            _throttle()
-            order = client.futures_create_order(**order_params)
+            order = None
+            try:
+                _throttle()
+                order = client.futures_create_order(**stop_market_params)
+                if not (isinstance(order, dict) and (order.get('orderId') or order.get('algoId'))):
+                    logger.warning(f"[{symbol}] STOP_MARKET returned no order/algo id ({order}). Falling back to STOP-LIMIT.")
+                    order = None
+            except BinanceAPIException as sm_err:
+                # Rate-limit / restriction / already-past-trigger are handled by the shared handler below.
+                if sm_err.code in (-1003, -2021) or _check_api_exception_for_blacklist(symbol, sm_err):
+                    raise
+                logger.warning(
+                    f"[{symbol}] STOP_MARKET rejected [{sm_err.code}]: {sm_err.message}. "
+                    f"Falling back to proven STOP-LIMIT (cap {STOP_LIMIT_SLIPPAGE_CAP*100:.1f}%)."
+                )
+            except Exception as sm_exc:
+                logger.warning(f"[{symbol}] STOP_MARKET error ({sm_exc}). Falling back to STOP-LIMIT.")
+
+            if order is None:
+                _throttle()
+                order = client.futures_create_order(**stop_limit_params)
         except BinanceAPIException as api_err:
             if api_err.code == -1003:
                 _register_rate_limit_ban(api_err)
@@ -951,6 +979,78 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
 
     except Exception as e:
         logger.error(f"[{symbol}] ❌ Unexpected error setting Stop Loss: {type(e).__name__} - {e}")
+        return None
+
+
+def place_mandatory_stop_loss(client: Client, symbol: str, direction: str, stop_price: float,
+                              quantity: float = None, retries: int = 2) -> bool:
+    """
+    FIX 3: Place a REAL exchange-side STOP_MARKET SL (``retries`` attempts).
+    If it cannot be placed, IMMEDIATELY flatten the position with a reduce-only MARKET
+    order so a position is NEVER left on Binance with ``Stop Loss: N/A``.
+
+    Returns True if the position is protected (or already flat), False if the SL failed
+    AND the emergency close also failed (caller must alert / retry next cycle).
+    """
+    import time as _time
+    direction = direction.upper()
+    for attempt in range(1, retries + 1):
+        res = set_stop_loss_order(client, symbol, direction, stop_price, quantity=quantity)
+        if res and not (isinstance(res, dict) and res.get('virtual')):
+            return True
+        logger.warning(f"[{symbol}] SL placement attempt {attempt}/{retries} failed.")
+        _time.sleep(1.0)
+
+    logger.error(f"[{symbol}] 🚨 MANDATORY SL FAILED after {retries} tries — EMERGENCY MARKET CLOSE of {direction}.")
+    close_side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
+    for attempt in range(1, 4):
+        try:
+            qty = quantity
+            if not qty or qty <= 0:
+                live = get_position_info(client, symbol)
+                if live and live.get('error'):
+                    qty = None
+                elif live and live.get('size', 0) > 0:
+                    qty = live['size']
+                else:
+                    return True  # explicitly flat
+            if not qty:
+                raise RuntimeError("position size unknown (API error)")
+            qty = _round_quantity(client, symbol, qty)
+            _throttle()
+            client.futures_create_order(
+                symbol=symbol, side=close_side,
+                type=Client.ORDER_TYPE_MARKET, quantity=qty, reduceOnly=True,
+            )
+            logger.warning(f"[{symbol}] ✅ Emergency close executed (unprotected position flattened).")
+            return True
+        except BinanceAPIException as e:
+            if e.code in (-2022, -4509):
+                return True  # already flat
+            if e.code == -1003:
+                _register_rate_limit_ban(e)
+            logger.error(f"[{symbol}] Emergency close attempt {attempt}/3 failed: [{e.code}] {e.message}")
+        except Exception as e:
+            logger.error(f"[{symbol}] Emergency close attempt {attempt}/3 failed: {e}")
+        _time.sleep(2.0)
+    logger.critical(f"[{symbol}] ❌ UNPROTECTED POSITION: SL and emergency close both failed!")
+    return False
+
+
+def has_live_stop_loss(client: Client, symbol: str) -> bool | None:
+    """True/False if a STOP/STOP_MARKET order exists on Binance; None if it could not be verified."""
+    try:
+        _throttle()
+        orders = client.futures_get_open_orders(symbol=symbol)
+        if hasattr(client, 'futures_get_open_algo_orders'):
+            _throttle()
+            orders = orders + client.futures_get_open_algo_orders(symbol=symbol)
+        return any(
+            o.get('type') in ('STOP', 'STOP_MARKET') or o.get('orderType') in ('STOP', 'STOP_MARKET')
+            for o in orders
+        )
+    except Exception as e:
+        logger.warning(f"[{symbol}] Could not verify SL on Binance: {e}")
         return None
 
 

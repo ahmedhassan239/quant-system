@@ -81,13 +81,18 @@ def scanner_job():
     finally:
         db_session.close()
 
+    # FIX 2: Binance is the single source of truth. Fetch live positions ONCE per cycle.
+    binance_positions = None  # None => fetch failed (do NOT assume flat)
     if futures_client:
         try:
-            pos_risk = futures_client.futures_position_information()
-            for p in pos_risk:
-                if float(p.get('positionAmt', 0)) != 0:
-                    open_pos_symbols.add(p['symbol'])
+            binance_positions = futures_client.futures_position_information()
+            live_symbols = [p['symbol'] for p in binance_positions if abs(float(p.get('positionAmt', 0))) > 0]
+            orphans = [s for s in live_symbols if s not in open_pos_symbols]
+            if orphans:
+                print(f"🚨 ORPHANED POSITIONS on Binance (missing/closed in local DB): {orphans} — forcing into active list.", flush=True)
+            open_pos_symbols.update(live_symbols)
         except Exception as e:
+            binance_positions = None
             print(f"⚠️ Error fetching Binance live positions: {e}", flush=True)
 
     # Combine open position symbols + Radar symbols (open positions first, no duplicates)
@@ -140,24 +145,21 @@ def scanner_job():
 
         # ── PRE-BUILD POSITIONS CACHE ──
         positions_cache = {}
-        if futures_client:
-            try:
-                all_positions = futures_client.futures_position_information()
-                for p in all_positions:
-                    amt = float(p.get('positionAmt', 0))
-                    if amt != 0:
-                        mark_price = float(p.get('markPrice') or p.get('entryPrice') or 0)
-                        if abs(amt) * mark_price >= 2.0:
-                            positions_cache[p['symbol']] = {
-                                'symbol': p['symbol'],
-                                'size': abs(amt),
-                                'direction': 'LONG' if amt > 0 else 'SHORT',
-                                'entry_price': float(p.get('entryPrice', 0)),
-                                'unrealized_pnl': float(p.get('unRealizedProfit', 0)),
-                            }
-            except Exception as e:
-                print(f"⚠️ Could not build positions_cache this cycle: {e}", flush=True)
-                positions_cache = None  # fallback to None to trigger API call
+        if futures_client and binance_positions is not None:
+            for p in binance_positions:
+                amt = float(p.get('positionAmt', 0))
+                if amt != 0:
+                    mark_price = float(p.get('markPrice') or p.get('entryPrice') or 0)
+                    if abs(amt) * mark_price >= 2.0:
+                        positions_cache[p['symbol']] = {
+                            'symbol': p['symbol'],
+                            'size': abs(amt),
+                            'direction': 'LONG' if amt > 0 else 'SHORT',
+                            'entry_price': float(p.get('entryPrice', 0)),
+                            'unrealized_pnl': float(p.get('unRealizedProfit', 0)),
+                        }
+        elif futures_client:
+            positions_cache = None  # fetch failed: per-symbol calls will surface errors, never assume flat
 
         for sym in all_symbols:
             if is_rate_limited():
