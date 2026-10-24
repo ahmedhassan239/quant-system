@@ -425,6 +425,18 @@ def _cancel_all_symbol_orders(client: Client, symbol: str) -> None:
         logger.debug(f"[{symbol}] Note canceling algo open orders: {err}")
 
 
+def _confirm_flat(client: Client, symbol: str) -> bool:
+    """True ONLY if Binance explicitly confirms size == 0 (API errors => False)."""
+    try:
+        live = get_position_info(client, symbol)
+    except Exception as err:
+        logger.warning(f"[{symbol}] _confirm_flat query failed: {err}")
+        return False
+    if not live or live.get('error'):
+        return False
+    return float(live.get('size', 0) or 0) == 0.0
+
+
 def close_position(client: Client, symbol: str, direction: str,
                    quantity: float) -> dict | None:
     """
@@ -482,8 +494,28 @@ def close_position(client: Client, symbol: str, direction: str,
         if e.code == -1003:
             _register_rate_limit_ban(e)
         elif e.code in (-2022, -4509):
-            logger.warning(f"[{symbol}] Position already closed by Binance (ghost position). Handling gracefully.")
-            return True
+            # -2022 can be caused by a live reduceOnly LIMIT locking the size — NOT proof of a flat position.
+            logger.warning(f"[{symbol}] [{e.code}] on close. Re-cancelling ALL orders and verifying position size...")
+            _cancel_all_symbol_orders(client, symbol)
+            if _confirm_flat(client, symbol):
+                logger.warning(f"[{symbol}] ALREADY_CLOSED confirmed by Binance (size == 0).")
+                return True
+            try:
+                _time.sleep(0.5)
+                order = execute_safe_market_order(
+                    client=client, symbol=symbol, side=side, quantity=quantity, reduce_only=True,
+                )
+                logger.info(f"[{symbol}] ✅ {direction} CLOSED on retry after re-cancel.")
+                return order
+            except BinanceAPIException as retry_err:
+                if retry_err.code == -1003:
+                    _register_rate_limit_ban(retry_err)
+                elif retry_err.code in (-2022, -4509) and _confirm_flat(client, symbol):
+                    return True
+                logger.error(f"[{symbol}] ❌ Close retry failed: [{retry_err.code}] {retry_err.message}. Position STILL OPEN.")
+            except Exception as retry_exc:
+                logger.error(f"[{symbol}] ❌ Close retry error: {retry_exc}. Position STILL OPEN.")
+            return None
         elif _check_api_exception_for_blacklist(symbol, e):
             logger.warning(f"[{symbol}] Gracefully caught API restriction [{e.code}] during close_position.")
         else:
@@ -922,14 +954,30 @@ def set_stop_loss_order(client: Client, symbol: str, direction: str, stop_price:
                 logger.warning(f"[{symbol}] 🚨 Stop-Limit [-2021]: price already past trigger. Executing IMMEDIATE market close.")
                 try:
                     close_side = Client.SIDE_SELL if direction == 'LONG' else Client.SIDE_BUY
+                    # Clear every open regular + algo order first: a triggered/unfilled reduceOnly
+                    # order locks the position size and makes the market close fail with -2022.
+                    _cancel_all_symbol_orders(client, symbol)
+                    _time.sleep(0.5)
                     return execute_safe_market_order(
                         client=client, symbol=symbol, side=close_side,
                         quantity=quantity, reduce_only=True,
                     )
                 except BinanceAPIException as close_err:
                     if close_err.code in (-2022, -4509):
-                        logger.warning(f"[{symbol}] Already closed by Binance during immediate-close attempt.")
-                        return True
+                        logger.warning(f"[{symbol}] [{close_err.code}] on immediate close. Re-cancelling and verifying size...")
+                        _cancel_all_symbol_orders(client, symbol)
+                        if _confirm_flat(client, symbol):
+                            logger.warning(f"[{symbol}] ALREADY_CLOSED confirmed by Binance (size == 0).")
+                            return True
+                        try:
+                            _time.sleep(0.5)
+                            return execute_safe_market_order(
+                                client=client, symbol=symbol, side=close_side,
+                                quantity=quantity, reduce_only=True,
+                            )
+                        except Exception as retry_err:
+                            logger.error(f"[{symbol}] ❌ Immediate close retry failed: {retry_err}. Position STILL OPEN.")
+                            return None
                     logger.error(f"[{symbol}] ❌ Immediate close after -2021 failed: [{close_err.code}] {close_err.message}")
                     return None
             else:

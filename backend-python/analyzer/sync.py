@@ -35,6 +35,7 @@ from futures_executor import (
     get_position_info,
     set_stop_loss_order,
     place_mandatory_stop_loss,
+    close_position,
     execute_partial_tp_scaleout,
 )
 
@@ -213,28 +214,39 @@ def sync_binance_position(
                 portfolio['highest_price_since_entry'] = max(_entry, _ref)
                 portfolio['lowest_price_since_entry'] = min(_entry, _ref)
 
-                # An existing SL only counts if it sits on the protective side of the live price.
-                _valid_prev_sl = (
+                # A previous SL is only trusted if the portfolio really held THIS position
+                # (same direction, open balance). It may already be breached by mark price.
+                _prev_trusted = (
                     _prev_sl > 0
-                    and ((_live_dir == 'LONG' and _prev_sl < _ref) or (_live_dir == 'SHORT' and _prev_sl > _ref))
+                    and _prev_dir == _live_dir
+                    and _prev_bal is not None and float(_prev_bal) > 0
                 )
                 _atr = float(current_atr) if current_atr else 0.0
+                # FIX 3: ALWAYS anchor the emergency SL on ENTRY price (never the crashed mark price).
                 _emergency_sl = None
                 if _atr > 0:
                     _emergency_sl = (
-                        min(_entry, _ref) - 1.4 * _atr
-                        if _live_dir == 'LONG'
-                        else max(_entry, _ref) + 1.4 * _atr
+                        _entry - 1.4 * _atr if _live_dir == 'LONG' else _entry + 1.4 * _atr
                     )
 
                 _skip_reason = None
-                if _valid_prev_sl and _prev_trailing:
+                if _prev_trusted and _prev_trailing:
                     _skip_reason = f"trailing SL active (existing SL ${_prev_sl:.6g})"
-                elif _valid_prev_sl and _emergency_sl is not None and (
+                elif _prev_trusted and _emergency_sl is not None and (
                     (_live_dir == 'LONG' and _prev_sl > _emergency_sl)
                     or (_live_dir == 'SHORT' and 0 < _prev_sl < _emergency_sl)
                 ):
                     _skip_reason = f"existing SL ${_prev_sl:.6g} already tighter than emergency ${_emergency_sl:.6g}"
+                elif _prev_trusted and _emergency_sl is None:
+                    _skip_reason = f"no ATR available; keeping existing SL ${_prev_sl:.6g}"
+
+                _effective_sl = _prev_sl if _skip_reason else _emergency_sl
+                _breached = (
+                    _effective_sl is not None and _ref > 0 and (
+                        (_live_dir == 'LONG' and _ref <= _effective_sl)
+                        or (_live_dir == 'SHORT' and _ref >= _effective_sl)
+                    )
+                )
 
                 if _skip_reason:
                     portfolio['stop_loss_price'] = _prev_sl
@@ -245,14 +257,29 @@ def sync_binance_position(
                 else:
                     portfolio['stop_loss_price'] = _emergency_sl
                     portfolio['stop_loss'] = _emergency_sl
-                    if _emergency_sl is not None:
-                        try:
-                            place_mandatory_stop_loss(
-                                futures_client, symbol, _live_dir, float(_emergency_sl),
-                                quantity=_size,
-                            )
-                        except Exception as _adopt_err:
-                            logger.error(f"[{symbol}] Emergency SL placement failed on adoption: {_adopt_err}")
+
+                if _breached:
+                    # Mark price already past the (entry-based) SL: do NOT place a new SL below the
+                    # crashed price — close the position now.
+                    _msg = (
+                        f"🛑 [{symbol}] Adopted {_live_dir} already breached SL ${_effective_sl:.6g} "
+                        f"(mark ${_ref:.6g}, entry ${_entry:.6g}). Closing immediately."
+                    )
+                    print(_msg, flush=True)
+                    logger.warning(_msg)
+                    log_to_db(session, symbol, "EXIT", _msg)
+                    try:
+                        close_position(futures_client, symbol, _live_dir, _size)
+                    except Exception as _close_err:
+                        logger.error(f"[{symbol}] Breach close failed: {_close_err}")
+                elif not _skip_reason and _emergency_sl is not None:
+                    try:
+                        place_mandatory_stop_loss(
+                            futures_client, symbol, _live_dir, float(_emergency_sl),
+                            quantity=_size,
+                        )
+                    except Exception as _adopt_err:
+                        logger.error(f"[{symbol}] Emergency SL placement failed on adoption: {_adopt_err}")
                 warn = (
                     f"🚨 [{symbol}] ORPHAN POSITION ADOPTED from Binance: {_live_dir} "
                     f"qty={_size} entry=${_entry:.4f} | SL={portfolio['stop_loss_price']}"
