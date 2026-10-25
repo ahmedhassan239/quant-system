@@ -5,9 +5,9 @@ Implements a dynamic "Market Regime Detection" system that classifies the
 current market condition and routes execution to the appropriate strategy.
 
 Regime Priority (evaluated in order — highest risk wins):
-  1. STORM  — Extreme volatility → Capital Preservation (limit orders only)
-  2. RANGE  — Chop zone / mean reversion → Tight TP/SL, no trailing
-  3. TREND  — Trending market → Existing Breakout/Pullback logic
+  1. STORM  — Extreme volatility (|Z| > 3.0 or ATR spike) → Capital Preservation
+  2. TREND  — ADX >= 18 (incl. low-|Z| pullbacks) → Breakout/Pullback logic
+  3. RANGE  — ADX < 18 → True mean reversion (buy below / sell above the mean)
 
 Architecture (SOLID):
   • RegimeDetector   — Single Responsibility: pure regime classification.
@@ -39,6 +39,8 @@ from config import (
     RSI_ENTRY_CEIL,
     RSI_LONG_HARD_CEIL,
     RSI_SHORT_HARD_FLOOR,
+    SL_MIN_DISTANCE_PCT,
+    SL_MAX_DISTANCE_PCT,
 )
 
 if TYPE_CHECKING:
@@ -55,6 +57,41 @@ if not logger.handlers:
         datefmt='%H:%M:%S',
     ))
     logger.addHandler(_ch)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  STOP-LOSS DISTANCE HELPER — noise floor + risk cap
+# ══════════════════════════════════════════════════════════════════════
+
+def compute_initial_stop_loss(
+    direction: str,
+    current_price: float,
+    current_atr: float | None,
+    atr_mult: float,
+    structural_sl: float | None = None,
+) -> float:
+    """
+    Compute an initial stop-loss price that survives normal 5m noise.
+
+        sl_distance = max(atr_mult * ATR, SL_MIN_DISTANCE_PCT * price [, structural distance])
+        sl_distance = min(sl_distance, SL_MAX_DISTANCE_PCT * price)
+
+    If ``structural_sl`` (OB edge / breakout-candle wick) is supplied and lies on the
+    correct side of price, its distance participates in the max() so structure is
+    respected, but it can never be tighter than the floor nor wider than the cap.
+    """
+    price = float(current_price)
+    atr_dist = (atr_mult * float(current_atr)) if current_atr else 0.0
+    dist = max(atr_dist, price * SL_MIN_DISTANCE_PCT)
+
+    if structural_sl is not None and structural_sl > 0:
+        if direction == 'LONG' and structural_sl < price:
+            dist = max(dist, price - float(structural_sl))
+        elif direction == 'SHORT' and structural_sl > price:
+            dist = max(dist, float(structural_sl) - price)
+
+    dist = min(dist, price * SL_MAX_DISTANCE_PCT)
+    return price - dist if direction == 'LONG' else price + dist
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -98,9 +135,9 @@ class RegimeDetector:
 
     Priority order (STORM is checked first — capital preservation always wins):
       STORM : ATR > 3x its 50-period MA  OR  |Z-Score| > 3.0
-      RANGE : ADX < 25 AND |Z-Score| <= 1.0
-      TREND : ADX >= 25 AND |Z-Score| >= 1.2
-      (fallback → RANGE, the most conservative non-storm state)
+      TREND : ADX >= 18 (any |Z| — low |Z| with high ADX is a trend PULLBACK)
+      RANGE : ADX < 18 (or ADX unavailable)
+      There is NO 'RANGE (fallback)' for trending coins anymore.
     """
 
     # Regime thresholds — all tunable via constants
@@ -234,35 +271,23 @@ class RegimeDetector:
 
             return MarketRegime.STORM, meta
 
-        # ── Priority 2: RANGE (Mean Reversion) ──
-        adx_low    = (adx is not None and adx < cls.RANGE_ADX_MAX)
-        z_in_range = (abs_z <= cls.RANGE_ZSCORE_MAX)
-
-        if adx_low and z_in_range:
+        # ── Priority 2: TREND — ADX alone decides (Z only labels the sub-type) ──
+        # ADX >= 18 with |Z| < 1.2 is a healthy trend PULLBACK, which belongs in
+        # TrendStrategy — never in RangeStrategy with a mean-reversion bias.
+        if adx is not None and adx >= cls.TREND_ADX_MIN:
+            sub_type = "extension" if abs_z >= cls.TREND_ZSCORE_MIN else "pullback"
             meta['regime_reason'] = (
-                f"RANGE: ADX {adx:.1f} (<{cls.RANGE_ADX_MAX}) + "
-                f"|Z-Score| {abs_z:.2f} (≤{cls.RANGE_ZSCORE_MAX})"
-            )
-            return MarketRegime.RANGE, meta
-
-        # ── Priority 3: TREND (Breakout/Pullback) ──
-        adx_strong  = (adx is not None and adx >= cls.TREND_ADX_MIN)
-        z_stretched = (abs_z >= cls.TREND_ZSCORE_MIN)
-
-        if adx_strong and z_stretched:
-            meta['regime_reason'] = (
-                f"TREND: ADX {adx:.1f} (≥{cls.TREND_ADX_MIN}) + "
-                f"|Z-Score| {abs_z:.2f} (≥{cls.TREND_ZSCORE_MIN})"
+                f"TREND ({sub_type}): ADX {adx:.1f} (≥{cls.TREND_ADX_MIN}) | "
+                f"|Z-Score| {abs_z:.2f}"
             )
             return MarketRegime.TREND, meta
 
-        # ── Fallback: RANGE (conservative, no trade in ambiguous zones) ──
+        # ── Priority 3: RANGE — ADX < 18 (or ADX unavailable) ──
         # Pre-compute adx_str so the format specifier always receives a plain float,
         # never an inline conditional (which raises ValueError in Python's formatter).
-        adx_str = f"{adx:.1f}" if (adx is not None and pd.notna(adx) and adx > 0) else "N/A"
+        adx_str = f"{adx:.1f}" if (adx is not None and pd.notna(adx)) else "N/A"
         meta['regime_reason'] = (
-            f"RANGE (fallback): ADX={adx_str} / "
-            f"|Z|={abs_z:.2f} — no regime rule matched"
+            f"RANGE: ADX {adx_str} (<{cls.RANGE_ADX_MAX}) | |Z-Score| {abs_z:.2f}"
         )
         return MarketRegime.RANGE, meta
 
@@ -356,6 +381,8 @@ class TrendStrategy(TradingStrategy):
             logger.info(f"[{symbol}] [TREND] Max slots reached ({active_count}/{max_positions})")
             return 'WAIT', None, 0.0
 
+        sl_atr_mult = REGIME_RISK_PARAMS['TREND']['SL_ATR_MULT']  # 2.0x ATR
+
         # ── Precompute EMAs for Beast Mode micro-breakout triggers ──
         ema_9  = df['close'].ewm(span=9, adjust=False).mean()
         ema_20 = df['close'].ewm(span=20, adjust=False).mean()
@@ -370,8 +397,8 @@ class TrendStrategy(TradingStrategy):
                     and current_ema9 > current_ema20):
                 decision = 'LONG'
                 strategy_type = 'PULLBACK'
-                # ATR-based stop: 1.4x ATR below entry
-                new_stop_loss = current_price - (1.4 * current_atr) if current_atr else current_price * 0.985
+                # ATR-based stop: max(2.0x ATR, 0.8%) below entry, capped at 2.5%
+                new_stop_loss = compute_initial_stop_loss('LONG', current_price, current_atr, sl_atr_mult)
                 logger.info(
                     f"[TREND] {symbol} LONG Micro-Breakout — Price ${current_price:.2f} > "
                     f"EMA9 ${current_ema9:.2f} > EMA20 ${current_ema20:.2f} | "
@@ -382,14 +409,20 @@ class TrendStrategy(TradingStrategy):
             elif bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.2:
                 decision = 'LONG'
                 strategy_type = 'PULLBACK'
-                new_stop_loss = bullish_ob['low'] * 0.999
+                new_stop_loss = compute_initial_stop_loss(
+                    'LONG', current_price, current_atr, sl_atr_mult,
+                    structural_sl=bullish_ob['low'] * 0.999,
+                )
                 logger.info(f"[TREND] {symbol} LONG Pullback — OB touch + Z={current_zscore:+.2f}")
 
             # Strategy B: Momentum Breakout
             elif bullish_breakout and current_zscore > 1.2:
                 decision = 'LONG'
                 strategy_type = 'BREAKOUT'
-                new_stop_loss = bullish_breakout['breakout_candle_low'] * 0.999
+                new_stop_loss = compute_initial_stop_loss(
+                    'LONG', current_price, current_atr, sl_atr_mult,
+                    structural_sl=bullish_breakout['breakout_candle_low'] * 0.999,
+                )
                 logger.info(f"[TREND] {symbol} LONG Breakout — Vol {bullish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
 
             # Strategy E: Trend Momentum — catches smooth trends with no OB/breakout
@@ -401,8 +434,8 @@ class TrendStrategy(TradingStrategy):
                     if candle_close > prior_3_high:
                         decision = 'LONG'
                         strategy_type = 'TREND_MOMENTUM'
-                        # ATR-based stop: 1.4x ATR below entry
-                        new_stop_loss = current_price - (1.4 * current_atr) if current_atr else current_price * 0.985
+                        # ATR-based stop: max(2.0x ATR, 0.8%) below entry, capped at 2.5%
+                        new_stop_loss = compute_initial_stop_loss('LONG', current_price, current_atr, sl_atr_mult)
                         logger.info(
                             f"[TREND] {symbol} LONG Momentum — Price ${current_price:.2f} > EMA20 ${current_ema20:.2f} | "
                             f"RSI {current_rsi:.1f} (pullback {RSI_ENTRY_FLOOR}–{RSI_ENTRY_CEIL}) | Close ${candle_close:.2f} > Prior3H ${prior_3_high:.2f} | "
@@ -417,8 +450,8 @@ class TrendStrategy(TradingStrategy):
                     and current_ema9 < current_ema20):
                 decision = 'SHORT'
                 strategy_type = 'PULLBACK'
-                # ATR-based stop: 1.4x ATR above entry
-                new_stop_loss = current_price + (1.4 * current_atr) if current_atr else current_price * 1.015
+                # ATR-based stop: max(2.0x ATR, 0.8%) above entry, capped at 2.5%
+                new_stop_loss = compute_initial_stop_loss('SHORT', current_price, current_atr, sl_atr_mult)
                 logger.info(
                     f"[TREND] {symbol} SHORT Micro-Breakdown — Price ${current_price:.2f} < "
                     f"EMA9 ${current_ema9:.2f} < EMA20 ${current_ema20:.2f} | "
@@ -429,14 +462,20 @@ class TrendStrategy(TradingStrategy):
             elif bearish_ob and current_price <= bearish_ob['high'] and current_zscore > 1.2:
                 decision = 'SHORT'
                 strategy_type = 'PULLBACK'
-                new_stop_loss = bearish_ob['high'] * 1.001
+                new_stop_loss = compute_initial_stop_loss(
+                    'SHORT', current_price, current_atr, sl_atr_mult,
+                    structural_sl=bearish_ob['high'] * 1.001,
+                )
                 logger.info(f"[TREND] {symbol} SHORT Pullback — OB touch + Z={current_zscore:+.2f}")
 
             # Strategy B: Momentum Breakout
             elif bearish_breakout and current_zscore < -1.2:
                 decision = 'SHORT'
                 strategy_type = 'BREAKOUT'
-                new_stop_loss = bearish_breakout['breakout_candle_high'] * 1.001
+                new_stop_loss = compute_initial_stop_loss(
+                    'SHORT', current_price, current_atr, sl_atr_mult,
+                    structural_sl=bearish_breakout['breakout_candle_high'] * 1.001,
+                )
                 logger.info(f"[TREND] {symbol} SHORT Breakout — Vol {bearish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
 
             # Strategy E: Trend Momentum — catches smooth downtrends
@@ -448,8 +487,8 @@ class TrendStrategy(TradingStrategy):
                     if candle_close < prior_3_low:
                         decision = 'SHORT'
                         strategy_type = 'TREND_MOMENTUM'
-                        # ATR-based stop: 1.4x ATR above entry
-                        new_stop_loss = current_price + (1.4 * current_atr) if current_atr else current_price * 1.015
+                        # ATR-based stop: max(2.0x ATR, 0.8%) above entry, capped at 2.5%
+                        new_stop_loss = compute_initial_stop_loss('SHORT', current_price, current_atr, sl_atr_mult)
                         logger.info(
                             f"[TREND] {symbol} SHORT Momentum — Price ${current_price:.2f} < EMA20 ${current_ema20:.2f} | "
                             f"RSI {current_rsi:.1f} (pullback {RSI_ENTRY_FLOOR}–{RSI_ENTRY_CEIL}) | Close ${candle_close:.2f} < Prior3L ${prior_3_low:.2f} | "
@@ -466,17 +505,22 @@ class TrendStrategy(TradingStrategy):
 class RangeStrategy(TradingStrategy):
     """
     Mode B — RANGE regime (Chop Harvester).
-    Mean Reversion entries using RSI extremes + Order Block confluence.
+    True Mean Reversion: BUY BELOW the mean, SELL ABOVE the mean.
+
+    Entry Gates:
+      • LONG  MR : Z <= -0.5 AND RSI <= 45  (+ Bullish OB touch logged as confluence)
+      • SHORT MR : Z >= +0.5 AND RSI >= 55  (+ Bearish OB touch logged as confluence)
 
     Risk Parameters:
-      • Stop-Loss  : ±0.5% from entry (tight, range-aware)
-      • Take-Profit: +1.0% to +1.5% (managed in run_analyzer via PARTIAL_TP_PCT)
-      • No Trailing Stop (range-bound price will oscillate)
+      • Stop-Loss  : max(2.0x ATR, 0.8%) from entry, capped at 2.5%
+      • Take-Profit: +1.2% raw move (managed in run_analyzer via PARTIAL_TP_PCT)
     """
 
-    # STABILIZER MODE: RSI pullback-only gates (40–60 band)
-    RSI_LONG_THRESHOLD  = 60.0   # Enter LONG when RSI < 60 (pulling back into EMA, not chasing)
-    RSI_SHORT_THRESHOLD = 40.0   # Enter SHORT when RSI > 40 (bouncing up into EMA, not chasing)
+    # Mean-reversion gates — price must be on the correct side of the mean
+    MR_LONG_Z_MAX     = -0.5   # LONG only when price is >= 0.5 SD BELOW the mean
+    MR_LONG_RSI_MAX   = 45.0   # ...and RSI confirms weakness (<= 45)
+    MR_SHORT_Z_MIN    = 0.5    # SHORT only when price is >= 0.5 SD ABOVE the mean
+    MR_SHORT_RSI_MIN  = 55.0   # ...and RSI confirms strength (>= 55)
 
     @property
     def regime(self) -> MarketRegime:
@@ -498,39 +542,39 @@ class RangeStrategy(TradingStrategy):
             logger.info(f"[{symbol}] [RANGE] Max slots reached ({active_count}/{max_positions})")
             return 'WAIT', None, 0.0
 
-        if current_rsi is None:
+        if current_rsi is None or current_zscore is None:
             return 'WAIT', None, 0.0
 
         decision = 'WAIT'
         strategy_type = None
         new_stop_loss = 0.0
-        
-        sl_dist = REGIME_RISK_PARAMS['RANGE']['SL_ATR_MULT'] * (current_atr if current_atr else current_price * 0.005)
 
-        # ── STABILIZER: LONG only in pullback zone (RSI 40–60, hard ceil 62) ──
-        if RSI_ENTRY_FLOOR <= current_rsi < self.RSI_LONG_THRESHOLD and current_rsi <= RSI_LONG_HARD_CEIL:
+        sl_atr_mult = REGIME_RISK_PARAMS['RANGE']['SL_ATR_MULT']  # 2.0x ATR
+
+        # ── LONG MR: price BELOW the mean (Z <= -0.5) AND RSI <= 45 ──
+        if current_zscore <= self.MR_LONG_Z_MAX and current_rsi <= self.MR_LONG_RSI_MAX:
             decision = 'LONG'
             strategy_type = 'RANGE_MEAN_REVERSION'
-            new_stop_loss = current_price - sl_dist
+            new_stop_loss = compute_initial_stop_loss('LONG', current_price, current_atr, sl_atr_mult)
             ob_info = ""
             if bullish_ob and bullish_ob['low'] <= current_price <= bullish_ob['high']:
                 ob_info = f" + Bullish OB touch ${bullish_ob['low']:.2f}–${bullish_ob['high']:.2f}"
             logger.info(
-                f"[RANGE] {symbol} LONG MR — RSI {current_rsi:.1f} "
-                f"(pullback zone {RSI_ENTRY_FLOOR}–{self.RSI_LONG_THRESHOLD}, ceil {RSI_LONG_HARD_CEIL}){ob_info}"
+                f"[RANGE] {symbol} LONG MR — Z={current_zscore:+.2f} (≤{self.MR_LONG_Z_MAX}) | "
+                f"RSI {current_rsi:.1f} (≤{self.MR_LONG_RSI_MAX}) | SL ${new_stop_loss:.4f}{ob_info}"
             )
 
-        # ── STABILIZER: SHORT only in pullback zone (RSI 40–60, hard floor 38) ──
-        elif current_rsi > self.RSI_SHORT_THRESHOLD and current_rsi <= RSI_ENTRY_CEIL and current_rsi >= RSI_SHORT_HARD_FLOOR:
+        # ── SHORT MR: price ABOVE the mean (Z >= +0.5) AND RSI >= 55 ──
+        elif current_zscore >= self.MR_SHORT_Z_MIN and current_rsi >= self.MR_SHORT_RSI_MIN:
             decision = 'SHORT'
             strategy_type = 'RANGE_MEAN_REVERSION'
-            new_stop_loss = current_price + sl_dist
+            new_stop_loss = compute_initial_stop_loss('SHORT', current_price, current_atr, sl_atr_mult)
             ob_info = ""
             if bearish_ob and bearish_ob['low'] <= current_price <= bearish_ob['high']:
                 ob_info = f" + Bearish OB touch ${bearish_ob['low']:.2f}–${bearish_ob['high']:.2f}"
             logger.info(
-                f"[RANGE] {symbol} SHORT MR — RSI {current_rsi:.1f} "
-                f"(pullback zone {self.RSI_SHORT_THRESHOLD}–{RSI_ENTRY_CEIL}, floor {RSI_SHORT_HARD_FLOOR}){ob_info}"
+                f"[RANGE] {symbol} SHORT MR — Z={current_zscore:+.2f} (≥+{self.MR_SHORT_Z_MIN}) | "
+                f"RSI {current_rsi:.1f} (≥{self.MR_SHORT_RSI_MIN}) | SL ${new_stop_loss:.4f}{ob_info}"
             )
 
         return decision, strategy_type, new_stop_loss

@@ -175,26 +175,40 @@ MAX_GLOBAL_POSITIONS = int(os.environ.get("MAX_GLOBAL_POSITIONS", "5"))   # Hard
 # Execution Engine (5m) — Dynamic ATR Trailing Stop Loss (TSL) Settings
 ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))                               # 14-period ATR
 
+# ── Initial Stop-Loss distance floor / cap (fraction of price, unleveraged) ──
+# sl_distance = clamp(SL_ATR_MULT * ATR, SL_MIN_DISTANCE_PCT * price, SL_MAX_DISTANCE_PCT * price)
+# 5m ATR on majors is only ~0.08%–0.38% of price — an ATR-only SL gets wicked
+# out by normal noise. 0.8% floor ≈ $1.60 risk on a $200 notional position.
+SL_MIN_DISTANCE_PCT = float(os.environ.get("SL_MIN_DISTANCE_PCT", "0.008"))   # 0.8% floor
+SL_MAX_DISTANCE_PCT = float(os.environ.get("SL_MAX_DISTANCE_PCT", "0.025"))   # 2.5% cap
+
+# ── Break-Even / Trailing-Stop activation & trail floors (raw price move) ──
+# Activation: price must move >= max(TSL_ATR_ACTIVATION_MULT * ATR, TSL_MIN_ACTIVATION_PCT * entry)
+# Trail     : distance       = max(TSL_ATR_TRAIL_MULT * ATR,      TSL_MIN_TRAIL_PCT * price)
+TSL_MIN_ACTIVATION_PCT = float(os.environ.get("TSL_MIN_ACTIVATION_PCT", "0.008"))  # +0.8% raw (= +4% ROE @5x)
+TSL_MIN_TRAIL_PCT      = float(os.environ.get("TSL_MIN_TRAIL_PCT",      "0.005"))  # 0.5% min trail distance
+
 # ── Dynamic Regime-Based Risk Parameters ──
-# ── BEAST MODE: Aggressive Scalp TP at 4.0% ROE, 1.0x ATR SL, 1.5x ATR trailing
+# NOTE: PARTIAL_TP_PCT is compared against the RAW, UNLEVERAGED price move
+# (uPnL / notional), NOT margin ROE. 0.012 = +1.2% price = +6.0% ROE @ 5x.
 REGIME_RISK_PARAMS = {
     'RANGE': {
-        'SL_ATR_MULT': 1.0,                     # 1.0x ATR — cut bad scalps instantly
-        'PARTIAL_TP_PCT': 0.04,                 # 4.0% ROE — scalp TP (scale out 50%, move SL to BE)
-        'TSL_ATR_ACTIVATION_MULT': 1.5,         # 1.5x ATR — activate trailing at ~+3% ROE
-        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR — trail closely
+        'SL_ATR_MULT': 2.0,                     # 2.0x ATR (floored at 0.8%, capped at 2.5% of price)
+        'PARTIAL_TP_PCT': 0.012,                # +1.2% raw price move (= +6% ROE @5x) — scale out 50%, SL→BE
+        'TSL_ATR_ACTIVATION_MULT': 2.0,         # 2.0x ATR (floored at +0.8% raw move) before BE/TSL
+        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR trail (floored at 0.5% of price)
     },
     'TREND': {
-        'SL_ATR_MULT': 1.4,                     # 1.4x ATR — wider to survive entry noise
-        'PARTIAL_TP_PCT': 0.04,                 # 4.0% ROE — scalp TP (scale out 50%, move SL to BE)
-        'TSL_ATR_ACTIVATION_MULT': 1.5,         # 1.5x ATR — activate trailing at ~+3% ROE
-        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR — trail closely
+        'SL_ATR_MULT': 2.0,                     # 2.0x ATR (floored at 0.8%, capped at 2.5% of price)
+        'PARTIAL_TP_PCT': 0.012,                # +1.2% raw price move (= +6% ROE @5x) — scale out 50%, SL→BE
+        'TSL_ATR_ACTIVATION_MULT': 2.0,         # 2.0x ATR (floored at +0.8% raw move) before BE/TSL
+        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR trail (floored at 0.5% of price)
     },
     'STORM': {
-        'SL_ATR_MULT': 1.0,                     # 1.0x ATR — cut bad scalps instantly
-        'PARTIAL_TP_PCT': 0.04,                 # 4.0% ROE — scalp TP (scale out 50%, move SL to BE)
-        'TSL_ATR_ACTIVATION_MULT': 1.5,         # 1.5x ATR — activate trailing at ~+3% ROE
-        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR — trail closely
+        'SL_ATR_MULT': 1.0,                     # 1.0x ATR (still subject to the 0.8% floor / 2.5% cap)
+        'PARTIAL_TP_PCT': 0.012,                # +1.2% raw price move (= +6% ROE @5x) — scale out 50%, SL→BE
+        'TSL_ATR_ACTIVATION_MULT': 2.0,         # 2.0x ATR (floored at +0.8% raw move) before BE/TSL
+        'TSL_ATR_TRAIL_MULT': 1.5,              # 1.5x ATR trail (floored at 0.5% of price)
     },
     'CRASH_CATCHER': {
         # SL is wick-based (not ATR-based) — SL_ATR_MULT intentionally 0

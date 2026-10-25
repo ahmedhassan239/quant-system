@@ -30,6 +30,8 @@ from config import (
     PYRAMID_TIER1_SIZE_PCT,
     PYRAMID_TIER2_SIZE_PCT,
     DISABLE_STAGNANT_EXIT,
+    TSL_MIN_ACTIVATION_PCT,
+    TSL_MIN_TRAIL_PCT,
 )
 from database import (
     SessionLocal,
@@ -52,6 +54,27 @@ from analyzer.constants import (
     STAGNANT_PNL_BAND,
     BREAK_EVEN_TRIGGER_PCT,
 )
+
+
+def _be_tsl_distances(
+    entry_price: float,
+    current_price: float,
+    current_atr: Optional[float],
+    tsl_atr_activation_mult: float,
+    tsl_atr_trail_mult: float,
+) -> Tuple[float, float]:
+    """Return ``(activation_dist, trailing_dist)`` in absolute price units.
+
+    activation_dist = max(tsl_atr_activation_mult * ATR, TSL_MIN_ACTIVATION_PCT * entry)
+    trailing_dist   = max(tsl_atr_trail_mult * ATR,      TSL_MIN_TRAIL_PCT * price)
+
+    Raw 5m ATR is only ~0.1–0.4% of price on majors, so ATR-only thresholds
+    moved SL to break-even / trailed at ~+0.15% — a net loss after fees.
+    """
+    atr = float(current_atr) if current_atr else 0.0
+    activation_dist = max(tsl_atr_activation_mult * atr, float(entry_price) * TSL_MIN_ACTIVATION_PCT)
+    trailing_dist = max(tsl_atr_trail_mult * atr, float(current_price) * TSL_MIN_TRAIL_PCT)
+    return activation_dist, trailing_dist
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -511,6 +534,12 @@ def apply_long_risk_management(
         portfolio['highest_price_since_entry'] = cp
         highest_price = cp
 
+    # BE / TSL thresholds with %-floors (see _be_tsl_distances)
+    tsl_activation_dist, tsl_trailing_dist = _be_tsl_distances(
+        ep, cp, current_atr, tsl_atr_activation_mult, tsl_atr_trail_mult,
+    )
+    price_move_fav = cp - ep
+
     import logging as _risk_logging
     _risk_logger = _risk_logging.getLogger("Analyzer.risk")
 
@@ -529,7 +558,6 @@ def apply_long_risk_management(
     ):
         total_qty = float(portfolio.get('asset_balance', 0) or 0)
         if total_qty > 0 and futures_client:
-            tsl_trailing_dist = tsl_atr_trail_mult * current_atr if current_atr else None
             tp_order, rem_qty = execute_partial_tp_scaleout(
                 futures_client, symbol, 'LONG', total_qty, ep,
                 trailing_distance=tsl_trailing_dist, atr_val=current_atr,
@@ -592,8 +620,8 @@ def apply_long_risk_management(
                     session.rollback()
                     print(f"Warning: Failed to persist partial TP state to DB: {e}", flush=True)
 
-    # ── Break-Even Trigger (+1.0%) ──
-    if not risk_exit_triggered and unrealized_pct >= BREAK_EVEN_TRIGGER_PCT:
+    # ── Break-Even Trigger: move >= max(activation_mult × ATR, +0.8% raw) ──
+    if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
         if stop_loss < ep:
             old_sl = stop_loss
             stop_loss = ep
@@ -628,11 +656,8 @@ def apply_long_risk_management(
                 print(f"Warning: Failed to persist break-even SL to DB: {e}", flush=True)
 
     # ── Trailing Stop Loss (Profit-Locking) ──
-    # Dynamic Volatility-Based TSL: activates when profit >= tsl_atr_activation_mult * ATR
-    tsl_activation_dist = tsl_atr_activation_mult * current_atr
-    tsl_trailing_dist = tsl_atr_trail_mult * current_atr
-    price_move_fav = cp - ep
-
+    # Activates when favourable move >= max(activation_mult × ATR, +0.8% raw);
+    # trails by max(trail_mult × ATR, 0.5% of price) from the peak.
     if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
         if not trailing_active:
             trailing_active = True
@@ -640,12 +665,13 @@ def apply_long_risk_management(
             msg = (
                 f"📈 [{symbol}] DYNAMIC ATR TRAILING STOP ACTIVATED for LONG | "
                 f"Move: +${price_move_fav:.4f} (+{unrealized_pct * 100:.2f}%) | "
-                f"Threshold: +${tsl_activation_dist:.4f} ({tsl_atr_activation_mult}x ATR: ${current_atr:.4f})"
+                f"Threshold: +${tsl_activation_dist:.4f} (max({tsl_atr_activation_mult}x ATR ${current_atr or 0:.4f}, "
+                f"{TSL_MIN_ACTIVATION_PCT * 100:.1f}% of entry))"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
 
-        # Trail strictly by tsl_atr_trail_mult × ATR from the PEAK price
+        # Trail by max(tsl_atr_trail_mult × ATR, TSL_MIN_TRAIL_PCT) from the PEAK price
         peak = float(highest_price) if highest_price else cp
         new_sl = peak - tsl_trailing_dist
 
@@ -659,7 +685,7 @@ def apply_long_risk_management(
                 f"📈 DYNAMIC ATR TRAILING STOP UPDATED: {symbol} | "
                 f"New SL: ${new_sl:.4f} (was ${old_sl:.4f}) | "
                 f"Peak: ${peak:.2f} | Trailing Dist: ${tsl_trailing_dist:.4f} "
-                f"({tsl_atr_trail_mult}x ATR) | Locked Profit: {locked_pnl:+.2f}%"
+                f"(max {tsl_atr_trail_mult}x ATR / {TSL_MIN_TRAIL_PCT * 100:.1f}%) | Locked Profit: {locked_pnl:+.2f}%"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
@@ -806,6 +832,12 @@ def apply_short_risk_management(
         portfolio['lowest_price_since_entry'] = cp
         lowest_price = cp
 
+    # BE / TSL thresholds with %-floors (see _be_tsl_distances)
+    tsl_activation_dist, tsl_trailing_dist = _be_tsl_distances(
+        ep, cp, current_atr, tsl_atr_activation_mult, tsl_atr_trail_mult,
+    )
+    price_move_fav = ep - cp
+
     import logging as _risk_logging
     _risk_logger = _risk_logging.getLogger("Analyzer.risk")
 
@@ -824,7 +856,6 @@ def apply_short_risk_management(
     ):
         total_qty = float(portfolio.get('asset_balance', 0) or 0)
         if total_qty > 0 and futures_client:
-            tsl_trailing_dist = tsl_atr_trail_mult * current_atr if current_atr else None
             tp_order, rem_qty = execute_partial_tp_scaleout(
                 futures_client, symbol, 'SHORT', total_qty, ep,
                 trailing_distance=tsl_trailing_dist, atr_val=current_atr,
@@ -889,8 +920,8 @@ def apply_short_risk_management(
                     session.rollback()
                     print(f"Warning: Failed to persist partial TP state to DB: {e}", flush=True)
 
-    # ── Break-Even Trigger (+1.0%) ──
-    if not risk_exit_triggered and unrealized_pct >= BREAK_EVEN_TRIGGER_PCT:
+    # ── Break-Even Trigger: move >= max(activation_mult × ATR, +0.8% raw) ──
+    if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
         if stop_loss > ep or stop_loss == 0:
             old_sl = stop_loss
             stop_loss = ep
@@ -925,10 +956,8 @@ def apply_short_risk_management(
                 print(f"Warning: Failed to persist break-even SL to DB: {e}", flush=True)
 
     # ── Trailing Stop Loss (Profit-Locking) ──
-    tsl_activation_dist = tsl_atr_activation_mult * current_atr
-    tsl_trailing_dist = tsl_atr_trail_mult * current_atr
-    price_move_fav = ep - cp
-
+    # Activates when favourable move >= max(activation_mult × ATR, +0.8% raw);
+    # trails by max(trail_mult × ATR, 0.5% of price) from the trough.
     if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
         if not trailing_active:
             trailing_active = True
@@ -936,12 +965,13 @@ def apply_short_risk_management(
             msg = (
                 f"📈 [{symbol}] DYNAMIC ATR TRAILING STOP ACTIVATED for SHORT | "
                 f"Move: +${price_move_fav:.4f} (+{unrealized_pct * 100:.2f}%) | "
-                f"Threshold: +${tsl_activation_dist:.4f} ({tsl_atr_activation_mult}x ATR: ${current_atr:.4f})"
+                f"Threshold: +${tsl_activation_dist:.4f} (max({tsl_atr_activation_mult}x ATR ${current_atr or 0:.4f}, "
+                f"{TSL_MIN_ACTIVATION_PCT * 100:.1f}% of entry))"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
 
-        # Trail strictly by tsl_atr_trail_mult × ATR from the TROUGH price
+        # Trail by max(tsl_atr_trail_mult × ATR, TSL_MIN_TRAIL_PCT) from the TROUGH price
         trough = float(lowest_price) if lowest_price else cp
         new_sl = trough + tsl_trailing_dist
 
@@ -955,7 +985,7 @@ def apply_short_risk_management(
                 f"📈 DYNAMIC ATR TRAILING STOP UPDATED: {symbol} | "
                 f"New SL: ${new_sl:.4f} (was ${old_sl:.4f}) | "
                 f"Trough: ${trough:.2f} | Trailing Dist: ${tsl_trailing_dist:.4f} "
-                f"({tsl_atr_trail_mult}x ATR) | Locked Profit: {locked_pnl:+.2f}%"
+                f"(max {tsl_atr_trail_mult}x ATR / {TSL_MIN_TRAIL_PCT * 100:.1f}%) | Locked Profit: {locked_pnl:+.2f}%"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)

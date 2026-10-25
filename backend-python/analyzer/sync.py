@@ -423,10 +423,11 @@ def sync_binance_position(
                         flush=True,
                     )
                 else:
-                    if db_pos_direction == 'LONG':
-                        sl_val = float(db_entry_price) - (sl_atr_mult * current_atr)
-                    elif db_pos_direction == 'SHORT':
-                        sl_val = float(db_entry_price) + (sl_atr_mult * current_atr)
+                    if db_pos_direction in ('LONG', 'SHORT'):
+                        from market_regime import compute_initial_stop_loss
+                        sl_val = compute_initial_stop_loss(
+                            db_pos_direction, float(db_entry_price), current_atr, sl_atr_mult,
+                        )
                     print(
                         f"🔄 [{symbol}] Calculated missing Stop Loss for new position during sync: ${sl_val:.4f}",
                         flush=True,
