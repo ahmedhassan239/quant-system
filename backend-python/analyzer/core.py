@@ -370,9 +370,21 @@ def run_analyzer(
             else float(current_price) * 0.005
         )
 
+        # ── 4b. Volume Ratio Plumbing (closed/latest candle volume vs 20-period closed SMA) ──
+        vol_col = 'volume' if 'volume' in df.columns else ('Volume' if 'Volume' in df.columns else None)
+        candle_vol_ratio = 1.0
+        if vol_col and len(df) >= 2:
+            vol_s = df[vol_col].astype(float)
+            curr_vol = max(float(vol_s.iloc[-1]), float(vol_s.iloc[-2]))
+            vol_ma20 = float(vol_s.iloc[-21:-1].mean()) if len(vol_s) >= 21 else float(vol_s.iloc[:-1].mean())
+            if vol_ma20 > 0:
+                candle_vol_ratio = float(curr_vol / vol_ma20)
+        if candle_vol_ratio <= 0.0:
+            candle_vol_ratio = 1.0
+
         print(
             f"  📊 [{symbol}] 15m Z-Score: {current_zscore:+.3f} | "
-            f"RSI: {current_rsi:.1f}"
+            f"RSI: {current_rsi:.1f} | Vol: {candle_vol_ratio:.2f}x"
             if current_zscore and current_rsi
             else f"  📊 [{symbol}] Indicators computing...",
             flush=True,
@@ -671,6 +683,7 @@ def run_analyzer(
                         precomputed_regime=active_regime,
                         precomputed_meta=precomputed_meta,
                         btc_macro_trend=btc_macro_trend,
+                        volume_ratio=candle_vol_ratio,
                     )
 
                     # Accept only trend-following/breakout strategies aligned with STORM direction.
@@ -731,6 +744,7 @@ def run_analyzer(
                     precomputed_regime=active_regime,
                     precomputed_meta=precomputed_meta,
                     btc_macro_trend=btc_macro_trend,
+                    volume_ratio=candle_vol_ratio,
                 )
                 active_mode_value = regime.value
 
@@ -948,11 +962,11 @@ def run_analyzer(
 
                 # ── Execute LONG (open or DCA) ──
                 if decision == 'LONG':
-                    vol_ratio = 0.0
+                    vol_ratio = candle_vol_ratio
                     if strategy_type == 'PULLBACK' and bullish_ob and 'vol_ratio' in bullish_ob:
-                        vol_ratio = bullish_ob['vol_ratio']
+                        vol_ratio = max(vol_ratio, float(bullish_ob['vol_ratio']))
                     elif strategy_type == 'BREAKOUT' and bullish_breakout and 'vol_ratio' in bullish_breakout:
-                        vol_ratio = bullish_breakout['vol_ratio']
+                        vol_ratio = max(vol_ratio, float(bullish_breakout['vol_ratio']))
 
                     abs_z = abs(current_zscore) if current_zscore else 0.0
 
@@ -1183,11 +1197,11 @@ def run_analyzer(
 
                 # ── Execute SHORT (open or DCA) ──
                 elif decision == 'SHORT':
-                    vol_ratio = 0.0
+                    vol_ratio = candle_vol_ratio
                     if strategy_type == 'PULLBACK' and bearish_ob and 'vol_ratio' in bearish_ob:
-                        vol_ratio = bearish_ob['vol_ratio']
+                        vol_ratio = max(vol_ratio, float(bearish_ob['vol_ratio']))
                     elif strategy_type == 'BREAKOUT' and bearish_breakout and 'vol_ratio' in bearish_breakout:
-                        vol_ratio = bearish_breakout['vol_ratio']
+                        vol_ratio = max(vol_ratio, float(bearish_breakout['vol_ratio']))
 
                     abs_z = abs(current_zscore) if current_zscore else 0.0
 

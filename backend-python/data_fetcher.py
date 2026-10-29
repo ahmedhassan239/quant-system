@@ -110,9 +110,16 @@ def save_to_db(df):
         # Prepare the insert statement
         stmt = insert(MarketData).values(records)
         
-        # Define the upsert strategy (ignore duplicates on constraint)
-        on_conflict_stmt = stmt.on_conflict_do_nothing(
-            index_elements=['symbol', 'timeframe', 'timestamp']
+        # Define the upsert strategy (update latest candle prices and volume on conflict)
+        on_conflict_stmt = stmt.on_conflict_do_update(
+            index_elements=['symbol', 'timeframe', 'timestamp'],
+            set_={
+                'open': stmt.excluded.open,
+                'high': stmt.excluded.high,
+                'low': stmt.excluded.low,
+                'close': stmt.excluded.close,
+                'volume': stmt.excluded.volume,
+            }
         )
         
         # Execute the statement

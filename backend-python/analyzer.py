@@ -1482,8 +1482,20 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
         current_sma = float(last_row[f'SMA_{ZSCORE_SMA_PERIOD}']) if pd.notna(last_row[f'SMA_{ZSCORE_SMA_PERIOD}']) else None
         current_atr = float(last_row['ATR']) if pd.notna(last_row['ATR']) and float(last_row['ATR']) > 0 else (float(current_price) * 0.005)
 
+        # ── 4b. Volume Ratio Plumbing (closed/latest candle volume vs 20-period closed SMA) ──
+        vol_col = 'volume' if 'volume' in df.columns else ('Volume' if 'Volume' in df.columns else None)
+        candle_vol_ratio = 1.0
+        if vol_col and len(df) >= 2:
+            vol_s = df[vol_col].astype(float)
+            curr_vol = max(float(vol_s.iloc[-1]), float(vol_s.iloc[-2]))
+            vol_ma20 = float(vol_s.iloc[-21:-1].mean()) if len(vol_s) >= 21 else float(vol_s.iloc[:-1].mean())
+            if vol_ma20 > 0:
+                candle_vol_ratio = float(curr_vol / vol_ma20)
+        if candle_vol_ratio <= 0.0:
+            candle_vol_ratio = 1.0
+
         print(f"  📊 [{symbol}] 15m Z-Score: {current_zscore:+.3f} | "
-              f"RSI: {current_rsi:.1f}" if current_zscore and current_rsi else
+              f"RSI: {current_rsi:.1f} | Vol: {candle_vol_ratio:.2f}x" if current_zscore and current_rsi else
               f"  📊 [{symbol}] Indicators computing...", flush=True)
 
         # ── Strategy C Heartbeat: diagnose trend alignment + data starvation ──
@@ -2098,6 +2110,7 @@ def run_analyzer(symbol='PAXGUSDT', timeframe=TIMEFRAME, futures_client=None):
                     session=session,
                     precomputed_regime=active_regime,
                     precomputed_meta=precomputed_meta,
+                    volume_ratio=candle_vol_ratio,
                 )
                 active_mode_value = regime.value
 
