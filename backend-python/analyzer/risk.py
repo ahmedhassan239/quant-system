@@ -32,6 +32,7 @@ from config import (
     DISABLE_STAGNANT_EXIT,
     TSL_MIN_ACTIVATION_PCT,
     TSL_MIN_TRAIL_PCT,
+    MAX_LOSS_CAP_PCT,
 )
 from database import (
     SessionLocal,
@@ -53,6 +54,7 @@ from analyzer.constants import (
     STAGNANT_HOURS_THRESHOLD,
     STAGNANT_PNL_BAND,
     BREAK_EVEN_TRIGGER_PCT,
+    FEE_BUFFER_PCT,
 )
 
 
@@ -451,6 +453,8 @@ def find_weakest_active_position(
 # ══════════════════════════════════════════════════════════════════════
 #  ATR TRAILING STOP / BREAK-EVEN / PARTIAL TP — LONG
 # ══════════════════════════════════════════════════════════════════════
+#  ATR TRAILING STOP / BREAK-EVEN / PARTIAL TP — LONG
+# ══════════════════════════════════════════════════════════════════════
 
 def apply_long_risk_management(
     portfolio: Dict[str, Any],
@@ -472,45 +476,30 @@ def apply_long_risk_management(
     current_zscore: Optional[float],
     macro_info: Optional[Dict[str, Any]],
     positions_cache: Optional[Dict[str, Any]] = None,
+    regime: Optional[str] = None,
+    current_adx: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], bool]:
     """Apply full LONG-side risk management for an active position.
 
     Checks (in order):
-        1. Update highest-price watermark.
-        2. Partial Take Profit (50% scale-out at ``partial_tp_pct``).
-        3. Break-Even trigger (move SL to entry at +BREAK_EVEN_TRIGGER_PCT).
-        4. Dynamic ATR Trailing Stop (activates at tsl_atr_activation_mult × ATR).
-        5. Stop Loss hit check (close position if price <= SL).
-        6. Stagnant Trade Closer (if DISABLE_STAGNANT_EXIT is False).
+        1. Hard Max Loss Cap (-1.5% raw move / -$3.00 on $200).
+        2. Enforce max 1.5% Stop Loss distance from entry.
+        3. Update highest-price watermark.
+        4. Partial Take Profit (50% scale-out at ``partial_tp_pct``) with fee buffer.
+        5. Fee-Aware Break-Even trigger (+0.20% buffer above entry).
+        6. Dynamic ATR Trailing Stop (activates at >= +0.90% raw move, locking >= +0.40% profit).
+        7. Stop Loss hit check (close position if price <= SL).
+        8. Stagnant Zombie Trade Ejector (>90m open, flat PnL in RANGE / ADX < 18).
 
-    Each check is skipped if ``risk_exit_triggered`` is already ``True``.
-
-    Args:
-        portfolio:               Current portfolio state dict.
-        symbol:                  Trading pair symbol.
-        session:                 Active SQLAlchemy session.
-        current_price:           Current market price.
-        entry_price:             Position average entry price.
-        highest_price:           Peak price since entry (or None).
-        stop_loss:               Current stop-loss price (0 = none set).
-        trailing_active:         Whether the TSL is currently active.
-        current_atr:             Latest 14-period ATR value.
-        tsl_atr_activation_mult: TSL activation threshold multiplier.
-        tsl_atr_trail_mult:      TSL trailing distance multiplier.
-        partial_tp_pct:          Partial TP trigger threshold (e.g. 0.03 = 3%).
-        futures_client:          Optional Binance Futures client.
-        bullish_ob:              Latest bullish OB (for close handler context).
-        bearish_ob:              Latest bearish OB (for close handler context).
-        current_rsi:             Current RSI (for close handler context).
-        current_zscore:          Current Z-Score (for close handler context).
-        macro_info:              Latest macro state (for close handler context).
-
-    Returns:
+    Args / Returns:
         ``(updated_portfolio, risk_exit_triggered)``
     """
     risk_exit_triggered = False
     cp = float(current_price)
     ep = float(entry_price)
+
+    import logging as _risk_logging
+    _risk_logger = _risk_logging.getLogger("Analyzer.risk")
 
     position_size = float(portfolio.get('asset_balance', 0) or 0)
     if position_size <= 0 and futures_client:
@@ -528,6 +517,58 @@ def apply_long_risk_management(
         if (position_value > 0 and unrealized_pnl > 0)
         else (unrealized_pnl / position_value if position_value > 0 else 0.0)
     )
+    raw_move_pct = (cp - ep) / ep if ep > 0 else 0.0
+
+    # ── FIX 2: HARD MAX LOSS CAP (-1.5% raw move / -$3.00 max loss on $200) ──
+    hard_sl_price = ep * (1.0 - MAX_LOSS_CAP_PCT)  # ep * 0.985
+    if raw_move_pct <= -MAX_LOSS_CAP_PCT or (hard_sl_price > 0 and cp <= hard_sl_price):
+        _cap_msg = (
+            f"🛑 [{symbol}] HARD MAX LOSS CAP BREACHED (LONG): raw move {raw_move_pct * 100:.2f}% "
+            f"<= -{MAX_LOSS_CAP_PCT * 100:.1f}% (Price ${cp:.6g} <= Cap ${hard_sl_price:.6g}, Entry ${ep:.6g}) — "
+            f"EXECUTING IMMEDIATE MARKET CLOSE"
+        )
+        print(_cap_msg, flush=True)
+        _risk_logger.warning(_cap_msg)
+        log_to_db(session, symbol, "EXIT", _cap_msg)
+        portfolio = _close_position_handler(
+            portfolio, current_price, symbol, session, 'MAX_LOSS_CAP_HIT',
+            futures_client, bullish_ob, bearish_ob, current_rsi, current_zscore, macro_info,
+            positions_cache=positions_cache,
+        )
+        risk_exit_triggered = True
+        return portfolio, risk_exit_triggered
+
+    # If stop_loss is wider than 1.5% max loss cap or unset, immediately tighten to 1.5%
+    if stop_loss <= 0 or stop_loss < hard_sl_price:
+        old_sl = stop_loss
+        stop_loss = hard_sl_price
+        portfolio['stop_loss_price'] = stop_loss
+        portfolio['stop_loss'] = stop_loss
+        _tighten_msg = (
+            f"🛡️ [{symbol}] TIGHTENED SL TO 1.5% MAX LOSS CAP (LONG): "
+            f"was ${old_sl:.6g} -> now ${stop_loss:.6g} (Entry ${ep:.6g})"
+        )
+        print(_tighten_msg, flush=True)
+        log_to_db(session, symbol, "INFO", _tighten_msg)
+        if futures_client:
+            set_stop_loss_order(futures_client, symbol, 'LONG', stop_loss)
+        try:
+            latest_record = (
+                session.query(PortfolioState)
+                .filter(
+                    PortfolioState.symbol == symbol,
+                    PortfolioState.position_direction == 'LONG',
+                )
+                .order_by(PortfolioState.id.desc())
+                .first()
+            )
+            if latest_record:
+                latest_record.stop_loss_price = stop_loss
+                latest_record.stop_loss = stop_loss
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            print(f"Warning: Failed to persist max loss cap SL to DB: {e}", flush=True)
 
     # Track new peak price
     if highest_price is None or cp > float(highest_price):
@@ -539,9 +580,6 @@ def apply_long_risk_management(
         ep, cp, current_atr, tsl_atr_activation_mult, tsl_atr_trail_mult,
     )
     price_move_fav = cp - ep
-
-    import logging as _risk_logging
-    _risk_logger = _risk_logging.getLogger("Analyzer.risk")
 
     if unrealized_pnl > 0:
         _risk_logger.info(
@@ -569,17 +607,19 @@ def apply_long_risk_management(
                 if portfolio.get('total_cost'):
                     portfolio['total_cost'] = float(portfolio['total_cost']) * (rem_qty / total_qty)
                 portfolio['usdt_balance'] = float(portfolio.get('usdt_balance', 0)) + (closed_qty * cp)
-                if stop_loss < ep:
-                    stop_loss = ep
-                    portfolio['stop_loss_price'] = ep
-                    portfolio['stop_loss'] = ep
+
+                fee_buffered_be = ep * (1.0 + FEE_BUFFER_PCT)
+                if stop_loss < fee_buffered_be:
+                    stop_loss = fee_buffered_be
+                    portfolio['stop_loss_price'] = fee_buffered_be
+                    portfolio['stop_loss'] = fee_buffered_be
 
                 pnl_realized_est = (cp - ep) * closed_qty
                 msg = (
                     f"🎯 [{symbol}] PARTIAL TAKE PROFIT EXECUTED (LONG) | "
                     f"Closed 50% size ({closed_qty} units) at ${cp:.4f} (+{unrealized_pct * 100:.2f}%) | "
                     f"Est. Profit: +${pnl_realized_est:.2f} | Remaining Qty: {rem_qty} | "
-                    f"Stop Loss locked at Entry ${ep:.4f}"
+                    f"Stop Loss locked at Fee-Buffered Entry ${fee_buffered_be:.4f} (+0.20%)"
                 )
                 print(msg, flush=True)
                 log_to_db(session, symbol, "ENTRY", msg)
@@ -620,16 +660,17 @@ def apply_long_risk_management(
                     session.rollback()
                     print(f"Warning: Failed to persist partial TP state to DB: {e}", flush=True)
 
-    # ── Break-Even Trigger: move >= max(activation_mult × ATR, +0.8% raw) ──
+    # ── FIX 3: Fee-Aware Break-Even Trigger: move >= tsl_activation_dist (+0.90% raw or ATR) ──
+    fee_buffered_be = ep * (1.0 + FEE_BUFFER_PCT)  # ep * 1.002 (+0.20% fee buffer)
     if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
-        if stop_loss < ep:
+        if stop_loss < fee_buffered_be:
             old_sl = stop_loss
-            stop_loss = ep
+            stop_loss = fee_buffered_be
             portfolio['stop_loss_price'] = stop_loss
             portfolio['stop_loss'] = stop_loss
             msg = (
-                f"🛡️ BREAK-EVEN TRIGGERED: {symbol} LONG at {unrealized_pct * 100:+.2f}% PnL. "
-                f"Moved SL from ${old_sl:.4f} to Entry ${ep:.4f}"
+                f"🛡️ FEE-AWARE BREAK-EVEN TRIGGERED: {symbol} LONG at {unrealized_pct * 100:+.2f}% PnL. "
+                f"Moved SL from ${old_sl:.4f} to Fee-Buffered Entry ${fee_buffered_be:.4f} (+0.20% net profit)"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
@@ -655,25 +696,29 @@ def apply_long_risk_management(
                 session.rollback()
                 print(f"Warning: Failed to persist break-even SL to DB: {e}", flush=True)
 
-    # ── Trailing Stop Loss (Profit-Locking) ──
-    # Activates when favourable move >= max(activation_mult × ATR, +0.8% raw);
-    # trails by max(trail_mult × ATR, 0.5% of price) from the peak.
-    if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
+    # ── FIX 3: Trailing Stop Loss (Profit-Locking >= +0.40% Net Profit) ──
+    # Activates when favourable move >= +0.90% raw price move (and >= tsl_activation_dist);
+    # trails by max(trail_mult × ATR, 0.5% of price) from peak, locking in at least +0.40% above entry.
+    raw_fav_pct = (cp - ep) / ep if ep > 0 else 0.0
+    if not risk_exit_triggered and raw_fav_pct >= 0.009 and price_move_fav >= tsl_activation_dist:
         if not trailing_active:
             trailing_active = True
             portfolio['trailing_active'] = True
             msg = (
                 f"📈 [{symbol}] DYNAMIC ATR TRAILING STOP ACTIVATED for LONG | "
-                f"Move: +${price_move_fav:.4f} (+{unrealized_pct * 100:.2f}%) | "
-                f"Threshold: +${tsl_activation_dist:.4f} (max({tsl_atr_activation_mult}x ATR ${current_atr or 0:.4f}, "
-                f"{TSL_MIN_ACTIVATION_PCT * 100:.1f}% of entry))"
+                f"Move: +${price_move_fav:.4f} (+{raw_fav_pct * 100:.2f}%) >= +0.90% | "
+                f"Threshold: +${tsl_activation_dist:.4f} | Locking in >= +0.40% Net Profit"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
 
         # Trail by max(tsl_atr_trail_mult × ATR, TSL_MIN_TRAIL_PCT) from the PEAK price
         peak = float(highest_price) if highest_price else cp
-        new_sl = peak - tsl_trailing_dist
+        proposed_sl = peak - tsl_trailing_dist
+        min_locked_sl = ep * 1.004  # lock in at least +0.40% net profit above entry
+        new_sl = max(proposed_sl, min_locked_sl)
+        # Ensure new_sl never exceeds current market price
+        new_sl = min(new_sl, cp * 0.9995)
 
         if new_sl > stop_loss:
             old_sl = stop_loss
@@ -684,8 +729,8 @@ def apply_long_risk_management(
             msg = (
                 f"📈 DYNAMIC ATR TRAILING STOP UPDATED: {symbol} | "
                 f"New SL: ${new_sl:.4f} (was ${old_sl:.4f}) | "
-                f"Peak: ${peak:.2f} | Trailing Dist: ${tsl_trailing_dist:.4f} "
-                f"(max {tsl_atr_trail_mult}x ATR / {TSL_MIN_TRAIL_PCT * 100:.1f}%) | Locked Profit: {locked_pnl:+.2f}%"
+                f"Peak: ${peak:.2f} | Trailing Dist: ${tsl_trailing_dist:.4f} | "
+                f"Locked Profit: {locked_pnl:+.2f}% (>= +0.40% min)"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
@@ -696,7 +741,6 @@ def apply_long_risk_management(
                     trailing_distance=tsl_trailing_dist, atr_val=current_atr,
                 )
 
-        # Persist trailing state to DB for frontend
         try:
             latest_record = (
                 session.query(PortfolioState)
@@ -729,39 +773,63 @@ def apply_long_risk_management(
         portfolio = _close_position_handler(
             portfolio, current_price, symbol, session, sl_type,
             futures_client, bullish_ob, bearish_ob, current_rsi, current_zscore, macro_info,
+            positions_cache=positions_cache,
         )
         risk_exit_triggered = True
 
-    # ── Stagnant Trade Closer (>2h open, flat PnL) ──
-    # ALPHA MODE: When DISABLE_STAGNANT_EXIT is True, trades are NOT
-    # closed for being sideways. Give the setup time to play out.
+    # ── FIX 4: Stagnant Zombie Trade Ejector (>90 min open, flat PnL in RANGE / ADX < 18) ──
     if not risk_exit_triggered and not DISABLE_STAGNANT_EXIT:
-        first_entry_row = (
-            session.query(PortfolioState)
-            .filter(
-                PortfolioState.symbol == symbol,
-                PortfolioState.position_direction == 'LONG',
-            )
-            .order_by(PortfolioState.id.asc())
-            .first()
-        )
-        if first_entry_row:
-            open_seconds = (datetime.now() - first_entry_row.timestamp).total_seconds()
-            stagnant_seconds = STAGNANT_HOURS_THRESHOLD * 3600
-            if open_seconds > stagnant_seconds and -STAGNANT_PNL_BAND <= unrealized_pct <= STAGNANT_PNL_BAND:
-                open_hours = open_seconds / 3600
-                msg = (
-                    f"⏰ STAGNANT POSITION CLOSED: {symbol} LONG open for "
-                    f"{open_hours:.1f}h with flat PnL ({unrealized_pct * 100:+.2f}%). "
-                    f"Freeing slot for fresh opportunities."
+        regime_str = str(regime or (macro_info.get('regime') if macro_info else '') or '').upper()
+        adx_val = float(current_adx) if current_adx is not None else (float(macro_info.get('adx')) if macro_info and macro_info.get('adx') is not None else None)
+        is_chop = (regime_str == 'RANGE') or (adx_val is not None and adx_val < 18.0) or (not regime_str and adx_val is None)
+
+        if is_chop:
+            try:
+                last_closed = (
+                    session.query(PortfolioState.timestamp)
+                    .filter(
+                        PortfolioState.symbol == symbol,
+                        PortfolioState.asset_balance == 0,
+                    )
+                    .order_by(PortfolioState.id.desc())
+                    .first()
                 )
-                print(msg, flush=True)
-                log_to_db(session, symbol, "EXIT", msg)
-                portfolio = _close_position_handler(
-                    portfolio, current_price, symbol, session, 'STAGNANT',
-                    futures_client, bullish_ob, bearish_ob, current_rsi, current_zscore, macro_info,
+                q = session.query(PortfolioState.timestamp).filter(
+                    PortfolioState.symbol == symbol,
+                    PortfolioState.asset_balance > 0,
+                    PortfolioState.position_direction == 'LONG',
                 )
-                risk_exit_triggered = True
+                if last_closed:
+                    q = q.filter(PortfolioState.timestamp > last_closed.timestamp)
+                first_open = q.order_by(PortfolioState.id.asc()).first()
+
+                if first_open and first_open[0]:
+                    t_open = first_open[0]
+                    now_dt = datetime.utcnow()
+                    open_seconds = (now_dt - t_open).total_seconds()
+                    if open_seconds < 0:
+                        open_seconds = abs((datetime.now() - t_open).total_seconds())
+
+                    raw_move_stag = (cp - ep) / ep if ep > 0 else 0.0
+                    stagnant_seconds = STAGNANT_HOURS_THRESHOLD * 3600  # 1.5h = 90 min = 5400s
+                    if open_seconds >= stagnant_seconds and -STAGNANT_PNL_BAND <= raw_move_stag <= STAGNANT_PNL_BAND:
+                        open_mins = open_seconds / 60.0
+                        msg = (
+                            f"⏰ [STAGNANT_TIME_EXIT] {symbol} LONG open for {open_mins:.1f}m (>=90m) "
+                            f"with flat PnL ({raw_move_stag * 100:+.2f}%) in {regime_str or 'CHOP'} (ADX={adx_val}). "
+                            f"Ejecting zombie trade to free slot for high-momentum opportunities!"
+                        )
+                        print(msg, flush=True)
+                        _risk_logger.info(msg)
+                        log_to_db(session, symbol, "EXIT", msg)
+                        portfolio = _close_position_handler(
+                            portfolio, current_price, symbol, session, 'STAGNANT_TIME_EXIT',
+                            futures_client, bullish_ob, bearish_ob, current_rsi, current_zscore, macro_info,
+                            positions_cache=positions_cache,
+                        )
+                        risk_exit_triggered = True
+            except Exception as e_stag:
+                _risk_logger.warning(f"[{symbol}] Stagnant check error: {e_stag}")
 
     return portfolio, risk_exit_triggered
 
@@ -790,25 +858,31 @@ def apply_short_risk_management(
     current_zscore: Optional[float],
     macro_info: Optional[Dict[str, Any]],
     positions_cache: Optional[Dict[str, Any]] = None,
+    regime: Optional[str] = None,
+    current_adx: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], bool]:
     """Apply full SHORT-side risk management for an active position.
 
-    Mirror of ``apply_long_risk_management`` with inverted price direction
-    logic (trough watermark, SL above price, trailing from trough).
+    Mirror of ``apply_long_risk_management`` with inverted price direction.
 
     Checks (in order):
-        1. Update lowest-price watermark (trough).
-        2. Partial Take Profit (50% scale-out).
-        3. Break-Even trigger (move SL to entry).
-        4. Dynamic ATR Trailing Stop (trail from trough).
-        5. Stop Loss hit check (close if price >= SL).
-        6. Stagnant Trade Closer.
+        1. Hard Max Loss Cap (-1.5% raw move / -$3.00 on $200).
+        2. Enforce max 1.5% Stop Loss distance from entry.
+        3. Update lowest-price watermark (trough).
+        4. Partial Take Profit (50% scale-out) with fee buffer.
+        5. Fee-Aware Break-Even trigger (-0.20% buffer below entry).
+        6. Dynamic ATR Trailing Stop (activates at >= +0.90% raw move, locking >= +0.40% profit).
+        7. Stop Loss hit check (close if price >= SL).
+        8. Stagnant Zombie Trade Ejector (>90m open, flat PnL in RANGE / ADX < 18).
 
     Args / Returns: See ``apply_long_risk_management``.
     """
     risk_exit_triggered = False
     cp = float(current_price)
     ep = float(entry_price)
+
+    import logging as _risk_logging
+    _risk_logger = _risk_logging.getLogger("Analyzer.risk")
 
     position_size = float(portfolio.get('asset_balance', 0) or 0)
     if position_size <= 0 and futures_client:
@@ -826,6 +900,58 @@ def apply_short_risk_management(
         if (position_value > 0 and unrealized_pnl > 0)
         else (unrealized_pnl / position_value if position_value > 0 else 0.0)
     )
+    raw_move_pct = (ep - cp) / ep if ep > 0 else 0.0
+
+    # ── FIX 2: HARD MAX LOSS CAP (-1.5% raw move / -$3.00 max loss on $200) ──
+    hard_sl_price = ep * (1.0 + MAX_LOSS_CAP_PCT)  # ep * 1.015
+    if raw_move_pct <= -MAX_LOSS_CAP_PCT or (hard_sl_price > 0 and cp >= hard_sl_price):
+        _cap_msg = (
+            f"🛑 [{symbol}] HARD MAX LOSS CAP BREACHED (SHORT): raw move {raw_move_pct * 100:.2f}% "
+            f"<= -{MAX_LOSS_CAP_PCT * 100:.1f}% (Price ${cp:.6g} >= Cap ${hard_sl_price:.6g}, Entry ${ep:.6g}) — "
+            f"EXECUTING IMMEDIATE MARKET CLOSE"
+        )
+        print(_cap_msg, flush=True)
+        _risk_logger.warning(_cap_msg)
+        log_to_db(session, symbol, "EXIT", _cap_msg)
+        portfolio = _close_position_handler(
+            portfolio, current_price, symbol, session, 'MAX_LOSS_CAP_HIT',
+            futures_client, bullish_ob, bearish_ob, current_rsi, current_zscore, macro_info,
+            positions_cache=positions_cache,
+        )
+        risk_exit_triggered = True
+        return portfolio, risk_exit_triggered
+
+    # If stop_loss is wider than 1.5% max loss cap or unset, immediately tighten to 1.5%
+    if stop_loss <= 0 or stop_loss > hard_sl_price:
+        old_sl = stop_loss
+        stop_loss = hard_sl_price
+        portfolio['stop_loss_price'] = stop_loss
+        portfolio['stop_loss'] = stop_loss
+        _tighten_msg = (
+            f"🛡️ [{symbol}] TIGHTENED SL TO 1.5% MAX LOSS CAP (SHORT): "
+            f"was ${old_sl:.6g} -> now ${stop_loss:.6g} (Entry ${ep:.6g})"
+        )
+        print(_tighten_msg, flush=True)
+        log_to_db(session, symbol, "INFO", _tighten_msg)
+        if futures_client:
+            set_stop_loss_order(futures_client, symbol, 'SHORT', stop_loss)
+        try:
+            latest_record = (
+                session.query(PortfolioState)
+                .filter(
+                    PortfolioState.symbol == symbol,
+                    PortfolioState.position_direction == 'SHORT',
+                )
+                .order_by(PortfolioState.id.desc())
+                .first()
+            )
+            if latest_record:
+                latest_record.stop_loss_price = stop_loss
+                latest_record.stop_loss = stop_loss
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            print(f"Warning: Failed to persist max loss cap SL to DB: {e}", flush=True)
 
     # Track new trough price
     if lowest_price is None or cp < float(lowest_price):
@@ -837,9 +963,6 @@ def apply_short_risk_management(
         ep, cp, current_atr, tsl_atr_activation_mult, tsl_atr_trail_mult,
     )
     price_move_fav = ep - cp
-
-    import logging as _risk_logging
-    _risk_logger = _risk_logging.getLogger("Analyzer.risk")
 
     if unrealized_pnl > 0:
         _risk_logger.info(
@@ -869,17 +992,19 @@ def apply_short_risk_management(
                 portfolio['usdt_balance'] = (
                     float(portfolio.get('usdt_balance', 0)) + (closed_qty * (2 * ep - cp))
                 )
-                if stop_loss > ep or stop_loss == 0:
-                    stop_loss = ep
-                    portfolio['stop_loss_price'] = ep
-                    portfolio['stop_loss'] = ep
+
+                fee_buffered_be = ep * (1.0 - FEE_BUFFER_PCT)
+                if stop_loss > fee_buffered_be or stop_loss == 0:
+                    stop_loss = fee_buffered_be
+                    portfolio['stop_loss_price'] = fee_buffered_be
+                    portfolio['stop_loss'] = fee_buffered_be
 
                 pnl_realized_est = (ep - cp) * closed_qty
                 msg = (
                     f"🎯 [{symbol}] PARTIAL TAKE PROFIT EXECUTED (SHORT) | "
                     f"Closed 50% size ({closed_qty} units) at ${cp:.4f} (+{unrealized_pct * 100:.2f}%) | "
                     f"Est. Profit: +${pnl_realized_est:.2f} | Remaining Qty: {rem_qty} | "
-                    f"Stop Loss locked at Entry ${ep:.4f}"
+                    f"Stop Loss locked at Fee-Buffered Entry ${fee_buffered_be:.4f} (-0.20%)"
                 )
                 print(msg, flush=True)
                 log_to_db(session, symbol, "ENTRY", msg)
@@ -920,16 +1045,17 @@ def apply_short_risk_management(
                     session.rollback()
                     print(f"Warning: Failed to persist partial TP state to DB: {e}", flush=True)
 
-    # ── Break-Even Trigger: move >= max(activation_mult × ATR, +0.8% raw) ──
+    # ── FIX 3: Fee-Aware Break-Even Trigger: move >= tsl_activation_dist (+0.90% raw or ATR) ──
+    fee_buffered_be = ep * (1.0 - FEE_BUFFER_PCT)  # ep * 0.998 (-0.20% fee buffer)
     if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
-        if stop_loss > ep or stop_loss == 0:
+        if stop_loss > fee_buffered_be or stop_loss == 0:
             old_sl = stop_loss
-            stop_loss = ep
+            stop_loss = fee_buffered_be
             portfolio['stop_loss_price'] = stop_loss
             portfolio['stop_loss'] = stop_loss
             msg = (
-                f"🛡️ BREAK-EVEN TRIGGERED: {symbol} SHORT at {unrealized_pct * 100:+.2f}% PnL. "
-                f"Moved SL from ${old_sl:.4f} to Entry ${ep:.4f}"
+                f"🛡️ FEE-AWARE BREAK-EVEN TRIGGERED: {symbol} SHORT at {unrealized_pct * 100:+.2f}% PnL. "
+                f"Moved SL from ${old_sl:.4f} to Fee-Buffered Entry ${fee_buffered_be:.4f} (-0.20% net profit)"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
@@ -955,25 +1081,28 @@ def apply_short_risk_management(
                 session.rollback()
                 print(f"Warning: Failed to persist break-even SL to DB: {e}", flush=True)
 
-    # ── Trailing Stop Loss (Profit-Locking) ──
-    # Activates when favourable move >= max(activation_mult × ATR, +0.8% raw);
-    # trails by max(trail_mult × ATR, 0.5% of price) from the trough.
-    if not risk_exit_triggered and price_move_fav >= tsl_activation_dist:
+    # ── FIX 3: Trailing Stop Loss (Profit-Locking >= +0.40% Net Profit) ──
+    # Activates when favourable move >= +0.90% raw price move (and >= tsl_activation_dist);
+    # trails by max(trail_mult × ATR, 0.5% of price) from trough, locking in at least +0.40% below entry.
+    raw_fav_pct = (ep - cp) / ep if ep > 0 else 0.0
+    if not risk_exit_triggered and raw_fav_pct >= 0.009 and price_move_fav >= tsl_activation_dist:
         if not trailing_active:
             trailing_active = True
             portfolio['trailing_active'] = True
             msg = (
                 f"📈 [{symbol}] DYNAMIC ATR TRAILING STOP ACTIVATED for SHORT | "
-                f"Move: +${price_move_fav:.4f} (+{unrealized_pct * 100:.2f}%) | "
-                f"Threshold: +${tsl_activation_dist:.4f} (max({tsl_atr_activation_mult}x ATR ${current_atr or 0:.4f}, "
-                f"{TSL_MIN_ACTIVATION_PCT * 100:.1f}% of entry))"
+                f"Move: +${price_move_fav:.4f} (+{raw_fav_pct * 100:.2f}%) >= +0.90% | "
+                f"Threshold: +${tsl_activation_dist:.4f} | Locking in >= +0.40% Net Profit"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
 
         # Trail by max(tsl_atr_trail_mult × ATR, TSL_MIN_TRAIL_PCT) from the TROUGH price
         trough = float(lowest_price) if lowest_price else cp
-        new_sl = trough + tsl_trailing_dist
+        proposed_sl = trough + tsl_trailing_dist
+        min_locked_sl = ep * 0.996  # lock in at least +0.40% net profit in favor of short
+        new_sl = min(proposed_sl, min_locked_sl)
+        new_sl = max(new_sl, cp * 1.0005)
 
         if stop_loss == 0 or new_sl < stop_loss:
             old_sl = stop_loss
@@ -984,8 +1113,8 @@ def apply_short_risk_management(
             msg = (
                 f"📈 DYNAMIC ATR TRAILING STOP UPDATED: {symbol} | "
                 f"New SL: ${new_sl:.4f} (was ${old_sl:.4f}) | "
-                f"Trough: ${trough:.2f} | Trailing Dist: ${tsl_trailing_dist:.4f} "
-                f"(max {tsl_atr_trail_mult}x ATR / {TSL_MIN_TRAIL_PCT * 100:.1f}%) | Locked Profit: {locked_pnl:+.2f}%"
+                f"Trough: ${trough:.2f} | Trailing Dist: ${tsl_trailing_dist:.4f} | "
+                f"Locked Profit: {locked_pnl:+.2f}% (>= +0.40% min)"
             )
             print(msg, flush=True)
             log_to_db(session, symbol, "INFO", msg)
@@ -996,7 +1125,6 @@ def apply_short_risk_management(
                     trailing_distance=tsl_trailing_dist, atr_val=current_atr,
                 )
 
-        # Persist trailing state to DB for frontend
         try:
             latest_record = (
                 session.query(PortfolioState)
@@ -1029,36 +1157,62 @@ def apply_short_risk_management(
         portfolio = _close_position_handler(
             portfolio, current_price, symbol, session, sl_type,
             futures_client, bullish_ob, bearish_ob, current_rsi, current_zscore, macro_info,
+            positions_cache=positions_cache,
         )
         risk_exit_triggered = True
 
-    # ── Stagnant Trade Closer (>2h open, flat PnL) ──
+    # ── FIX 4: Stagnant Zombie Trade Ejector (>90 min open, flat PnL in RANGE / ADX < 18) ──
     if not risk_exit_triggered and not DISABLE_STAGNANT_EXIT:
-        first_entry_row = (
-            session.query(PortfolioState)
-            .filter(
-                PortfolioState.symbol == symbol,
-                PortfolioState.position_direction == 'SHORT',
-            )
-            .order_by(PortfolioState.id.asc())
-            .first()
-        )
-        if first_entry_row:
-            open_seconds = (datetime.now() - first_entry_row.timestamp).total_seconds()
-            stagnant_seconds = STAGNANT_HOURS_THRESHOLD * 3600
-            if open_seconds > stagnant_seconds and -STAGNANT_PNL_BAND <= unrealized_pct <= STAGNANT_PNL_BAND:
-                open_hours = open_seconds / 3600
-                msg = (
-                    f"⏰ STAGNANT POSITION CLOSED: {symbol} SHORT open for "
-                    f"{open_hours:.1f}h with flat PnL ({unrealized_pct * 100:+.2f}%). "
-                    f"Freeing slot for fresh opportunities."
+        regime_str = str(regime or (macro_info.get('regime') if macro_info else '') or '').upper()
+        adx_val = float(current_adx) if current_adx is not None else (float(macro_info.get('adx')) if macro_info and macro_info.get('adx') is not None else None)
+        is_chop = (regime_str == 'RANGE') or (adx_val is not None and adx_val < 18.0) or (not regime_str and adx_val is None)
+
+        if is_chop:
+            try:
+                last_closed = (
+                    session.query(PortfolioState.timestamp)
+                    .filter(
+                        PortfolioState.symbol == symbol,
+                        PortfolioState.asset_balance == 0,
+                    )
+                    .order_by(PortfolioState.id.desc())
+                    .first()
                 )
-                print(msg, flush=True)
-                log_to_db(session, symbol, "EXIT", msg)
-                portfolio = _close_position_handler(
-                    portfolio, current_price, symbol, session, 'STAGNANT',
-                    futures_client, bullish_ob, bearish_ob, current_rsi, current_zscore, macro_info,
+                q = session.query(PortfolioState.timestamp).filter(
+                    PortfolioState.symbol == symbol,
+                    PortfolioState.asset_balance > 0,
+                    PortfolioState.position_direction == 'SHORT',
                 )
-                risk_exit_triggered = True
+                if last_closed:
+                    q = q.filter(PortfolioState.timestamp > last_closed.timestamp)
+                first_open = q.order_by(PortfolioState.id.asc()).first()
+
+                if first_open and first_open[0]:
+                    t_open = first_open[0]
+                    now_dt = datetime.utcnow()
+                    open_seconds = (now_dt - t_open).total_seconds()
+                    if open_seconds < 0:
+                        open_seconds = abs((datetime.now() - t_open).total_seconds())
+
+                    raw_move_stag = (ep - cp) / ep if ep > 0 else 0.0
+                    stagnant_seconds = STAGNANT_HOURS_THRESHOLD * 3600  # 1.5h = 90 min = 5400s
+                    if open_seconds >= stagnant_seconds and -STAGNANT_PNL_BAND <= raw_move_stag <= STAGNANT_PNL_BAND:
+                        open_mins = open_seconds / 60.0
+                        msg = (
+                            f"⏰ [STAGNANT_TIME_EXIT] {symbol} SHORT open for {open_mins:.1f}m (>=90m) "
+                            f"with flat PnL ({raw_move_stag * 100:+.2f}%) in {regime_str or 'CHOP'} (ADX={adx_val}). "
+                            f"Ejecting zombie trade to free slot for high-momentum opportunities!"
+                        )
+                        print(msg, flush=True)
+                        _risk_logger.info(msg)
+                        log_to_db(session, symbol, "EXIT", msg)
+                        portfolio = _close_position_handler(
+                            portfolio, current_price, symbol, session, 'STAGNANT_TIME_EXIT',
+                            futures_client, bullish_ob, bearish_ob, current_rsi, current_zscore, macro_info,
+                            positions_cache=positions_cache,
+                        )
+                        risk_exit_triggered = True
+            except Exception as e_stag:
+                _risk_logger.warning(f"[{symbol}] Stagnant check error: {e_stag}")
 
     return portfolio, risk_exit_triggered

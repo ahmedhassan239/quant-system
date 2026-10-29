@@ -44,7 +44,8 @@ from analyzer.constants import (
     INCOME_HISTORY_MAX_RETRIES,
     INCOME_HISTORY_RETRY_SLEEP_S,
 )
-from analyzer.portfolio import load_portfolio
+from config import MAX_LOSS_CAP_PCT
+from analyzer.portfolio import load_portfolio, _close_position_handler
 from analyzer.notifications import send_telegram_alert
 from analyzer.utils import log_to_db
 
@@ -214,68 +215,72 @@ def sync_binance_position(
                 portfolio['highest_price_since_entry'] = max(_entry, _ref)
                 portfolio['lowest_price_since_entry'] = min(_entry, _ref)
 
-                # A previous SL is only trusted if the portfolio really held THIS position
-                # (same direction, open balance). It may already be breached by mark price.
+                _hard_max_sl = _entry * (1.0 - MAX_LOSS_CAP_PCT) if _live_dir == 'LONG' else _entry * (1.0 + MAX_LOSS_CAP_PCT)
+                _raw_adv = (_entry - _ref) / _entry if _live_dir == 'LONG' else (_ref - _entry) / _entry
+
+                # A previous SL is only trusted if the portfolio held THIS position and is tighter than 1.5% max loss cap
                 _prev_trusted = (
                     _prev_sl > 0
                     and _prev_dir == _live_dir
                     and _prev_bal is not None and float(_prev_bal) > 0
+                    and ((_live_dir == 'LONG' and _prev_sl >= _hard_max_sl) or (_live_dir == 'SHORT' and _prev_sl <= _hard_max_sl))
                 )
                 _atr = float(current_atr) if current_atr else 0.0
-                # FIX 3: ALWAYS anchor the emergency SL on ENTRY price (never the crashed mark price).
-                _emergency_sl = None
+                _emergency_sl = _hard_max_sl
                 if _atr > 0:
-                    _emergency_sl = (
-                        _entry - 1.4 * _atr if _live_dir == 'LONG' else _entry + 1.4 * _atr
-                    )
+                    _atr_sl = _entry - 1.4 * _atr if _live_dir == 'LONG' else _entry + 1.4 * _atr
+                    if _live_dir == 'LONG':
+                        _emergency_sl = max(_atr_sl, _hard_max_sl)
+                    else:
+                        _emergency_sl = min(_atr_sl, _hard_max_sl)
 
                 _skip_reason = None
                 if _prev_trusted and _prev_trailing:
                     _skip_reason = f"trailing SL active (existing SL ${_prev_sl:.6g})"
-                elif _prev_trusted and _emergency_sl is not None and (
+                elif _prev_trusted and (
                     (_live_dir == 'LONG' and _prev_sl > _emergency_sl)
                     or (_live_dir == 'SHORT' and 0 < _prev_sl < _emergency_sl)
                 ):
-                    _skip_reason = f"existing SL ${_prev_sl:.6g} already tighter than emergency ${_emergency_sl:.6g}"
-                elif _prev_trusted and _emergency_sl is None:
-                    _skip_reason = f"no ATR available; keeping existing SL ${_prev_sl:.6g}"
+                    _skip_reason = f"existing SL ${_prev_sl:.6g} tighter than emergency ${_emergency_sl:.6g}"
 
                 _effective_sl = _prev_sl if _skip_reason else _emergency_sl
+                # Hard clamp _effective_sl to 1.5% cap
+                if _live_dir == 'LONG':
+                    _effective_sl = max(_effective_sl, _hard_max_sl)
+                else:
+                    _effective_sl = min(_effective_sl, _hard_max_sl)
+
                 _breached = (
-                    _effective_sl is not None and _ref > 0 and (
-                        (_live_dir == 'LONG' and _ref <= _effective_sl)
-                        or (_live_dir == 'SHORT' and _ref >= _effective_sl)
-                    )
+                    _raw_adv >= MAX_LOSS_CAP_PCT
+                    or (_live_dir == 'LONG' and _ref <= _effective_sl)
+                    or (_live_dir == 'SHORT' and _ref >= _effective_sl)
                 )
 
-                if _skip_reason:
-                    portfolio['stop_loss_price'] = _prev_sl
-                    portfolio['stop_loss'] = _prev_sl
-                    portfolio['trailing_active'] = _prev_trailing
-                    logger.info(f"[{symbol}] Orphan adoption: emergency SL skipped — {_skip_reason}")
-                    print(f"  🛡️ [{symbol}] Emergency SL skipped — {_skip_reason}", flush=True)
-                else:
-                    portfolio['stop_loss_price'] = _emergency_sl
-                    portfolio['stop_loss'] = _emergency_sl
+                portfolio['stop_loss_price'] = _effective_sl
+                portfolio['stop_loss'] = _effective_sl
+                if _skip_reason and _prev_trailing:
+                    portfolio['trailing_active'] = True
 
                 if _breached:
-                    # Mark price already past the (entry-based) SL: do NOT place a new SL below the
-                    # crashed price — close the position now.
                     _msg = (
-                        f"🛑 [{symbol}] Adopted {_live_dir} already breached SL ${_effective_sl:.6g} "
-                        f"(mark ${_ref:.6g}, entry ${_entry:.6g}). Closing immediately."
+                        f"🛑 [{symbol}] Adopted {_live_dir} already breached 1.5% MAX LOSS CAP (SL ${_effective_sl:.6g}, "
+                        f"mark ${_ref:.6g}, entry ${_entry:.6g}, adverse move {_raw_adv * 100:.2f}%). Closing immediately!"
                     )
                     print(_msg, flush=True)
                     logger.warning(_msg)
                     log_to_db(session, symbol, "EXIT", _msg)
                     try:
-                        close_position(futures_client, symbol, _live_dir, _size)
+                        portfolio = _close_position_handler(
+                            portfolio, current_price, symbol, session, 'MAX_LOSS_CAP_HIT',
+                            futures_client=futures_client, positions_cache=positions_cache,
+                        )
+                        return portfolio, 'WAIT', False
                     except Exception as _close_err:
                         logger.error(f"[{symbol}] Breach close failed: {_close_err}")
-                elif not _skip_reason and _emergency_sl is not None:
+                else:
                     try:
                         place_mandatory_stop_loss(
-                            futures_client, symbol, _live_dir, float(_emergency_sl),
+                            futures_client, symbol, _live_dir, float(_effective_sl),
                             quantity=_size,
                         )
                     except Exception as _adopt_err:
@@ -312,6 +317,28 @@ def sync_binance_position(
 
             position_value = pos_amt * entry_price
             unrealized_pct = abs(u_pnl) / position_value if position_value > 0 else 0.0
+
+            # ── FIX 2: HARD MAX LOSS CAP CHECK (-1.5% raw move / -$3.00 max loss on $200) ──
+            cp = float(current_price)
+            ep = float(entry_price or db_entry_price or 0.0)
+            if ep > 0 and cp > 0 and db_pos_direction in ('LONG', 'SHORT'):
+                hard_cap_sl = ep * (1.0 - MAX_LOSS_CAP_PCT) if db_pos_direction == 'LONG' else ep * (1.0 + MAX_LOSS_CAP_PCT)
+                raw_adv_move = (ep - cp) / ep if db_pos_direction == 'LONG' else (cp - ep) / ep
+
+                if raw_adv_move >= MAX_LOSS_CAP_PCT or (db_pos_direction == 'LONG' and cp <= hard_cap_sl) or (db_pos_direction == 'SHORT' and cp >= hard_cap_sl):
+                    _cap_hit_msg = (
+                        f"🛑 [{symbol}] SYNC HARD MAX LOSS CAP BREACH ({db_pos_direction}): raw adverse move {raw_adv_move * 100:.2f}% "
+                        f">= {MAX_LOSS_CAP_PCT * 100:.1f}% (Price ${cp:.6g}, Entry ${ep:.6g}, Cap ${hard_cap_sl:.6g}) — "
+                        f"CLOSING IMMEDIATELY ON BINANCE!"
+                    )
+                    print(_cap_hit_msg, flush=True)
+                    logger.warning(_cap_hit_msg)
+                    log_to_db(session, symbol, "EXIT", _cap_hit_msg)
+                    portfolio = _close_position_handler(
+                        portfolio, current_price, symbol, session, 'MAX_LOSS_CAP_HIT',
+                        futures_client=futures_client, positions_cache=positions_cache,
+                    )
+                    return portfolio, 'WAIT', False
 
             logger.info(
                 f"🔎 [TP-MATH] {symbol} | uPnL: ${u_pnl:.2f} | "
@@ -423,15 +450,27 @@ def sync_binance_position(
                         flush=True,
                     )
                 else:
-                    if db_pos_direction in ('LONG', 'SHORT'):
+                    if db_pos_direction in ('LONG', 'SHORT') and ep > 0:
                         from market_regime import compute_initial_stop_loss
                         sl_val = compute_initial_stop_loss(
-                            db_pos_direction, float(db_entry_price), current_atr, sl_atr_mult,
+                            db_pos_direction, ep, current_atr, sl_atr_mult,
                         )
                     print(
                         f"🔄 [{symbol}] Calculated missing Stop Loss for new position during sync: ${sl_val:.4f}",
                         flush=True,
                     )
+
+            # ── FIX 2: Enforce hard maximum stop-loss distance of 1.5% raw price move from entry_price ──
+            if db_pos_direction in ('LONG', 'SHORT') and ep > 0:
+                hard_cap_sl = ep * (1.0 - MAX_LOSS_CAP_PCT) if db_pos_direction == 'LONG' else ep * (1.0 + MAX_LOSS_CAP_PCT)
+                if sl_val is None or float(sl_val) <= 0:
+                    sl_val = hard_cap_sl
+                elif db_pos_direction == 'LONG' and float(sl_val) < hard_cap_sl:
+                    logger.info(f"[{symbol}] Tightened SL from ${float(sl_val):.6g} to 1.5% max loss cap ${hard_cap_sl:.6g}")
+                    sl_val = hard_cap_sl
+                elif db_pos_direction == 'SHORT' and float(sl_val) > hard_cap_sl:
+                    logger.info(f"[{symbol}] Tightened SL from ${float(sl_val):.6g} to 1.5% max loss cap ${hard_cap_sl:.6g}")
+                    sl_val = hard_cap_sl
 
             portfolio['stop_loss_price'] = sl_val
             portfolio['stop_loss'] = sl_val
@@ -444,15 +483,25 @@ def sync_binance_position(
                         if hasattr(futures_client, 'futures_get_open_algo_orders')
                         else []
                     )
-                    has_sl = any(
-                        o.get('type') in ('STOP', 'STOP_MARKET')
-                        or o.get('orderType') in ('STOP', 'STOP_MARKET')
-                        for o in (open_ords + algo_ords)
-                    )
-                    if not has_sl:
+                    all_stops = [
+                        o for o in (open_ords + algo_ords)
+                        if o.get('type') in ('STOP', 'STOP_MARKET') or o.get('orderType') in ('STOP', 'STOP_MARKET')
+                    ]
+                    # Verify if any open stop order is missing or wider than 1.5% cap
+                    needs_sl_update = not all_stops
+                    if ep > 0 and db_pos_direction in ('LONG', 'SHORT'):
+                        hard_cap_sl = ep * (1.0 - MAX_LOSS_CAP_PCT) if db_pos_direction == 'LONG' else ep * (1.0 + MAX_LOSS_CAP_PCT)
+                        for o in all_stops:
+                            stop_p = float(o.get('stopPrice', 0) or o.get('triggerPrice', 0) or 0)
+                            if stop_p > 0:
+                                if db_pos_direction == 'LONG' and stop_p < hard_cap_sl:
+                                    needs_sl_update = True
+                                elif db_pos_direction == 'SHORT' and stop_p > hard_cap_sl:
+                                    needs_sl_update = True
+
+                    if needs_sl_update:
                         print(
-                            f"🛡️ [{symbol}] Missing live SL on Binance! "
-                            f"Placing emergency hard Stop Loss at ${float(sl_val):.4f}",
+                            f"🛡️ [{symbol}] Enforcing compliant 1.5% Stop Loss on Binance at ${float(sl_val):.6g}",
                             flush=True,
                         )
                         set_stop_loss_order(futures_client, symbol, db_pos_direction, float(sl_val))

@@ -504,6 +504,8 @@ def run_analyzer(
                     current_zscore=current_zscore,
                     macro_info=macro_info,
                     positions_cache=positions_cache,
+                    regime=active_mode_value,
+                    current_adx=precomputed_meta.get('adx') if precomputed_meta else None,
                 )
 
             elif pos_direction == 'SHORT' and not risk_exit_triggered:
@@ -527,6 +529,8 @@ def run_analyzer(
                     current_zscore=current_zscore,
                     macro_info=macro_info,
                     positions_cache=positions_cache,
+                    regime=active_mode_value,
+                    current_adx=precomputed_meta.get('adx') if precomputed_meta else None,
                 )
 
         # ── Pyramiding (Scaling Into Winners) Check ──

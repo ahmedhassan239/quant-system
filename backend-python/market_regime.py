@@ -389,111 +389,161 @@ class TrendStrategy(TradingStrategy):
         current_ema9  = float(ema_9.iloc[-1])  if len(ema_9)  >= 9  else None
         current_ema20 = float(ema_20.iloc[-1]) if len(ema_20) >= 20 else None
 
-        # ── LONG Confluence (UPTREND) ── STABILIZER: RSI pullback-only gate 40–60, hard ceil 62 ──
-        if macro_trend == 'UPTREND' and current_rsi >= RSI_ENTRY_FLOOR and current_rsi <= RSI_LONG_HARD_CEIL:
-            # ── PRIMARY: EMA-9/EMA-20 Micro-Breakout (fast entry, no OB dependency) ──
-            if (current_ema9 and current_ema20
-                    and current_price > current_ema9
-                    and current_ema9 > current_ema20):
-                decision = 'LONG'
-                strategy_type = 'PULLBACK'
-                # ATR-based stop: max(2.0x ATR, 0.8%) below entry, capped at 2.5%
-                new_stop_loss = compute_initial_stop_loss('LONG', current_price, current_atr, sl_atr_mult)
-                logger.info(
-                    f"[TREND] {symbol} LONG Micro-Breakout — Price ${current_price:.2f} > "
-                    f"EMA9 ${current_ema9:.2f} > EMA20 ${current_ema20:.2f} | "
-                    f"RSI {current_rsi:.1f} (pullback zone {RSI_ENTRY_FLOOR}–{RSI_ENTRY_CEIL}) | Z={current_zscore:+.2f}"
-                )
+        # ── Precompute volume ratio for true institutional breakout confirmation ──
+        vol_ratio = 1.0
+        if 'volume' in df.columns and len(df) >= 20:
+            vol_ma20 = df['volume'].iloc[-21:-1].mean()
+            curr_vol = float(df['volume'].iloc[-1])
+            if vol_ma20 and vol_ma20 > 0:
+                vol_ratio = float(curr_vol / vol_ma20)
+        if bullish_breakout and isinstance(bullish_breakout, dict) and 'vol_ratio' in bullish_breakout:
+            vol_ratio = max(vol_ratio, float(bullish_breakout['vol_ratio']))
+        elif bearish_breakout and isinstance(bearish_breakout, dict) and 'vol_ratio' in bearish_breakout:
+            vol_ratio = max(vol_ratio, float(bearish_breakout['vol_ratio']))
 
-            # ── FALLBACK: OB touch (legacy path, still valid) ──
-            elif bullish_ob and current_price >= bullish_ob['low'] and current_zscore < -1.2:
-                decision = 'LONG'
-                strategy_type = 'PULLBACK'
-                new_stop_loss = compute_initial_stop_loss(
-                    'LONG', current_price, current_atr, sl_atr_mult,
-                    structural_sl=bullish_ob['low'] * 0.999,
-                )
-                logger.info(f"[TREND] {symbol} LONG Pullback — OB touch + Z={current_zscore:+.2f}")
+        # ── LONG Confluence (UPTREND) ──
+        # FIX 1: Stop chasing tops! Require Z <= +1.1 and RSI in [42.0, 60.0] for sweet-spot pullbacks.
+        # Breakout above Z > +1.1 is ONLY allowed if institutional volume >= 2.0x and RSI <= 62.0.
+        if macro_trend == 'UPTREND':
+            if current_zscore > 1.1:
+                # Institutional Volume Breakout above Z > +1.1
+                if (bullish_breakout or (current_ema9 and current_price > current_ema9)) and vol_ratio >= 2.0 and current_rsi <= 62.0:
+                    decision = 'LONG'
+                    strategy_type = 'BREAKOUT'
+                    struct_sl = (bullish_breakout.get('breakout_candle_low') * 0.999) if (bullish_breakout and 'breakout_candle_low' in bullish_breakout) else None
+                    new_stop_loss = compute_initial_stop_loss(
+                        'LONG', current_price, current_atr, sl_atr_mult,
+                        structural_sl=struct_sl,
+                    )
+                    logger.info(
+                        f"[TREND] {symbol} LONG Institutional Breakout above Z=+1.1 — Vol {vol_ratio:.1f}x >= 2.0 | "
+                        f"Z={current_zscore:+.2f} | RSI={current_rsi:.1f} <= 62.0"
+                    )
+                else:
+                    logger.info(
+                        f"[TREND] {symbol} LONG blocked: Z={current_zscore:+.2f} > +1.1 (over-extended top). "
+                        f"Requires vol_ratio >= 2.0 & RSI <= 62.0 (got Vol {vol_ratio:.1f}x, RSI {current_rsi:.1f})"
+                    )
+            elif current_zscore <= 1.1 and 42.0 <= current_rsi <= 60.0:
+                # ── PRIMARY: EMA-9/EMA-20 Micro-Breakout (sweet-spot pullback) ──
+                if (current_ema9 and current_ema20
+                        and current_price > current_ema9
+                        and current_ema9 > current_ema20):
+                    decision = 'LONG'
+                    strategy_type = 'PULLBACK'
+                    new_stop_loss = compute_initial_stop_loss('LONG', current_price, current_atr, sl_atr_mult)
+                    logger.info(
+                        f"[TREND] {symbol} LONG Micro-Breakout Pullback — Price ${current_price:.2f} > "
+                        f"EMA9 ${current_ema9:.2f} > EMA20 ${current_ema20:.2f} | "
+                        f"RSI {current_rsi:.1f} in [42.0, 60.0] | Z={current_zscore:+.2f} <= +1.1"
+                    )
 
-            # Strategy B: Momentum Breakout
-            elif bullish_breakout and current_zscore > 1.2:
-                decision = 'LONG'
-                strategy_type = 'BREAKOUT'
-                new_stop_loss = compute_initial_stop_loss(
-                    'LONG', current_price, current_atr, sl_atr_mult,
-                    structural_sl=bullish_breakout['breakout_candle_low'] * 0.999,
-                )
-                logger.info(f"[TREND] {symbol} LONG Breakout — Vol {bullish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
+                # ── FALLBACK: OB touch (legacy path) ──
+                elif bullish_ob and current_price >= bullish_ob.get('low', 0):
+                    decision = 'LONG'
+                    strategy_type = 'PULLBACK'
+                    new_stop_loss = compute_initial_stop_loss(
+                        'LONG', current_price, current_atr, sl_atr_mult,
+                        structural_sl=bullish_ob['low'] * 0.999,
+                    )
+                    logger.info(f"[TREND] {symbol} LONG Pullback — OB touch + Z={current_zscore:+.2f} <= +1.1")
 
-            # Strategy E: Trend Momentum — catches smooth trends with no OB/breakout
-            # Strategy E: broader RSI allowed (outer guard enforces floor + hard ceil)
-            elif current_ema20 and current_price > current_ema20 and current_rsi >= RSI_ENTRY_FLOOR and current_rsi <= RSI_LONG_HARD_CEIL:
-                if len(df) >= 4:
-                    prior_3_high = float(df['high'].iloc[-4:-1].max())
-                    candle_close = float(df['close'].iloc[-1])
-                    if candle_close > prior_3_high:
-                        decision = 'LONG'
-                        strategy_type = 'TREND_MOMENTUM'
-                        # ATR-based stop: max(2.0x ATR, 0.8%) below entry, capped at 2.5%
-                        new_stop_loss = compute_initial_stop_loss('LONG', current_price, current_atr, sl_atr_mult)
-                        logger.info(
-                            f"[TREND] {symbol} LONG Momentum — Price ${current_price:.2f} > EMA20 ${current_ema20:.2f} | "
-                            f"RSI {current_rsi:.1f} (pullback {RSI_ENTRY_FLOOR}–{RSI_ENTRY_CEIL}) | Close ${candle_close:.2f} > Prior3H ${prior_3_high:.2f} | "
-                            f"Z={current_zscore:+.2f}"
-                        )
+                # Strategy B: Momentum Breakout (within normal Z range with volume)
+                elif bullish_breakout and vol_ratio >= 2.0:
+                    decision = 'LONG'
+                    strategy_type = 'BREAKOUT'
+                    new_stop_loss = compute_initial_stop_loss(
+                        'LONG', current_price, current_atr, sl_atr_mult,
+                        structural_sl=bullish_breakout.get('breakout_candle_low', current_price) * 0.999,
+                    )
+                    logger.info(f"[TREND] {symbol} LONG Breakout — Vol {vol_ratio:.1f}x + Z={current_zscore:+.2f}")
 
-        # ── SHORT Confluence (DOWNTREND) ── STABILIZER: RSI pullback-only gate 40–60, hard floor 38 ──
-        elif macro_trend == 'DOWNTREND' and current_rsi <= RSI_ENTRY_CEIL and current_rsi >= RSI_SHORT_HARD_FLOOR:
-            # ── PRIMARY: EMA-9/EMA-20 Micro-Breakdown (fast entry, no OB dependency) ──
-            if (current_ema9 and current_ema20
-                    and current_price < current_ema9
-                    and current_ema9 < current_ema20):
-                decision = 'SHORT'
-                strategy_type = 'PULLBACK'
-                # ATR-based stop: max(2.0x ATR, 0.8%) above entry, capped at 2.5%
-                new_stop_loss = compute_initial_stop_loss('SHORT', current_price, current_atr, sl_atr_mult)
-                logger.info(
-                    f"[TREND] {symbol} SHORT Micro-Breakdown — Price ${current_price:.2f} < "
-                    f"EMA9 ${current_ema9:.2f} < EMA20 ${current_ema20:.2f} | "
-                    f"RSI {current_rsi:.1f} (pullback zone {RSI_ENTRY_FLOOR}–{RSI_ENTRY_CEIL}) | Z={current_zscore:+.2f}"
-                )
+                # Strategy E: Trend Momentum — catches smooth trends
+                elif current_ema20 and current_price > current_ema20:
+                    if len(df) >= 4:
+                        prior_3_high = float(df['high'].iloc[-4:-1].max())
+                        candle_close = float(df['close'].iloc[-1])
+                        if candle_close > prior_3_high:
+                            decision = 'LONG'
+                            strategy_type = 'TREND_MOMENTUM'
+                            new_stop_loss = compute_initial_stop_loss('LONG', current_price, current_atr, sl_atr_mult)
+                            logger.info(
+                                f"[TREND] {symbol} LONG Momentum — Price ${current_price:.2f} > EMA20 ${current_ema20:.2f} | "
+                                f"RSI {current_rsi:.1f} in [42.0, 60.0] | Close ${candle_close:.2f} > Prior3H ${prior_3_high:.2f} | "
+                                f"Z={current_zscore:+.2f} <= +1.1"
+                            )
 
-            # ── FALLBACK: OB touch (legacy path, still valid) ──
-            elif bearish_ob and current_price <= bearish_ob['high'] and current_zscore > 1.2:
-                decision = 'SHORT'
-                strategy_type = 'PULLBACK'
-                new_stop_loss = compute_initial_stop_loss(
-                    'SHORT', current_price, current_atr, sl_atr_mult,
-                    structural_sl=bearish_ob['high'] * 1.001,
-                )
-                logger.info(f"[TREND] {symbol} SHORT Pullback — OB touch + Z={current_zscore:+.2f}")
+        # ── SHORT Confluence (DOWNTREND) ──
+        # FIX 1: Stop shorting bottoms! Require Z >= -1.1 and RSI in [40.0, 58.0] for sweet-spot pullbacks.
+        # Breakdown below Z < -1.1 is ONLY allowed if institutional volume >= 2.0x and RSI >= 38.0.
+        elif macro_trend == 'DOWNTREND':
+            if current_zscore < -1.1:
+                # Institutional Volume Breakdown below Z < -1.1
+                if (bearish_breakout or (current_ema9 and current_price < current_ema9)) and vol_ratio >= 2.0 and current_rsi >= 38.0:
+                    decision = 'SHORT'
+                    strategy_type = 'BREAKOUT'
+                    struct_sl = (bearish_breakout.get('breakout_candle_high') * 1.001) if (bearish_breakout and 'breakout_candle_high' in bearish_breakout) else None
+                    new_stop_loss = compute_initial_stop_loss(
+                        'SHORT', current_price, current_atr, sl_atr_mult,
+                        structural_sl=struct_sl,
+                    )
+                    logger.info(
+                        f"[TREND] {symbol} SHORT Institutional Breakdown below Z=-1.1 — Vol {vol_ratio:.1f}x >= 2.0 | "
+                        f"Z={current_zscore:+.2f} | RSI={current_rsi:.1f} >= 38.0"
+                    )
+                else:
+                    logger.info(
+                        f"[TREND] {symbol} SHORT blocked: Z={current_zscore:+.2f} < -1.1 (oversold bottom). "
+                        f"Requires vol_ratio >= 2.0 & RSI >= 38.0 (got Vol {vol_ratio:.1f}x, RSI {current_rsi:.1f})"
+                    )
+            elif current_zscore >= -1.1 and 40.0 <= current_rsi <= 58.0:
+                # ── PRIMARY: EMA-9/EMA-20 Micro-Breakdown (sweet-spot pullback) ──
+                if (current_ema9 and current_ema20
+                        and current_price < current_ema9
+                        and current_ema9 < current_ema20):
+                    decision = 'SHORT'
+                    strategy_type = 'PULLBACK'
+                    new_stop_loss = compute_initial_stop_loss('SHORT', current_price, current_atr, sl_atr_mult)
+                    logger.info(
+                        f"[TREND] {symbol} SHORT Micro-Breakdown Pullback — Price ${current_price:.2f} < "
+                        f"EMA9 ${current_ema9:.2f} < EMA20 ${current_ema20:.2f} | "
+                        f"RSI {current_rsi:.1f} in [40.0, 58.0] | Z={current_zscore:+.2f} >= -1.1"
+                    )
 
-            # Strategy B: Momentum Breakout
-            elif bearish_breakout and current_zscore < -1.2:
-                decision = 'SHORT'
-                strategy_type = 'BREAKOUT'
-                new_stop_loss = compute_initial_stop_loss(
-                    'SHORT', current_price, current_atr, sl_atr_mult,
-                    structural_sl=bearish_breakout['breakout_candle_high'] * 1.001,
-                )
-                logger.info(f"[TREND] {symbol} SHORT Breakout — Vol {bearish_breakout['vol_ratio']:.1f}x + Z={current_zscore:+.2f}")
+                # ── FALLBACK: OB touch (legacy path) ──
+                elif bearish_ob and current_price <= bearish_ob.get('high', float('inf')):
+                    decision = 'SHORT'
+                    strategy_type = 'PULLBACK'
+                    new_stop_loss = compute_initial_stop_loss(
+                        'SHORT', current_price, current_atr, sl_atr_mult,
+                        structural_sl=bearish_ob['high'] * 1.001,
+                    )
+                    logger.info(f"[TREND] {symbol} SHORT Pullback — OB touch + Z={current_zscore:+.2f} >= -1.1")
 
-            # Strategy E: Trend Momentum — catches smooth downtrends
-            # Strategy E: broader RSI allowed (outer guard enforces ceil + hard floor)
-            elif current_ema20 and current_price < current_ema20 and current_rsi <= RSI_ENTRY_CEIL and current_rsi >= RSI_SHORT_HARD_FLOOR:
-                if len(df) >= 4:
-                    prior_3_low = float(df['low'].iloc[-4:-1].min())
-                    candle_close = float(df['close'].iloc[-1])
-                    if candle_close < prior_3_low:
-                        decision = 'SHORT'
-                        strategy_type = 'TREND_MOMENTUM'
-                        # ATR-based stop: max(2.0x ATR, 0.8%) above entry, capped at 2.5%
-                        new_stop_loss = compute_initial_stop_loss('SHORT', current_price, current_atr, sl_atr_mult)
-                        logger.info(
-                            f"[TREND] {symbol} SHORT Momentum — Price ${current_price:.2f} < EMA20 ${current_ema20:.2f} | "
-                            f"RSI {current_rsi:.1f} (pullback {RSI_ENTRY_FLOOR}–{RSI_ENTRY_CEIL}) | Close ${candle_close:.2f} < Prior3L ${prior_3_low:.2f} | "
-                            f"Z={current_zscore:+.2f}"
-                        )
+                # Strategy B: Momentum Breakdown (within normal Z range with volume)
+                elif bearish_breakout and vol_ratio >= 2.0:
+                    decision = 'SHORT'
+                    strategy_type = 'BREAKOUT'
+                    new_stop_loss = compute_initial_stop_loss(
+                        'SHORT', current_price, current_atr, sl_atr_mult,
+                        structural_sl=bearish_breakout.get('breakout_candle_high', current_price) * 1.001,
+                    )
+                    logger.info(f"[TREND] {symbol} SHORT Breakdown — Vol {vol_ratio:.1f}x + Z={current_zscore:+.2f}")
+
+                # Strategy E: Trend Momentum — catches smooth downtrends
+                elif current_ema20 and current_price < current_ema20:
+                    if len(df) >= 4:
+                        prior_3_low = float(df['low'].iloc[-4:-1].min())
+                        candle_close = float(df['close'].iloc[-1])
+                        if candle_close < prior_3_low:
+                            decision = 'SHORT'
+                            strategy_type = 'TREND_MOMENTUM'
+                            new_stop_loss = compute_initial_stop_loss('SHORT', current_price, current_atr, sl_atr_mult)
+                            logger.info(
+                                f"[TREND] {symbol} SHORT Momentum — Price ${current_price:.2f} < EMA20 ${current_ema20:.2f} | "
+                                f"RSI {current_rsi:.1f} in [40.0, 58.0] | Close ${candle_close:.2f} < Prior3L ${prior_3_low:.2f} | "
+                                f"Z={current_zscore:+.2f} >= -1.1"
+                            )
 
         return decision, strategy_type, new_stop_loss
 

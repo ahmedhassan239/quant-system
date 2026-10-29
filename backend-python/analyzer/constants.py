@@ -90,22 +90,26 @@ used in any calculation but is preserved so external code referencing it does no
 """
 
 # ──────────────────────────────────────────────────────────────────────
-#  STAGNANT POSITION DETECTION
+#  STAGNANT POSITION DETECTION (ZOMBIE TRADE EJECTOR)
 # ──────────────────────────────────────────────────────────────────────
 
-STAGNANT_HOURS_THRESHOLD: float = 2.0
-"""A position open for at least this many hours with a flat PnL is
+STAGNANT_HOURS_THRESHOLD: float = 1.5
+"""A position open for at least 90 minutes (1.5 hours) with a flat PnL is
 classified as stagnant and eligible for forced closure (when
 DISABLE_STAGNANT_EXIT is False in config.py).
 """
 
-STAGNANT_PNL_BAND: float = 0.005
-"""PnL band (±0.5 %) within which a position is considered 'flat' for
+STAGNANT_PNL_BAND: float = 0.003
+"""PnL band (±0.30 %) within which a position is considered 'flat' for
 the stagnant detection check.
-
-    is_stagnant = (hours_open >= STAGNANT_HOURS_THRESHOLD
-                   and -STAGNANT_PNL_BAND <= unrealised_pct <= STAGNANT_PNL_BAND)
 """
+
+MAX_LOSS_CAP_PCT: float = 0.015
+"""Hard maximum loss cap (-1.5% raw move / -$3.00 on a $200 position)."""
+
+FEE_BUFFER_PCT: float = 0.002
+"""Fee buffer (+0.20%) added to break-even stop loss to guarantee positive realized net profit."""
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  POSITION ROTATION (TRADE UPGRADE)
